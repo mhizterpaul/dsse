@@ -1,0 +1,102 @@
+C  NXOFF   NYOFF   NXID6   NYID6  NXVERN  NYVERN  IDXBAS  IDYBAS  JXDISL  JYDISL
+    1600    1000    1800    6700       0    -150      80     110       0       0
+C NXDISL  NYDISL   JSLOW  NODISK   KLIPX   JPERC   INCHX   INCHY   JTICW   JTICH
+    1280    1024     200       1      -3      60   23000   10000      15      90
+C MULFNT
+     350
+
+
+
+NXOFF   is the horizontal offset of the grid in thousandths of an inch.
+NYOFF   is the vertical   offset of the grid in thousandths of an inch.
+        An increase in NXOFF means the grid (and axes, curves, etc.) will
+        be moved to the right within the plot window.  An increase in NYOFF
+        means the grid is moved upward within the plot window.  NXOFF  and
+        NYOFF  are margins on the left and bottom.
+
+NXID6   Horizontal location for start of plot legend in thousandths of an inch.
+NYID6   Vertical   location for start of plot legend in thousandths of an inch.
+        Only  SPY PLOT  is involved (the location of the CALCOMP PLOT legend
+        is controlled by very old variables within  STARTUP).  In the above,
+        "location"  refers to the start of the legend  ---  the left edge of
+        the top line of the several lines.  Zero  NYID6  corresponds to the top
+        of the plot window.  Vertical distance is measured positively downward.
+        Horizontal location increases as one moves left to right.
+
+NXVERN  is horizontal location of Y-axis numbers,  in thousandths of an inch.
+NYVERN  is vertical   location of 1st Y-axis number, in thousandths of an inch.
+        Only  SPY PLOT  is involved (CALCOMP PLOT axis numbers are unaffected).
+        As with the preceding legend,  location refers to the start of the
+        number.  Increasing NXVERN will move Y-axis numbers to the right.
+        Increasing NYVERN will move Y-axis numbers downward.
+
+IDXBAS  is the width  of characters of the base font, in monitor pixels.
+IDYBAS  is the height of characters of the base font, in monitor pixels.
+        These numbers no longer are used for vector screen graphics.  DISLIN
+        uses the single  MULFNT  below as an alternative.  So,  IDXBAS  and
+        IDYBAS  can be ignored except for PostScript output if NOPOST = 0.
+        Because of PostScript output,  we continue using values of years past.
+
+        are largely arbitrary,  since MULFNT will scale the text,
+        anyway.  Later,  either this pair of sizes or MULFNT is expected to
+        disappear.  Obviously,  one does not need 3 parameters to control the
+        size of text.
+
+JXDISL  Horizontal pixels that locate of upper-left corner of the plot window.
+JYDISL  Vertical   pixels that locate of upper-left corner of the plot window.
+        Normally,  the user will ignore this parameter pair,  which then will
+        be set to  (1, 1)  which corresponds to the upper-left corner of the
+        screen.  The idea is to have graphics above and text (ATP printout)
+        below.
+
+NXDISL  Pixels of horizontal resolution for the monitor being used.
+NYDISL  Pixels of vertical   resolution for the monitor being used.
+
+JSLOW   Artificial added time delay in milliseconds after each refresh of a
+        ROLLing  SPY  PLOT.  For any positive value,  one line of output to
+        the DOS window of the screen (not the .LIS file) will document each
+        such waste of time.  Note  KSLOWR  of  STARTUP  defines the frequency
+        of plot refreshing.
+
+NODISK  is a binary switch that allows the suppression of  DISLIN  graphics
+        during  DISK  use.  Value unity will suppress the graphics whereas
+        value zero will not.  Note the difference compared with Salford EMTP,
+        which automatically suppressed screen graphics during  DISK  use.
+        With  GNU ATP  and  DISLIN,  this decision is left to the user.
+
+KLIPX   Meaning depends on the sign.  For full-width plotting, there is a
+        minus sign,  and the absolute value will be small.  Then  -KLIPX =
+        is the number of X pixels that are to be removed from  NXDISL  as
+        the plot window is defined.  If zero,  the right side of the window
+        frame will be missing.  Value 3 is enough to show the frame, which
+        reassures the user that nothing has been lost on the right.  This
+        represents waste, but is an aesthetically pleasing choice.  This is
+        for a negative value.  For a positive value, the name and meaning
+JXPERC  change.  JXPERC > 0 is the width of the graphic window as a
+        percentage of the total screen width  NXDISL.
+
+JYPERC  is the height of the graphic window as a percentage of the total
+        screen height  NYDISL.  Value 60 is referred to as full-height,
+        although 80% and 93% have been used (see  HIGHER*.AUX).
+
+INCHX   is the width  of the plot window in thousandths of an inch.
+INCHY   is the height of the plot window in thousandths of an inch.
+        Remember that the Y axis is 8 inches high,  and the time axis is
+        20 inches long (for full width).  So this pair of numbers should
+        allow some extra space on all sides.  Something such as 10 and 22
+        thousand are reasonable.  These two numbers provide magnification.
+        The grid size varies inversely with these numbers.  As more space
+        is allowed,  less is used,  so a plot becomes smaller.
+
+JTICW   is half the width  of an axis tic mark, in thousandths of an inch.
+JTICH   is half the length of an axis tic mark, in thousandths of an inch.
+        Generally,  the second number will be 5 or more times the first.
+        X-axis tic marks will be drawn using the color of the X axis.  But
+        Y-axis tic marks will be drawn using the color of the grid in order
+        not to interfere with Y-axis numbers.
+
+MULFNT  is an empirical scaling factor for text.  Values as small as 200
+        and as large as 400 have been used.  "Beauty is in the eye of the
+        beholder."  Were it not for  QUARTER PLOT,  a larger value probably
+        would be used.  As  QUART.DAT  illustrates,  value 300 is plenty
+        big for this use.  Overprinting generally is to be avoided.

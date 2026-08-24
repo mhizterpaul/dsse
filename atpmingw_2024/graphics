@@ -1,0 +1,23 @@
+C  NYMAX  NUMFNT  INDLPT  LABLAX  JCHYAX  KCHYAX    LTIC  LASERJ  LOWERC  KOLBAK
+   -7777     104       0      25      11      10       7      -1       1       0
+C LCHFIL  Unused  Unused  LCHXAX  LCHYAX  KPYPCT   grids    axes  curves  KVIRTU
+      30                      28      28      87       1       8      12       0
+C FNTHED  FNTSUP  FNTTIT  WHTBAK  XVLABL  YVLABL  HVLABL  XHLABL  YHLOFF  HHLABL 
+     0.4     .25     .17     1.0    -0.7     4.0     .20     5.0    -0.5     .20
+C  JXMAX   JYMAX  JXINCH  JYINCH   JXOFF   JYOFF    JTIC  NPGRID   IZGR1
+    1000    1000     105     105     120      90       3       4       2
+C HPXOFF  HPYOFF  YAXHPX  YAXHPY
+    1.10     1.0     1.0     0.1
+C KSUPSC  KHEDSC  KCASSC  KLGDSC  KAXESC  KLABSC  KGRDSC
+      14      15      15      15      15      14       3
+C LCOLSC  is a vector of 20 cells (one for each curve) that is read as 20I4:
+  12  10  11  14  13  15   9   2   4   5   6   7   1   8   3  12  10  11  14  13
+C KSUPHP  KHEDHP  KCASHP  KLGDHP  KAXEHP  KLABHP  KGRDHP
+       8       2       3       9       5       6       7
+C LNTYHP is a vector of 20 cells (one for each curve) that is read as 20I4:
+   0   6   5   4   3   2   1   0   6   5   4   3   2   1   0   6   5   4   2   1
+C LCOLHP is a vector of 20 cells (one for each curve) that is read as 20I4:
+   1   2   3   5   6   7   9   1   2   3   5   6   7   9   1   2   3   5   6   7
+C LENGHP is a vector of 20 cells (one for each curve) that is read as 20I4:
+   4   4   4   4   4   4   4   4   4   4   4   4   4   4   4   4   4   4   2   2
+

@@ -1,0 +1,191 @@
+# Time-Adjusted Cluster Load Allocation with Error Correction in Sparsely Metered Distribution Networks
+
+## Methodology
+
+In a sparsely metered distribution system, the utility may know:
+- feeder/transformer energy supplied;
+- measurements from a relatively small subset of consumers;
+- some information about consumer premises;
+- historical consumption patterns/classes;
+but does not know the actual consumption of every customer.
+
+The formulation is:
+
+[ E_U = E_F - E_M - E_L ]
+
+where:
+- $E_F$: feeder supply energy,
+- $E_M$: measured customer energy,
+- $E_L$: estimated technical losses (incorporating both transformer losses and line losses),
+- $E_U$: energy attributable to unknown/unmetered customers.
+
+Then estimate an expected consumption for each unmetered customer:
+
+[ w_i = \mathbb{E}[E_i \mid C_i, X_i] ]
+
+where $X_i$ could include:
+- customer class,
+- historical billing,
+- premises characteristics,
+- connected load,
+- time of year,
+- supply availability
+- feeder characteristics.
+
+Then:
+
+$$ \boxed{ \hat{E}_i = E_U \frac{w_i}{\sum_{j\in U}w_j} } $$
+
+with time-adjusted consumer/load-class information.
+
+Suppose consumer $i$ belongs to class $c$, with metered class profile
+
+[ \mu_c(t). ]
+
+For an unmetered consumer, rather than assigning a static class average, estimate:
+
+[ \hat{E}_i = \int_{t_0}^{t_1} \alpha_i(t)\mu_{c_i}(t)\,dt ]
+
+where $\alpha_i(t)$ is your time adjustment factor for observed metered-class behaviour.
+
+Let the actual feeder energy be
+
+[ E_F = E_L + E_{NTL} + E_T ]
+
+where:
+- $E_L$: legitimate consumer consumption;
+- $E_{NTL}$: technical network losses (transformer and line losses);
+- $E_T$: non-technical losses/theft.
+
+Therefore the allocation error is:
+
+[ E_F - \hat{E}_L = \hat{E}_{\mathrm{loss}} + \hat{E}_T. ]
+
+We report the baseline CLA error and time-adjusted CLA error, and derive a transient-assisted CLA error correction factor.
+
+### System Model
+
+#### 1. Known Plant for Latent Network Realization
+
+The upstream distribution station is completely known and serves as the boundary for observing downstream states.
+It consists of:
+
+```text
+        Utility Source (Swing Bus)
+                  │
+      Distribution Substation Transformer
+                  │
+        Main Distribution Bus ── Generator
+                  │
+      ┌───────────┼───────────┐
+      │           │           │
+    Feeder 1    Feeder 2    Feeder 3
+      │           │           │
+ Distribution  Distribution  Distribution
+ Transformer   Transformer   Transformer
+      │           │           │
+     LV           LV          LV
+ Distribution Distribution Distribution
+  Networks     Networks     Networks
+```
+
+The plant model contains strictly distribution network elements and local sources to facilitate Latent Network Realization:
+
+* **Utility Source (Swing Bus)**: Represents the steady connection to the transmission grid.
+* **Distribution Substation Transformer**: Substation transformer supplying the medium-voltage bus.
+* **Main Feeder**: with lines extending from the substation, each characterized by known feeder lengths and impedances.
+* **Fixed Set of Transformers**: Step-down distribution transformers whose primary-side terminals serve as the boundary measurement interfaces.
+* **Measurement and Monitoring Devices**: Electrical sensors capturing voltage, current, active/reactive power, and sequence components at the meters and transformer primary terminal.
+* **Consumer Load Circuits**: To accurately represent realistic residential, commercial, and industrial end-user devices, consumer equipment circuits are implemented compatibly across OpenDSS and ATP-EMTP:
+  1. **AC Motor (`ac_motor`)**: Three-phase induction motor with stator resistance/inductance, magnetizing branch, rotor resistance/inductance, and mechanical inertia.
+  2. **DC Motor + Inverter (`dc_motor_inverter`)**: Rectifier stage, DC-link capacitor, PWM H-bridge inverter, and DC motor armature $R_a, L_a$ with speed-dependent Back-EMF.
+  3. **Microwave (`microwave`)**: Input rectifier, PFC stage, DC-link capacitor, high-voltage transformer, diode voltage doubler, and magnetron non-linear load.
+  4. **Induction Plate (`induction_plate`)**: Input rectifier, DC-link, high-frequency resonant inverter, resonant capacitor, and induction coil $R_{\mathrm{eq}} + j\omega L_{\mathrm{eq}}$.
+  5. **Compressor (`compressor`)**: Single-phase AC induction motor driving reciprocating/scroll compressor load torque.
+  6. **Audio Amplifier (`audio_amplifier`)**: AC supply rectifier, DC-link supply capacitor bank, Class-D switching H-bridge, LC output filter, and speaker impedance.
+  7. **Uninterruptible Power Supply / UPS (`ups`)**: Battery bank equivalent circuit, DC-link, bidirectional converter, and AC-side filter interface.
+  8. **Industrial Fan (`industrial_fan`)**: Three-phase induction motor driving speed-squared aerodynamic fan load torque.
+
+#### 2. Measurement Architecture
+
+Measurements are obtained from two sensing layers: smart meters measurement at consumer and feeder edge and transformer edge transient analyzer.
+
+1. Smart-Meter Measurements
+The metering hierarchy is organized as follows:
+
+```text
+               Known MV feeder
+                      │
+                  Edge Meter
+                      │
+                ┌─────┴─────┐
+                │Transformer│
+                └─────┬─────┘
+                      │
+                      │
+             ┌────────┴────────┐
+             │                 │
+            Smart              |
+            Meter              |
+             │                 │
+           Consumer          Consumer
+            Unit A            Unit B
+```
+
+Selected candidate units are instrumented with smart meters to acquire:
+  Active power (P)
+  Reactive power (Q)
+  Apparent power (S)
+  Power factor (PF)
+  Energy consumption (kWh)
+
+2. Transformer Measurements
+Each distribution transformer serves as an edge measurement node representing the interface to the downstream network. Measurements include:
+Primary Electrical Measurements
+  phase voltage magnitude and phase angle
+  phase current magnitude and phase angle
+  Active power
+  Reactive power
+  Apparent power
+  Power factor
+
+Dynamic Quantities
+  Loading rate
+  Transformer temperature
+  Transient voltage and current waveforms
+
+#### 3. Distribution Network Simulation
+
+The simulation involves first assigning consumer load classes to consumer load circuits. The 3 LV transformer models have fixed varied specifications as detailed in `docs/specs/lv1/lv_transformer.md`, `docs/specs/lv2/lv_transformer.md`, and `docs/specs/lv3/lv_transformer.md`. We take energy consumption from the metered consumer load circuits for time $dt$, and construct Dataset 1 which includes the assigned classes and the energy consumption of the metered group in the network. We compute baseline CLA error and time-adjusted CLA error, considering non-technical losses included in the model. We generated 3 datasets including consumer load circuit switch transient co-events under 3 network conditions, and analyze the observability of these events from which we compute the error correction factor of transformer transients-based consumer load prediction on time-adjusted CLA error. The simulation is performed using OpenDSS and ATP-EMTP.
+
+1. **Dataset 1**: Focuses on Cluster Load Allocation (CLA) energy estimation.
+   - **Ground-Truth Target Variables ($X_R$):** `gt_scenario_id`, `gt_feeder_id`, `known_number_of_buses`, `known_number_of_branches`, `gt_total_consumer_energy_kwh`, `gt_metered_consumer_energy_kwh`, `gt_unmetered_consumer_energy_kwh`, `gt_technical_loss_kwh` (transformer loss + line loss), `gt_non_technical_loss_kwh`.
+   - **Estimator Predictions:** `est_baseline_cla_unmetered_energy_kwh`, `est_time_adjusted_cla_unmetered_energy_kwh`.
+
+2. **Dataset 2**: Evaluates what type of event pairs are observable across load switch pairs (`load_load`), line fault pairs (`fault_fault`), and mixed load switch and fault pairs (`load_fault`).
+   - **Ground-Truth Target Variables ($X_R$):** `gt_scenario_id`, `gt_transformer_id`, `gt_transformer_spec_id`, `gt_feeder_id`, `gt_meter_id`, `gt_pair_category`, `gt_event_1_class`, `gt_event_1_type`, `gt_event_2_class`, `gt_event_2_type`.
+   - **Observation Features ($M_{\mathrm{meter}}$):** Three-phase co-event waveforms (`obs_coevent_v`, `obs_coevent_i`), composed single-event responses (`obs_composed_single_event_v`, `obs_composed_single_event_i`), residual waveforms (`obs_residual_v`, `obs_residual_i`), and scalar residual magnitudes (`residual_voltage_magnitude`, `residual_current_magnitude`) across the 3 phases. Uses a fixed baseline transformer specification and fixed $t_{\mathrm{offset}} = 0.0\,\mathrm{s}$.
+
+3. **Dataset 3**: Evaluates how residual magnitude in pair varies with time shift operation ($t_{\mathrm{offset}} = 0.0\,\mathrm{s}$ vs $t_{\mathrm{offset}} > 0.0\,\mathrm{s}$) across load switch pairs, line fault pairs, and mixed load-fault pairs.
+   - **Ground-Truth Target Variables ($X_R$):** `gt_scenario_id`, `gt_transformer_id`, `gt_transformer_spec_id`, `gt_feeder_id`, `gt_meter_id`, `gt_pair_category`, `gt_event_1_class`, `gt_event_1_type`, `gt_event_2_class`, `gt_event_2_type`, `gt_time_offset_s`.
+   - **Observation Features ($M_{\mathrm{meter}}$):** Three-phase co-event waveforms (`obs_coevent_v`, `obs_coevent_i`), composed single-event responses (`obs_composed_single_event_v`, `obs_composed_single_event_i`), residual waveforms (`obs_residual_v`, `obs_residual_i`), and scalar residual magnitudes (`residual_voltage_magnitude`, `residual_current_magnitude`) across the 3 phases. Uses a fixed baseline transformer specification.
+
+4. **Dataset 4**: Evaluates how transformer specification affects the observability of line fault pairs, load switch pairs, and mixed load-fault pairs. Featuring varying transformer specifications whose physical, sequence, and capability parameters are explicitly specified in `docs/specs/lv1/lv_transformer.md`, `docs/specs/lv2/lv_transformer.md`, and `docs/specs/lv3/lv_transformer.md`.
+   - **Ground-Truth Target Variables ($X_R$):** `gt_scenario_id`, `gt_transformer_id`, `gt_transformer_spec_id`, `gt_feeder_id`, `gt_meter_id`, `gt_pair_category`, `gt_event_1_class`, `gt_event_1_type`, `gt_event_2_class`, `gt_event_2_type`.
+   - **Observation Features ($M_{\mathrm{meter}}$):** Three-phase co-event waveforms (`obs_coevent_v`, `obs_coevent_i`), composed single-event responses (`obs_composed_single_event_v`, `obs_composed_single_event_i`), residual waveforms (`obs_residual_v`, `obs_residual_i`), and scalar residual magnitudes (`residual_voltage_magnitude`, `residual_current_magnitude`) across the 3 phases. Uses fixed $t_{\mathrm{offset}} = 0.0\,\mathrm{s}$.
+
+#### 4. Statistical Tests for LV Network Observability Using Transformer Transients
+
+##### Dataset 2 Event Pair Observability Testing
+
+Factorial ANOVA analysis (`src/statistics/q1_event_pair_analysis.py`) evaluates event pair observability across load switch pairs (`load_load`), line fault pairs (`fault_fault`), and mixed load switch and fault pairs (`load_fault`). Evaluates $F_{\mathrm{voltage}}, p_{\mathrm{voltage}}$ and $F_{\mathrm{current}}, p_{\mathrm{current}}$ to test observability differences across pair categories.
+
+##### Dataset 3 Time Shift Operation Variation Testing
+
+Levene / Brown-Forsythe variance analysis (`src/statistics/q2_time_shift_analysis.py`) evaluates residual magnitude variation under time shift operations ($t_{\mathrm{offset}} = 0$ vs $t_{\mathrm{offset}} > 0$) using Dataset 3 across: load switch event pairs, line fault event pairs, and load switch and fault pairs.
+
+##### Dataset 4 Transformer Specification Effect Testing
+
+One-Way ANOVA testing (`src/statistics/q3_transformer_spec_analysis.py`) evaluates how transformer specification variations affect observability across load switch pairs, line fault pairs, and mixed pairs, measuring $F_{\mathrm{spec}}, p_{\mathrm{spec}}$ across transformer specifications.
+
+**Limitations:** The validation establishes the practical limits of boundary-based realization and identifies the sensing architecture required for distributed dynamic state estimation in partially observable distribution networks within the limits of the simulated environment.
