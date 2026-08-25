@@ -177,7 +177,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                 time_cla_est = round(float(time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
 
                 rows_1.append({
-                    "gt_scenario_id": f"{scenario_id}_feeder_{f_id}",
                     "gt_feeder_id": f"feeder_{f_id}",
                     "gt_consumer_unit_id": u.consumer_id,
                     "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
@@ -303,7 +302,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, base_sim_d2)
 
         rows_2.append({
-            "gt_scenario_id": f"scenario_d2_coevent_{p_idx+1}",
             "load_source": extract_load_source(co_ev),
             "fault_info": extract_fault_info(co_ev),
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
@@ -374,7 +372,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(shifted_co_ev, f_id, base_sim_d3)
 
         rows_3.append({
-            "gt_scenario_id": f"scenario_d3_coevent_{p_idx+1}_{time_offset}s",
             "load_source": extract_load_source(shifted_co_ev),
             "fault_info": extract_fault_info(shifted_co_ev),
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
@@ -445,8 +442,7 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, base_sim_d4)
 
         rows_4.append({
-            "gt_scenario_id": f"scenario_d4_coevent_{p_idx+1}",
-            "gt_lv_network_id": f"LV{f_id}",
+            "gt_feeder_id": f"feeder_{f_id}",
             "gt_transformer_spec_id": spec_id,
             "load_source": extract_load_source(co_ev),
             "fault_info": extract_fault_info(co_ev),
@@ -513,7 +509,7 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         for ds_name, df_ds in [("dataset_2", df_2), ("dataset_3", df_3), ("dataset_4", df_4)]:
             dumps = []
             for idx, row in df_ds.iterrows():
-                entry = {"gt_scenario_id": row.get("gt_scenario_id", "")}
+                entry = {}
                 for col in df_ds.columns:
                     if col.startswith("obs_"):
                         val = row[col]
