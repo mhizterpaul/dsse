@@ -264,7 +264,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "gt_scenario_id": f"scenario_d2_coevent_{p_idx+1}",
             "gt_transformer_id": f"trans{f_id}",
             "gt_feeder_id": f"feeder_{f_id}",
-            "gt_consumer_unit_id": m_id,
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
             "gt_event_1_class": ev1.event_class,
@@ -342,7 +341,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "gt_scenario_id": f"scenario_d3_coevent_{p_idx+1}_{time_offset}s",
             "gt_transformer_id": f"trans{f_id}",
             "gt_feeder_id": f"feeder_{f_id}",
-            "gt_consumer_unit_id": m_id,
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
             "gt_event_1_class": ev1.event_class,
@@ -383,6 +381,13 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
             "obs_residual_v": json.dumps([res_v[:, 0].tolist(), res_v[:, 1].tolist(), res_v[:, 2].tolist()]),
             "obs_residual_i": json.dumps([res_i[:, 0].tolist(), res_i[:, 1].tolist(), res_i[:, 2].tolist()]),
+
+            "obs_residual_v_phase_a": json.dumps(res_v[:, 0].tolist()),
+            "obs_residual_v_phase_b": json.dumps(res_v[:, 1].tolist()),
+            "obs_residual_v_phase_c": json.dumps(res_v[:, 2].tolist()),
+            "obs_residual_i_phase_a": json.dumps(res_i[:, 0].tolist()),
+            "obs_residual_i_phase_b": json.dumps(res_i[:, 1].tolist()),
+            "obs_residual_i_phase_c": json.dumps(res_i[:, 2].tolist()),
             "residual_voltage_magnitude": v_mag,
             "residual_current_magnitude": i_mag
         })
@@ -414,7 +419,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "gt_transformer_id": tx_id,
             "gt_transformer_spec_id": spec_id,
             "gt_feeder_id": f"feeder_{f_id}",
-            "gt_consumer_unit_id": m_id,
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
             "gt_event_1_class": ev1.event_class,
@@ -455,6 +459,13 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
             "obs_residual_v": json.dumps([res_v[:, 0].tolist(), res_v[:, 1].tolist(), res_v[:, 2].tolist()]),
             "obs_residual_i": json.dumps([res_i[:, 0].tolist(), res_i[:, 1].tolist(), res_i[:, 2].tolist()]),
+
+            "obs_residual_v_phase_a": json.dumps(res_v[:, 0].tolist()),
+            "obs_residual_v_phase_b": json.dumps(res_v[:, 1].tolist()),
+            "obs_residual_v_phase_c": json.dumps(res_v[:, 2].tolist()),
+            "obs_residual_i_phase_a": json.dumps(res_i[:, 0].tolist()),
+            "obs_residual_i_phase_b": json.dumps(res_i[:, 1].tolist()),
+            "obs_residual_i_phase_c": json.dumps(res_i[:, 2].tolist()),
             "residual_voltage_magnitude": v_mag,
             "residual_current_magnitude": i_mag
         })
@@ -477,7 +488,7 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         for ds_name, df_ds in [("dataset_2", df_2), ("dataset_3", df_3), ("dataset_4", df_4)]:
             dumps = []
             for idx, row in df_ds.iterrows():
-                entry = {"gt_scenario_id": row.get("gt_scenario_id", ""), "gt_consumer_unit_id": row.get("gt_consumer_unit_id", "")}
+                entry = {"gt_scenario_id": row.get("gt_scenario_id", "")}
                 for col in df_ds.columns:
                     if col.startswith("obs_"):
                         val = row[col]
