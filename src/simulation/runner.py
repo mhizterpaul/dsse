@@ -39,12 +39,69 @@ class SimulationResult:
 class CoSimulationRunner:
     """
     Co-Simulation Orchestrator that energizes the imported plant from src.power_plant,
-    powers loads for 5 minutes (300s) to make measurements using the OpenDSS API as base experiment,
-    handles load switching / fault conditions using OpenDSS, and measures consumer load and transformer
-    transients using ATP and DSS output.
+    powers loads for 5 minutes (300s) to make measurements using OpenDSS API as base experiment,
+    handles load switching / fault conditions using OpenDSS, and encapsulates ATPRunner strictly
+    inside measure_transients to record consumer load and transformer transients.
     """
     def __init__(self):
         self.atp_builder = ATPCaseBuilder()
+
+    def measure_transients(
+        self,
+        op: Any,
+        event: Any,
+        metered_consumers: List[dict],
+        scenario_id: str
+    ) -> tuple[np.ndarray, dict, dict, dict]:
+        """
+        Dedicated measurement function in runner.py where ATPRunner is exclusively used
+        to execute ATP transient simulation cases and parse EMT waveforms for consumer load
+        and transformer transients.
+        """
+        if event is None:
+            t_vec = np.linspace(0.0, 0.1, 1000)
+            return t_vec, {}, {}, {}
+
+        if hasattr(event, "event_1") and hasattr(event, "event_2"):
+            t_off = getattr(event, "time_offset_s", 0.0)
+            ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.2f}s"
+        elif getattr(event, "event_class", "") == "equipment_switch":
+            ev_key = f"{event.event_type}_switch"
+        else:
+            ev_key = "dist_fault_steady"
+
+        atp_case_path = f"src/simulation/atp_cases/case_{ev_key}.ATP"
+
+        class NetworkContainer:
+            def __init__(self, sid):
+                self.scenario_id = sid
+                self.line_parameters = {"mult": 1.0}
+
+        self.atp_builder.build(NetworkContainer(scenario_id), op, event, atp_case_path)
+
+        # ATPRunner is exclusively invoked here inside measure_transients
+        atp_result = ATPRunner().run(atp_case_path)
+        emt_waveforms = ATPOutputReader().read(atp_result, metered_consumers, event)
+
+        processed_meters = {}
+        consumer_transients = {}
+        transformer_transients = {}
+
+        for mtr in metered_consumers:
+            m_id = mtr.get("meter_id", mtr.get("pcc_id"))
+            b_type = mtr.get("branch_type", "")
+            v_wave = emt_waveforms.pcc_voltages.get(m_id, list(emt_waveforms.pcc_voltages.values())[0] if emt_waveforms.pcc_voltages else None)
+            i_wave = emt_waveforms.pcc_currents.get(m_id, list(emt_waveforms.pcc_currents.values())[0] if emt_waveforms.pcc_currents else None)
+
+            if v_wave is not None and i_wave is not None:
+                data_entry = {"raw_voltage": v_wave, "raw_current": i_wave}
+                processed_meters[m_id] = data_entry
+                if b_type in ["transformer", "transformer_boundary"]:
+                    transformer_transients[m_id] = data_entry
+                else:
+                    consumer_transients[m_id] = data_entry
+
+        return emt_waveforms.time_s, processed_meters, consumer_transients, transformer_transients
 
     def run_simulation(
         self,
@@ -74,7 +131,7 @@ class CoSimulationRunner:
                     r0 = ln.get("r0", 0.63)
                     x0 = ln.get("x0", 0.24)
                     dss.run_command(
-                        f"new line.{ln['name']} bus1={ln['bus1']} bus2={ln['bus2']} phases=3 r1={r1} x1={x1} r0={r0} x0={x0} length={ln['length']} units={ln.get('units', 'km')} normamps=350.0"
+                        f"new line.{ln['name']} bus1={ln['bus1']} bus2={ln['bus2']} phases=3 r1={r1} x1={x1} r0={r0} x0={x0} length={ln['length']} units={ln['units']} normamps=350.0"
                     )
         else:
             for ln in topology.get("lines", []):
@@ -83,7 +140,7 @@ class CoSimulationRunner:
                 r0 = ln.get("r0", 0.63)
                 x0 = ln.get("x0", 0.24)
                 dss.run_command(
-                    f"new line.{ln['name']} bus1={ln['bus1']} bus2={ln['bus2']} phases=3 r1={r1} x1={x1} r0={r0} x0={x0} length={ln['length']} units={ln.get('units', 'km')} normamps=350.0"
+                    f"new line.{ln['name']} bus1={ln['bus1']} bus2={ln['bus2']} phases=3 r1={r1} x1={x1} r0={r0} x0={x0} length={ln['length']} units={ln['units']} normamps=350.0"
                 )
 
         # 2. Populate loads
@@ -136,52 +193,17 @@ class CoSimulationRunner:
         metered_consumers = select_metered_consumers(candidate_meters, fraction=meter_fraction, seed=seed)
         measurements = get_consumer_measurements(metered_consumers)
 
-        # 6. Measure consumer load transients and transformer transients using ATP & DSS outputs
-        processed_meters = {}
-        consumer_transients = {}
-        transformer_transients = {}
-
+        # 6. Exclusively measure transients via measure_transients using ATPRunner
         event = events[0] if events else None
-        if event is not None:
-            if hasattr(event, "event_1") and hasattr(event, "event_2"):
-                t_off = getattr(event, "time_offset_s", 0.0)
-                ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.2f}s"
-            elif getattr(event, "event_class", "") == "equipment_switch":
-                ev_key = f"{event.event_type}_switch"
-            else:
-                ev_key = "dist_fault_steady"
-
-            atp_case_path = f"src/simulation/atp_cases/case_{ev_key}.ATP"
-
-            class NetworkContainer:
-                def __init__(self, sid):
-                    self.scenario_id = sid
-                    self.line_parameters = {"mult": 1.0}
-
-            self.atp_builder.build(NetworkContainer(scenario_id), op, event, atp_case_path)
-            atp_result = ATPRunner().run(atp_case_path)
-            emt_waveforms = ATPOutputReader().read(atp_result, metered_consumers, event)
-
-            for mtr in metered_consumers:
-                m_id = mtr.get("meter_id", mtr.get("pcc_id"))
-                b_type = mtr.get("branch_type", "")
-                v_wave = emt_waveforms.pcc_voltages.get(m_id, list(emt_waveforms.pcc_voltages.values())[0] if emt_waveforms.pcc_voltages else None)
-                i_wave = emt_waveforms.pcc_currents.get(m_id, list(emt_waveforms.pcc_currents.values())[0] if emt_waveforms.pcc_currents else None)
-
-                if v_wave is not None and i_wave is not None:
-                    data_entry = {"raw_voltage": v_wave, "raw_current": i_wave}
-                    processed_meters[m_id] = data_entry
-                    if b_type in ["transformer", "transformer_boundary"]:
-                        transformer_transients[m_id] = data_entry
-                    else:
-                        consumer_transients[m_id] = data_entry
-
-            t_vec = emt_waveforms.time_s
-        else:
-            t_vec = np.linspace(0.0, 0.1, 1000)
+        time_s, processed_meters, consumer_transients, transformer_transients = self.measure_transients(
+            op=op,
+            event=event,
+            metered_consumers=metered_consumers,
+            scenario_id=scenario_id
+        )
 
         return SimulationResult(
-            time_s=t_vec,
+            time_s=time_s,
             metered_consumers=metered_consumers,
             steady_state_measurements=measurements,
             processed_meters=processed_meters,
