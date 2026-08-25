@@ -110,9 +110,14 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             reinitialize_plant=False
         )
 
+        registry = runner.plant_data["registry"] if runner.plant_data else None
+        registered_units = registry.get_registered_consumers() if registry else []
+        latent_map = {c.bus_id: c for c in registry.get_latent_consumers()} if registry else {}
+
         for f_id in [1, 2, 3]:
-            known_buses_count = 20 if f_id == 1 else (25 if f_id == 2 else 30)
-            known_branches_count = known_buses_count - 1
+            feeder_units = [u for u in registered_units if u.feeder_id == f"feeder_{f_id}"]
+            if not feeder_units:
+                continue
 
             m_key = f"trans{f_id}_lv_boundary_consumer_unit"
             meas = sim_res_d1.steady_state_measurements.get(m_key, {})
@@ -130,15 +135,16 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
             feeder_supply_energy_kwh = gt_total_energy_kwh + gt_tech_loss_kwh + gt_non_tech_loss_kwh
 
-            classes = ["residential_light", "commercial", "industrial_motor"]
+            # Estimate energy for unsampled units
+            unsampled_units = feeder_units[int(len(feeder_units) * 0.36):]
             unsampled_premises = [
                 ConsumerLoadPremises(
-                    consumer_id=f"unsampled_{f_id}_{c_idx}",
-                    class_id=classes[c_idx % 3],
+                    consumer_id=u.consumer_id,
+                    class_id=u.assigned_load_class or "residential",
                     is_sampled=False,
-                    connected_load_kw=10.0 + c_idx * 2.0
+                    connected_load_kw=sum(ld.kw for ld in u.loads)
                 )
-                for c_idx in range(known_branches_count)
+                for u in unsampled_units
             ]
 
             cla_res = cla_estimator.estimate(
@@ -146,28 +152,45 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                 sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
                 estimated_technical_loss_kwh=gt_tech_loss_kwh,
                 unsampled_premises=unsampled_premises
-            )
+            ) if unsampled_premises else None
 
             time_cla_res = time_cla_estimator.estimate(
                 feeder_supply_energy_kwh=feeder_supply_energy_kwh,
                 sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
                 estimated_technical_loss_kwh=gt_tech_loss_kwh,
                 unsampled_premises=unsampled_premises
-            )
+            ) if unsampled_premises else None
 
-            rows_1.append({
-                "gt_scenario_id": f"{scenario_id}_feeder_{f_id}",
-                "gt_feeder_id": f"feeder_{f_id}",
-                "known_number_of_buses": known_buses_count,
-                "known_number_of_branches": known_branches_count,
-                "gt_total_consumer_energy_kwh": round(gt_total_energy_kwh, 4),
-                "gt_sampled_consumer_energy_kwh": gt_sampled_energy_kwh,
-                "gt_unsampled_consumer_energy_kwh": gt_unsampled_energy_kwh,
-                "gt_technical_loss_kwh": gt_tech_loss_kwh,
-                "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh,
-                "est_baseline_cla_unsampled_energy_kwh": cla_res.estimated_unsampled_energy_kwh,
-                "est_time_adjusted_cla_unsampled_energy_kwh": time_cla_res.estimated_unsampled_energy_kwh
-            })
+            num_sampled = int(len(feeder_units) * 0.36)
+
+            for u_idx, u in enumerate(feeder_units):
+                is_metered = u_idx < num_sampled
+                total_unit_kw = sum(ld.kw for ld in u.loads)
+                unit_energy = round(float(total_unit_kw * 1.0), 4)
+
+                latent_u = latent_map.get(u.bus_id)
+                latent_source = json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}) if latent_u else ""
+                latent_loads = json.dumps([{"load_id": ld.load_id, "type": ld.load_type, "kw": ld.kw} for ld in latent_u.loads]) if latent_u else ""
+
+                meas_energy = unit_energy if is_metered else ""
+                cla_est = round(float(cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and cla_res and unsampled_premises) else ""
+                time_cla_est = round(float(time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
+
+                rows_1.append({
+                    "gt_scenario_id": f"{scenario_id}_feeder_{f_id}",
+                    "gt_feeder_id": f"feeder_{f_id}",
+                    "gt_consumer_unit_id": u.consumer_id,
+                    "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
+                    "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "type": ld.load_type, "kw": ld.kw} for ld in u.loads]),
+                    "latent_consumer_unit_source": latent_source,
+                    "latent_consumer_unit_loads": latent_loads,
+                    "measured_energy_kwh": meas_energy,
+                    "cla_estimates": cla_est,
+                    "time_adjusted_cla_estimates": time_cla_est,
+                    "gt_total_consumer_energy_kwh": round(gt_total_energy_kwh, 4),
+                    "gt_technical_loss_kwh": gt_tech_loss_kwh,
+                    "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh
+                })
 
     # Catalog representative single event signatures for superposition
     sample_co_events = get_all_108_coevents(target_line="feeder1_head")
@@ -239,6 +262,25 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
         return t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag
 
+    def extract_load_source(co_ev):
+        sources = []
+        for ev in [co_ev.event_1, co_ev.event_2]:
+            if getattr(ev, "event_class", "") == "equipment_switch":
+                target = getattr(ev, "target", "feeder1_head")
+                sources.append({"bus": target, "line": f"line_{target}"})
+        return json.dumps(sources) if sources else ""
+
+    def extract_fault_info(co_ev):
+        faults = []
+        for ev in [co_ev.event_1, co_ev.event_2]:
+            if getattr(ev, "event_class", "") == "line_fault":
+                f_type = getattr(ev, "fault_type", "LG")
+                f_res = getattr(ev, "fault_resistance", 0.05)
+                f_ang = getattr(ev, "inception_angle_deg", 0.0)
+                f_dur = getattr(ev, "duration_s", 0.04)
+                faults.append({"type": f_type, "line_resistance": f_res, "angle_deg": f_ang, "duration_s": f_dur})
+        return json.dumps(faults) if faults else ""
+
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events) ---
     # =========================================================================
@@ -266,6 +308,8 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "gt_feeder_id": f"feeder_{f_id}",
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
+            "load_source": extract_load_source(co_ev),
+            "fault_info": extract_fault_info(co_ev),
             "gt_event_1_class": ev1.event_class,
             "gt_event_1_type": ev1.event_type,
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
@@ -281,19 +325,19 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "obs_coevent_v": json.dumps([v_co[:, 0].tolist(), v_co[:, 1].tolist(), v_co[:, 2].tolist()]),
             "obs_coevent_i": json.dumps([i_co[:, 0].tolist(), i_co[:, 1].tolist(), i_co[:, 2].tolist()]),
 
-            f"obs_single_{name1}_event_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
-            f"obs_single_{name1}_event_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
+            "obs_single_event_1_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
+            "obs_single_event_1_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
+            "obs_single_event_1_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
+            "obs_single_event_1_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
+            "obs_single_event_1_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
+            "obs_single_event_1_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
 
-            f"obs_single_{name2}_event_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
-            f"obs_single_{name2}_event_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
+            "obs_single_event_2_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
+            "obs_single_event_2_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
+            "obs_single_event_2_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
+            "obs_single_event_2_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
+            "obs_single_event_2_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
+            "obs_single_event_2_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
 
             "obs_composed_event_v_phase_a": json.dumps(v_comp[:, 0].tolist()),
             "obs_composed_event_v_phase_b": json.dumps(v_comp[:, 1].tolist()),
@@ -343,6 +387,8 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "gt_feeder_id": f"feeder_{f_id}",
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
+            "load_source": extract_load_source(shifted_co_ev),
+            "fault_info": extract_fault_info(shifted_co_ev),
             "gt_event_1_class": ev1.event_class,
             "gt_event_1_type": ev1.event_type,
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
@@ -358,19 +404,19 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "obs_coevent_v": json.dumps([v_co[:, 0].tolist(), v_co[:, 1].tolist(), v_co[:, 2].tolist()]),
             "obs_coevent_i": json.dumps([i_co[:, 0].tolist(), i_co[:, 1].tolist(), i_co[:, 2].tolist()]),
 
-            f"obs_single_{name1}_event_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
-            f"obs_single_{name1}_event_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
+            "obs_single_event_1_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
+            "obs_single_event_1_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
+            "obs_single_event_1_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
+            "obs_single_event_1_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
+            "obs_single_event_1_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
+            "obs_single_event_1_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
 
-            f"obs_single_{name2}_event_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
-            f"obs_single_{name2}_event_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
+            "obs_single_event_2_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
+            "obs_single_event_2_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
+            "obs_single_event_2_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
+            "obs_single_event_2_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
+            "obs_single_event_2_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
+            "obs_single_event_2_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
 
             "obs_composed_event_v_phase_a": json.dumps(v_comp[:, 0].tolist()),
             "obs_composed_event_v_phase_b": json.dumps(v_comp[:, 1].tolist()),
@@ -416,11 +462,14 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
         rows_4.append({
             "gt_scenario_id": f"scenario_d4_coevent_{p_idx+1}",
+            "gt_lv_network_id": f"LV{f_id}",
             "gt_transformer_id": tx_id,
             "gt_transformer_spec_id": spec_id,
             "gt_feeder_id": f"feeder_{f_id}",
             "gt_boundary_unit_id": f"trans{f_id}_lv_pcc",
             "gt_pair_category": pair_cat,
+            "load_source": extract_load_source(co_ev),
+            "fault_info": extract_fault_info(co_ev),
             "gt_event_1_class": ev1.event_class,
             "gt_event_1_type": ev1.event_type,
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
@@ -436,19 +485,19 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             "obs_coevent_v": json.dumps([v_co[:, 0].tolist(), v_co[:, 1].tolist(), v_co[:, 2].tolist()]),
             "obs_coevent_i": json.dumps([i_co[:, 0].tolist(), i_co[:, 1].tolist(), i_co[:, 2].tolist()]),
 
-            f"obs_single_{name1}_event_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
-            f"obs_single_{name1}_event_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
-            f"obs_single_{name1}_event_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
-            f"obs_single_{name1}_event_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
+            "obs_single_event_1_v_phase_a": json.dumps(v1_sig[:, 0].tolist()),
+            "obs_single_event_1_v_phase_b": json.dumps(v1_sig[:, 1].tolist()),
+            "obs_single_event_1_v_phase_c": json.dumps(v1_sig[:, 2].tolist()),
+            "obs_single_event_1_i_phase_a": json.dumps(i1_sig[:, 0].tolist()),
+            "obs_single_event_1_i_phase_b": json.dumps(i1_sig[:, 1].tolist()),
+            "obs_single_event_1_i_phase_c": json.dumps(i1_sig[:, 2].tolist()),
 
-            f"obs_single_{name2}_event_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
-            f"obs_single_{name2}_event_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
-            f"obs_single_{name2}_event_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
-            f"obs_single_{name2}_event_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
+            "obs_single_event_2_v_phase_a": json.dumps(v2_sig[:, 0].tolist()),
+            "obs_single_event_2_v_phase_b": json.dumps(v2_sig[:, 1].tolist()),
+            "obs_single_event_2_v_phase_c": json.dumps(v2_sig[:, 2].tolist()),
+            "obs_single_event_2_i_phase_a": json.dumps(i2_sig[:, 0].tolist()),
+            "obs_single_event_2_i_phase_b": json.dumps(i2_sig[:, 1].tolist()),
+            "obs_single_event_2_i_phase_c": json.dumps(i2_sig[:, 2].tolist()),
 
             "obs_composed_event_v_phase_a": json.dumps(v_comp[:, 0].tolist()),
             "obs_composed_event_v_phase_b": json.dumps(v_comp[:, 1].tolist()),

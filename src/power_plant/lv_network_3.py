@@ -90,6 +90,15 @@ def register_lv3_consumers(topology: dict = None, seed: int = 1003, registry: Co
                 base_kw=base_kw,
                 extra_load_probability=0.45
             )
+            if rng.random() < 0.20:
+                latent_cid = f"latent_{feeder_id}_{bus}"
+                latent_kw = round(float(rng.uniform(2.0, 6.0)), 2)
+                registry.register_latent_consumer(
+                    consumer_id=latent_cid,
+                    bus_id=bus,
+                    feeder_id=feeder_id,
+                    kw=latent_kw
+                )
 
     return registry
 
