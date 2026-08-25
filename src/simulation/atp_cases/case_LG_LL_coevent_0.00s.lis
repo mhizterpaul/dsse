@@ -1,7 +1,7 @@
    ---   32   cards of disk file read into card cache cells  1   onward.
  <===> Done with  "/"-card sorting by data class.    Remember that the source file appears different from interpreted input data.
 Alternative Transients Program (ATP), Salford 80386 translation.  All rights reserved by Can/Am user group of Portland, Oregon, USA.
- Date (dd-mth-yy) and time of day (hh.mm.ss) = 25-Aug-26  08:11:20    Name of disk plot file is  TEMP_CASE.pl4
+ Date (dd-mth-yy) and time of day (hh.mm.ss) = 25-Aug-26  08:39:40    Name of disk plot file is  TEMP_CASE.pl4
 Consult the 860-page ATP Rule Book of the Can/Am EMTP User Group in Portland,  Oregon, USA.  Source code date is 13 March 2019.
 Size of LABCOM tables = 75048 Kilobytes.  VARDIM List Sizes follow:   6002  10K  192K  20K  420K  50K  15K
   120K  2250  3800  720  2K  72800  510  800K  800  90  254  800K  100K  3K  15K  192K  120  45K  260K  10K  210K  1100  19  200K
@@ -116,7 +116,7 @@ ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ERROR/ER
 ------------------------------------------------------------------------------------------------------------------------------------
 
 Memory storage figures for the preceding, now-completed data case.  -------------------------------  Present   Program
-A value of  "-9999"  indicates that no figure is available.         25-Aug-26  08:11:20              figure    limit  ( name )
+A value of  "-9999"  indicates that no figure is available.         25-Aug-26  08:39:40              figure    limit  ( name )
      Size List 1.   Number of electric network nodes.                                                    7      6000  (LBUS  )
      Size List 2.   Number of electric network branches.                                                 6     10000  (LBRNCH)
      Size List 3.   Number of data values in R, L, C tables.                                             6      192K  (LDATA )
@@ -152,10 +152,10 @@ A value of  "-9999"  indicates that no figure is available.         25-Aug-26  0
      Size List 32.  4 integer vectors of pocket calculator.                                          -9999       600  (LSIZ32)
      Size List 33.  Extension to List-15 supports MS Excel.                                          -9999  21066176  (LSIZ33)
 Timing figures characterizing central processor (CP) solution speed.  ----------------------------   CP sec  Wait sec  Real sec
-     Data input time (through blank card ending branches) ....                                       0.000     0.000     0.000
+     Data input time (through blank card ending branches) ....                                       0.020     0.000     0.020
      Node renumbering and phasor solution  ....                                                      0.000     0.000     0.000
      After phasor solution, but before time-step loop  ....                                          0.000     0.000     0.000
      Integration of equations (time-step loop)  ....                                                 0.000     0.000     0.000
      Plotting or STATISTICS termination overlays ....                                                0.000     0.000     0.000
                                                                                                     ---------------------------
-                                                                                          Totals      0.000     0.000     0.000
+                                                                                          Totals      0.020     0.000     0.020

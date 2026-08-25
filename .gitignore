@@ -6,6 +6,9 @@ __pycache__/
 
 # Run and build artifacts
 *.egg-info/
+*.dbg
+*.pl4.bin
 atpmingw_2024/TEMP_CASE*
 atpmingw_2024/*.bin
 atpmingw_2024/*.tmp
+atpmingw_2024/*.dbg
