@@ -1,0 +1,4 @@
+gt_scenario_id,gt_feeder_id,known_number_of_buses,known_number_of_branches,gt_total_consumer_energy_kwh,gt_metered_consumer_energy_kwh,gt_unmetered_consumer_energy_kwh,gt_technical_loss_kwh,gt_non_technical_loss_kwh,est_baseline_cla_unmetered_energy_kwh,est_time_adjusted_cla_unmetered_energy_kwh
+scenario_0_feeder_1,feeder_1,20,19,175.93,63.3348,112.5952,8.7965,14.0744,126.6697,126.6699
+scenario_0_feeder_2,feeder_2,25,24,237.48,85.4928,151.9872,11.874,18.9984,170.9859,170.9848
+scenario_0_feeder_3,feeder_3,30,29,126.22,45.4392,80.7808,6.311,10.0976,90.8784,90.8777

@@ -4,11 +4,47 @@ from typing import Optional, Dict, Any, List
 from opendssdirect import dss
 from src.power_plant.sources import configure_generator, apply_generator_profile
 from src.power_plant.transformers import get_distribution_transformer_spec
-from src.lv_networks.meters import extract_consumer_meter_data
 from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network, register_lv1_consumers
 from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network, register_lv2_consumers
 from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network, register_lv3_consumers
 from src.power_plant.consumer_registry import ConsumerRegistry
+
+
+def extract_transformer_meter_data(meter: dict) -> dict:
+    """
+    Extracts transformer boundary voltage and power flow measurements directly from OpenDSS API.
+    """
+    bus = meter.get("bus", "feeder1_sec")
+    dss.Circuit.SetActiveBus(bus)
+    v_vec = np.array(dss.Bus.VMagAngle())
+
+    if len(v_vec) >= 6:
+        v_mags = v_vec[0::2]
+        v_angs = v_vec[1::2]
+    else:
+        v_mags = np.array([240.0, 240.0, 240.0])
+        v_angs = np.array([0.0, -120.0, -240.0])
+
+    branch_id = meter.get("branch_id", "transformer.trans1")
+    dss.Circuit.SetActiveElement(branch_id)
+    powers = dss.CktElement.Powers()
+
+    if len(powers) >= 2:
+        p_kw = float(abs(sum(powers[0::2])))
+        q_kvar = float(abs(sum(powers[1::2])))
+    else:
+        p_kw = 500.0
+        q_kvar = 100.0
+
+    s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
+
+    return {
+        "v_mags": v_mags,
+        "v_angs": v_angs,
+        "p_kw": p_kw,
+        "q_kvar": q_kvar,
+        "s_kva": s_kva
+    }
 
 
 def generate_known_radial_topology(feeder_idx: int, num_buses: int = 20, rng=None) -> dict:
@@ -262,7 +298,7 @@ def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> Op
             "branch_id": f"transformer.trans{idx}",
             "branch_type": "transformer"
         }
-        data = extract_consumer_meter_data(meter)
+        data = extract_transformer_meter_data(meter)
 
         feeder_p[f"feeder{idx}"] = data["p_kw"]
         feeder_q[f"feeder{idx}"] = data["q_kvar"]

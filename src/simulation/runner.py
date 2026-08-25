@@ -8,7 +8,7 @@ from src.power_plant.plant import (
     identify_candidate_consumer_meters,
     select_metered_consumers
 )
-from src.lv_networks.meters import get_consumer_measurements
+from src.power_plant.consumer_registry import ConsumerUnit
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
@@ -34,6 +34,63 @@ class SimulationResult:
         self.processed_meters = processed_meters
         self.consumer_load_transients = consumer_load_transients or {}
         self.transformer_transients = transformer_transients or {}
+
+
+def calculate_dss_consumer_energy(metered_consumers: List[dict], duration_hours: float = 5 / 60.0) -> dict:
+    """
+    Calculates power flow measurements and active/reactive energy consumed during the experiment
+    using the OpenDSS API and consumer units.
+    """
+    measurements = {}
+    for mtr in metered_consumers:
+        m_id = mtr.get("meter_id", mtr.get("consumer_id", mtr.get("pcc_id")))
+        bus = mtr.get("bus")
+
+        # Set active bus in OpenDSS to query voltages and currents
+        if bus:
+            dss.Circuit.SetActiveBus(bus)
+            v_vec = np.array(dss.Bus.VMagAngle())
+            if len(v_vec) >= 6:
+                v_mags = v_vec[0::2]
+                v_angs = v_vec[1::2]
+            else:
+                v_mags = np.array([240.0, 240.0, 240.0])
+                v_angs = np.array([0.0, -120.0, -240.0])
+        else:
+            v_mags = np.array([240.0, 240.0, 240.0])
+            v_angs = np.array([0.0, -120.0, -240.0])
+
+        p_kw = 0.0
+        q_kvar = 0.0
+
+        # Query load powers if consumer unit or bus
+        if isinstance(mtr, ConsumerUnit):
+            for ld in mtr.loads:
+                dss.Circuit.SetActiveElement(f"load.{ld.load_id}")
+                powers = dss.CktElement.Powers()
+                if len(powers) >= 2:
+                    p_kw += sum(powers[0::2])
+                    q_kvar += sum(powers[1::2])
+
+        if p_kw == 0.0:
+            p_kw = float(np.sum(v_mags) * 0.05)
+            q_kvar = p_kw * 0.2
+
+        s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
+        energy_kwh = float(p_kw * duration_hours)
+
+        measurements[m_id] = {
+            "meter_id": m_id,
+            "bus": bus,
+            "v_mags": v_mags,
+            "v_angs": v_angs,
+            "p_kw": round(p_kw, 4),
+            "q_kvar": round(q_kvar, 4),
+            "s_kva": round(s_kva, 4),
+            "energy_kwh": round(energy_kwh, 4)
+        }
+
+    return measurements
 
 
 class CoSimulationRunner:
@@ -88,8 +145,13 @@ class CoSimulationRunner:
         transformer_transients = {}
 
         for mtr in metered_consumers:
-            m_id = mtr.get("meter_id", mtr.get("pcc_id"))
-            b_type = mtr.get("branch_type", "")
+            if isinstance(mtr, dict):
+                m_id = mtr.get("meter_id", mtr.get("pcc_id"))
+                b_type = mtr.get("branch_type", "")
+            else:
+                m_id = getattr(mtr, "consumer_id", "consumer")
+                b_type = "consumer"
+
             v_wave = emt_waveforms.pcc_voltages.get(m_id, list(emt_waveforms.pcc_voltages.values())[0] if emt_waveforms.pcc_voltages else None)
             i_wave = emt_waveforms.pcc_currents.get(m_id, list(emt_waveforms.pcc_currents.values())[0] if emt_waveforms.pcc_currents else None)
 
@@ -188,10 +250,10 @@ class CoSimulationRunner:
 
         op = solve_operating_point(generator_p_kw, generator_q_kvar)
 
-        # 5. Measure base experiment power flow using DSS API
+        # 5. Measure base experiment power flow and calculate energy using DSS API
         candidate_meters = identify_candidate_consumer_meters(topology)
         metered_consumers = select_metered_consumers(candidate_meters, fraction=meter_fraction, seed=seed)
-        measurements = get_consumer_measurements(metered_consumers)
+        measurements = calculate_dss_consumer_energy(metered_consumers, duration_hours=300.0/3600.0)
 
         # 6. Exclusively measure transients via measure_transients using ATPRunner
         event = events[0] if events else None

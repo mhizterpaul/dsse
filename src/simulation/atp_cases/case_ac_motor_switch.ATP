@@ -20,9 +20,9 @@ C < n 1>< n 2>< Tclose ><Top/Tde ><   Ie   ><Vf/CLOP ><  type  >
   SRCC  E0C           0.0200      1.E3                                             0
 /SOURCE
 C < n 1><>< Ampl.  >< Freq.  ><Phase/T0><   A1   ><   T1   >< TSTART >< TSTOP  >
-14SRCA  -1    337.46     50.00    -60.09                         -1.00    100.00
-14SRCB  -1    337.46     50.00    179.91                         -1.00    100.00
-14SRCC  -1    337.46     50.00     59.91                         -1.00    100.00
+14SRCA  -1    334.76     50.00    -59.98                         -1.00    100.00
+14SRCB  -1    334.76     50.00   -179.98                         -1.00    100.00
+14SRCC  -1    334.76     50.00     60.02                         -1.00    100.00
 /OUTPUT
 BLANK BRANCH
 BLANK SWITCH
