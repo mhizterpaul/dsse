@@ -1,59 +1,32 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from opendssdirect import dss
 from src.power_plant.sources import configure_generator, apply_generator_profile
 from src.power_plant.transformers import get_distribution_transformer_spec
 from src.lv_networks.meters import extract_consumer_meter_data
+from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network
+from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network
+from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network
+from src.simulation.consumer_registry import create_default_consumer_registry, ConsumerRegistry
+
 
 def generate_known_radial_topology(feeder_idx: int, num_buses: int = 20, rng=None) -> dict:
     """
-    Generates a deterministic known radial tree topology represented as a dictionary of buses and lines.
-    Uses feeder_idx to determine default bus counts if num_buses is not specified (LV1=20, LV2=25, LV3=30).
-    Uses local seeded RNG for perfect reproducibility.
-    Network parameters align strictly with docs/specs/lv1, lv2, lv3 specifications.
+    Generates deterministic known radial tree topologies (LV1, LV2, LV3) aligned with docs/specs.
     """
-    if num_buses is None or num_buses <= 0:
-        default_counts = {1: 20, 2: 25, 3: 30}
-        num_buses = default_counts.get(feeder_idx, 20)
+    if feeder_idx == 1:
+        return generate_lv1_topology(seed=42 + feeder_idx)
+    elif feeder_idx == 2:
+        return generate_lv2_topology(seed=42 + feeder_idx)
+    elif feeder_idx == 3:
+        return generate_lv3_topology(seed=42 + feeder_idx)
+    else:
+        return generate_lv1_topology(seed=42 + feeder_idx)
 
-    if rng is None:
-        rng = np.random.default_rng(42 + feeder_idx)
 
-    root_bus = f"feeder{feeder_idx}_sec"
-    buses = [root_bus]
-    lines = []
-
-    # Deterministic known line lengths
-    for i in range(1, num_buses):
-        new_bus = f"f{feeder_idx}_node{i}"
-        # Known tree connectivity: connect to a parent bus in the existing tree
-        parent_bus = buses[(i - 1) // 2] if i > 1 else root_bus
-
-        l_km = float(0.05 + 0.01 * (i % 5))
-        lines.append({
-            "name": f"down_{feeder_idx}_{i}",
-            "bus1": parent_bus,
-            "bus2": new_bus,
-            "length": round(l_km, 4),
-            "units": "km",
-            # Default physical conductor parameters (150 mm2 AAC overhead, 350 A capacity)
-            "r1": 0.21,
-            "x1": 0.08,
-            "r0": 0.63,
-            "x0": 0.24,
-            "norm_amps": 350.0
-        })
-        buses.append(new_bus)
-
-    return {
-        "feeder_idx": feeder_idx,
-        "buses": buses,
-        "lines": lines
-    }
-
-# Alias for backward compatibility
 generate_radial_topology = generate_known_radial_topology
+
 
 def identify_candidate_consumer_meters(topology: dict) -> list[dict]:
     """
@@ -61,22 +34,38 @@ def identify_candidate_consumer_meters(topology: dict) -> list[dict]:
     """
     candidate_meters = []
 
-    # 1. Standard branch lines / consumer nodes
-    for ln in topology.get("lines", []):
-        parent = ln["bus1"]
-        child = ln["bus2"]
-        line_name = ln["name"]
+    topologies = topology.get("topologies", {})
+    if topologies:
+        for f_id, sub_topo in topologies.items():
+            for ln in sub_topo.get("lines", []):
+                parent = ln["bus1"]
+                child = ln["bus2"]
+                line_name = ln["name"]
 
-        candidate_meters.append({
-            "meter_id": f"consumer_meter_{line_name}",
-            "bus": child,
-            "parent_bus": parent,
-            "branch_id": line_name,
-            "branch_type": "consumer_line",
-            "meter_eligible": True
-        })
+                candidate_meters.append({
+                    "meter_id": f"consumer_meter_{line_name}",
+                    "bus": child,
+                    "parent_bus": parent,
+                    "branch_id": line_name,
+                    "branch_type": "consumer_line",
+                    "meter_eligible": True
+                })
+    else:
+        for ln in topology.get("lines", []):
+            parent = ln["bus1"]
+            child = ln["bus2"]
+            line_name = ln["name"]
 
-    # 2. LV secondary terminals of the distribution transformers (Feeder boundary meters)
+            candidate_meters.append({
+                "meter_id": f"consumer_meter_{line_name}",
+                "bus": child,
+                "parent_bus": parent,
+                "branch_id": line_name,
+                "branch_type": "consumer_line",
+                "meter_eligible": True
+            })
+
+    # LV secondary terminals of the distribution transformers (Feeder boundary meters)
     for idx in [1, 2, 3]:
         candidate_meters.append({
             "meter_id": f"trans{idx}_lv_boundary_meter",
@@ -89,12 +78,13 @@ def identify_candidate_consumer_meters(topology: dict) -> list[dict]:
 
     return candidate_meters
 
-# Alias for backward compatibility
+
 identify_candidate_pccs = identify_candidate_consumer_meters
+
 
 def select_metered_consumers(candidate_meters: list[dict], fraction: float, seed: int) -> list[dict]:
     """
-    Selects all transformer boundary meters and a configured fraction of consumer meters.
+    Selects transformer boundary meters and a configured fraction of consumer meters.
     """
     if not (0.0 < fraction <= 1.0):
         raise ValueError(f"meter_fraction must be in (0.0, 1.0], got {fraction}")
@@ -114,8 +104,9 @@ def select_metered_consumers(candidate_meters: list[dict], fraction: float, seed
 
     return transformer_meters + selected_consumer_meters
 
-# Alias for backward compatibility
+
 select_metered_pccs = select_metered_consumers
+
 
 @dataclass
 class OperatingPoint:
@@ -127,36 +118,29 @@ class OperatingPoint:
     transformer_loading: dict
     voltage_pu: dict
     frequency_hz: float
-    transient_waveforms: Optional[object] = None # Associated ATP transient waveforms for EMT dynamics not provided in OpenDSS
+    transient_waveforms: Optional[object] = None
     phase_voltages_v: Optional[dict] = None
     phase_angles_deg: Optional[dict] = None
 
     def import_atp_cases(self, atp_waveforms):
-        """
-        Imports and associates high-fidelity ATP-EMTP transient cases
-        to provide the transient waveforms not supported by OpenDSS.
-        """
         self.transient_waveforms = atp_waveforms
+
 
 def initialize_known_plant(use_baseline_transformers: bool = False):
     """
     Initializes the fixed upstream distribution station using OpenDSS.
-    The known plant has standard distribution voltage levels:
     - Utility Grid Source (33 kV)
-    - Injection Substation Transformer (33 kV to 11 kV, 7.5 MVA)
+    - Substation Transformer (33 kV to 11 kV, 7.5 MVA)
     - Main Distribution Bus (11 kV)
-    - PCU / Shared Generator (coupled at 11 kV main_bus)
-    - Medium-voltage Switchgear
-    - Three 11 kV Feeders (Line 1, Line 2, Line 3)
-    - Fixed set of three 11/0.415 kV step-down Distribution Transformers acting as edge interfaces
+    - PCU / Shared Generator
+    - Three 11 kV Feeders (Feeder 1, Feeder 2, Feeder 3)
+    - Three 11/0.415 kV Step-down Distribution Transformers
     """
     print("INFO: Initializing OpenDSS Physics-Based Known Plant Model (33/11/0.415 kV)...")
 
-    # 1. Clear previous systems and define main circuit at swing bus (33 kV)
     dss.Basic.ClearAll()
     dss.run_command("new circuit.FixedPlant basekv=33.0 pu=1.0 phases=3")
 
-    # 2. Substation Transformer (33 kV to 11 kV, delta-wye, 7.5 MVA)
     dss.run_command(
         "new transformer.substation "
         "phases=3 windings=2 "
@@ -171,18 +155,14 @@ def initialize_known_plant(use_baseline_transformers: bool = False):
         "xhl=8.33"
     )
 
-    # 3. Configure Controllable Shared Generator (coupled at 11 kV main_bus)
     configure_generator(p_kw=1500.0, q_kvar=0.0)
 
-    # 4. Outgoing radial 11 kV Feeders (Line 1, Line 2, Line 3)
     dss.run_command("new linecode.feeder nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=12.0 c0=6.0 units=km")
 
-    # Feeders extending from main_bus to the respective 11 kV feeder head buses
     dss.run_command("new line.feeder1 bus1=main_bus bus2=feeder1_head phases=3 linecode=feeder length=4.5 units=km")
     dss.run_command("new line.feeder2 bus1=main_bus bus2=feeder2_head phases=3 linecode=feeder length=6.2 units=km")
     dss.run_command("new line.feeder3 bus1=main_bus bus2=feeder3_head phases=3 linecode=feeder length=8.5 units=km")
 
-    # 5. Fixed Set of Distribution Transformers (11/0.415 kV, delta-wye)
     for f_id in [1, 2, 3]:
         spec = get_distribution_transformer_spec(f_id, use_baseline=use_baseline_transformers)
         dss.run_command(
@@ -200,9 +180,64 @@ def initialize_known_plant(use_baseline_transformers: bool = False):
 
     print("INFO: OpenDSS Known Plant Model successfully initialized.")
 
+
+def build_power_plant_and_downstream_networks(
+    generator_p_kw: float = 1500.0,
+    generator_q_kvar: float = 0.0,
+    use_baseline_transformers: bool = True,
+    loads_dict: dict = None,
+    seed: int = 42
+) -> dict:
+    """
+    Full composition function in plant.py combining:
+    - Upstream generator, HV substation transformer, LV transformers
+    - LV Networks (LV1, LV2, LV3)
+    - Consumer loads and meter points from ConsumerRegistry / src/lv_networks
+    """
+    initialize_known_plant(use_baseline_transformers=use_baseline_transformers)
+
+    if generator_p_kw > 0:
+        configure_generator(p_kw=generator_p_kw, q_kvar=generator_q_kvar)
+
+    top1 = generate_lv1_topology(seed=seed + 1)
+    top2 = generate_lv2_topology(seed=seed + 2)
+    top3 = generate_lv3_topology(seed=seed + 3)
+
+    combined_topology = {
+        "topologies": {
+            1: top1,
+            2: top2,
+            3: top3
+        }
+    }
+
+    registry = create_default_consumer_registry(combined_topology, seed=seed)
+
+    build_lv1_network(topology=top1, loads_dict=loads_dict)
+    build_lv2_network(topology=top2, loads_dict=loads_dict)
+    build_lv3_network(topology=top3, loads_dict=loads_dict)
+
+    if loads_dict is None:
+        for unit in registry.get_all_consumers():
+            for ld in unit.loads:
+                dss.run_command(
+                    f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={ld.kw} pf={ld.pf} model=1 status=fixed"
+                )
+
+    dss.run_command("solve")
+
+    candidate_meters = identify_candidate_consumer_meters(combined_topology)
+
+    return {
+        "topology": combined_topology,
+        "registry": registry,
+        "candidate_meters": candidate_meters
+    }
+
+
 def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> OperatingPoint:
     """
-    Applies generator profiles, runs OpenDSS power flow, and extracts the electrical operating point.
+    Applies generator profiles, runs OpenDSS power flow, and extracts electrical operating point.
     """
     apply_generator_profile(p_kw, q_kvar)
 

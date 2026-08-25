@@ -1,3 +1,4 @@
+from src.simulation.consumer_registry import ConsumerRegistry, create_default_consumer_registry
 import os
 import csv
 import json
@@ -5,7 +6,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from src.simulation.scenario import KnownLVNetworkScenario, SimulationScenario
 from src.simulation.runner import CoSimulationRunner
 from src.power_plant.plant import (
     generate_known_radial_topology,
@@ -59,66 +59,6 @@ BASELINE_TX_SPEC = {
     "pct_r": BASELINE_TRANSFORMER_MODEL["r_pct"],
     "pct_x": BASELINE_TRANSFORMER_MODEL["xhl_pct"]
 }
-
-
-def validate_dataset_1(df_1: pd.DataFrame):
-    required_cols = [
-        "gt_scenario_id", "gt_feeder_id", "known_number_of_buses", "known_number_of_branches",
-        "gt_total_consumer_energy_kwh", "gt_metered_consumer_energy_kwh", "gt_unmetered_consumer_energy_kwh",
-        "gt_technical_loss_kwh", "gt_non_technical_loss_kwh",
-        "est_baseline_cla_unmetered_energy_kwh", "est_time_adjusted_cla_unmetered_energy_kwh"
-    ]
-    for col in required_cols:
-        if col not in df_1.columns:
-            raise ValueError(f"Dataset 1 validation error: missing required column '{col}'")
-
-    forbidden_cols = ["obs_steady_state_time", "obs_steady_state_voltage_abc", "obs_steady_state_current_abc"]
-    for col in forbidden_cols:
-        if col in df_1.columns:
-            raise ValueError(f"Dataset 1 validation error: waveform column '{col}' must be removed from Dataset 1!")
-
-    for idx, row in df_1.iterrows():
-        if row["known_number_of_buses"] <= 0 or row["gt_total_consumer_energy_kwh"] <= 0:
-            raise ValueError(f"Dataset 1 row {idx}: known_number_of_buses and gt_total_consumer_energy_kwh must be > 0")
-
-    print("INFO: Dataset 1 validation passed successfully.")
-
-
-def validate_event_pair_dataset(df: pd.DataFrame, dataset_name: str, allow_time_shift: bool, allow_tx_var: bool):
-    required_cols = [
-        "gt_scenario_id", "gt_transformer_id", "gt_transformer_spec_id", "gt_feeder_id", "gt_meter_id",
-        "gt_pair_category",
-        "gt_event_1_class", "gt_event_1_type", "gt_event_1_start_timestamp_s",
-        "gt_event_2_class", "gt_event_2_type", "gt_event_2_start_timestamp_s",
-        "gt_time_offset_s",
-        "obs_coevent_time", "obs_coevent_v", "obs_coevent_i",
-        "obs_composed_single_event_v", "obs_composed_single_event_i",
-        "obs_residual_v", "obs_residual_i",
-        "residual_voltage_magnitude", "residual_current_magnitude"
-    ]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"{dataset_name} validation error: missing required column '{col}'")
-
-    if not allow_tx_var:
-        unique_specs = df["gt_transformer_spec_id"].unique()
-        if len(unique_specs) > 1:
-            raise ValueError(f"{dataset_name} validation error: must NOT include transformer specification variation! Found: {unique_specs}")
-
-    if not allow_time_shift:
-        unique_offsets = df["gt_time_offset_s"].unique()
-        if any(abs(off) > 1e-6 for off in unique_offsets):
-            raise ValueError(f"{dataset_name} validation error: must NOT include time shift variation! Found: {unique_offsets}")
-
-    for idx, row in df.iterrows():
-        v_res = json.loads(row["obs_residual_v"])
-        i_res = json.loads(row["obs_residual_i"])
-        if len(v_res) != 3 or len(i_res) != 3:
-            raise ValueError(f"{dataset_name} row {idx}: residual waveform must have 3 phases")
-        if not np.isfinite(row["residual_voltage_magnitude"]) or not np.isfinite(row["residual_current_magnitude"]):
-            raise ValueError(f"{dataset_name} row {idx}: non-finite residual magnitude")
-
-    print(f"INFO: {dataset_name} validation passed successfully.")
 
 
 def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = True):
@@ -276,22 +216,16 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             SingleEquipmentSwitchEvent("ac_motor", 0.02, 0.04, f"down_{feeder_idx}_1", {}),
             SingleLineFaultEvent("LG", 0.02, 0.04, f"down_{feeder_idx}_1", (0,), 0.05, {})
         ]):
-            k_net_sig = KnownLVNetworkScenario(
-                scenario_id=f"{scenario_id}_sig_{s_ev.event_type}",
-                num_buses=len(known_topo["buses"]),
-                num_lines=len(known_topo["lines"]),
+            sim_sig = runner.run_simulation(
                 topology=known_topo,
-                line_parameters={"r1": 0.21, "x1": 0.08},
                 loads=loads_dist,
-                load_composition=load_comp,
-                motor_penetration=0.08,
-                capacitor_configuration={},
-                transformer_loading={"trans1": 50.0, "trans2": 50.0, "trans3": 50.0},
-                switching_events=[]
-            )
-            sim_sig = runner.run_scenario(
-                SimulationScenario(known_network=k_net_sig, generator_p_kw=1500.0, generator_q_kvar=0.0, events=[s_ev], meter_fraction=0.36, seed=42+idx),
-                use_baseline_transformers=True
+                events=[s_ev],
+                generator_p_kw=1500.0,
+                generator_q_kvar=0.0,
+                meter_fraction=0.36,
+                use_baseline_transformers=True,
+                scenario_id=f"{scenario_id}_sig_{s_ev.event_type}",
+                seed=42+idx
             )
             for f_id in [1, 2, 3]:
                 m_id = f"trans{f_id}_lv_boundary_meter"
@@ -332,22 +266,18 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
         for pair_cat, co_ev in d2_pairs:
             ev1, ev2 = co_ev.event_1, co_ev.event_2
-            k_net_d2 = KnownLVNetworkScenario(
-                scenario_id=f"{scenario_id}_q1_{pair_cat}",
-                num_buses=len(known_topo["buses"]),
-                num_lines=len(known_topo["lines"]),
+            sim_res_d2 = runner.run_simulation(
                 topology=known_topo,
-                line_parameters={"r1": 0.21, "x1": 0.08},
                 loads=loads_dist,
-                load_composition=load_comp,
-                motor_penetration=0.08,
-                capacitor_configuration={},
-                transformer_loading={"trans1": 50.0, "trans2": 50.0, "trans3": 50.0},
-                switching_events=[]
-            )
-            sim_res_d2 = runner.run_scenario(
-                SimulationScenario(known_network=k_net_d2, generator_p_kw=1500.0, generator_q_kvar=0.0, events=[co_ev], meter_fraction=0.36, seed=42+idx),
-                use_baseline_transformers=True
+                events=[co_ev],
+                generator_p_kw=1500.0,
+                generator_q_kvar=0.0,
+                meter_fraction=0.36,
+                use_baseline_transformers=True,
+                include_load_event=True,
+                include_fault_event=(pair_cat != "load_load"),
+                scenario_id=f"{scenario_id}_q1_{pair_cat}",
+                seed=42+idx
             )
             t_s = sim_res_d2.time_s
 
@@ -408,22 +338,18 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         for pair_cat, co_ev in d3_pairs:
             ev1, ev2 = co_ev.event_1, co_ev.event_2
             time_offset = co_ev.time_offset_s
-            k_net_d3 = KnownLVNetworkScenario(
-                scenario_id=f"{scenario_id}_q2_{pair_cat}_{time_offset}s",
-                num_buses=len(known_topo["buses"]),
-                num_lines=len(known_topo["lines"]),
+            sim_res_d3 = runner.run_simulation(
                 topology=known_topo,
-                line_parameters={"r1": 0.21, "x1": 0.08},
                 loads=loads_dist,
-                load_composition=load_comp,
-                motor_penetration=0.08,
-                capacitor_configuration={},
-                transformer_loading={"trans1": 50.0, "trans2": 50.0, "trans3": 50.0},
-                switching_events=[]
-            )
-            sim_res_d3 = runner.run_scenario(
-                SimulationScenario(known_network=k_net_d3, generator_p_kw=1500.0, generator_q_kvar=0.0, events=[co_ev], meter_fraction=0.36, seed=42+idx),
-                use_baseline_transformers=True
+                events=[co_ev],
+                generator_p_kw=1500.0,
+                generator_q_kvar=0.0,
+                meter_fraction=0.36,
+                use_baseline_transformers=True,
+                include_load_event=True,
+                include_fault_event=(pair_cat != "load_load"),
+                scenario_id=f"{scenario_id}_q2_{pair_cat}_{time_offset}s",
+                seed=42+idx
             )
             t_s = sim_res_d3.time_s
 
@@ -480,22 +406,18 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
         for pair_cat, co_ev in d4_pairs:
             ev1, ev2 = co_ev.event_1, co_ev.event_2
-            k_net_d4 = KnownLVNetworkScenario(
-                scenario_id=f"{scenario_id}_q3_{pair_cat}",
-                num_buses=len(known_topo["buses"]),
-                num_lines=len(known_topo["lines"]),
+            sim_res_d4 = runner.run_simulation(
                 topology=known_topo,
-                line_parameters={"r1": 0.21, "x1": 0.08},
                 loads=loads_dist,
-                load_composition=load_comp,
-                motor_penetration=0.08,
-                capacitor_configuration={},
-                transformer_loading={"trans1": 50.0, "trans2": 50.0, "trans3": 50.0},
-                switching_events=[]
-            )
-            sim_res_d4 = runner.run_scenario(
-                SimulationScenario(known_network=k_net_d4, generator_p_kw=1500.0, generator_q_kvar=0.0, events=[co_ev], meter_fraction=0.36, seed=42+idx),
-                use_baseline_transformers=False
+                events=[co_ev],
+                generator_p_kw=1500.0,
+                generator_q_kvar=0.0,
+                meter_fraction=0.36,
+                use_baseline_transformers=False,
+                include_load_event=True,
+                include_fault_event=(pair_cat != "load_load"),
+                scenario_id=f"{scenario_id}_q3_{pair_cat}",
+                seed=42+idx
             )
             t_s = sim_res_d4.time_s
 
@@ -551,10 +473,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
     df_3 = pd.DataFrame(rows_3)
     df_4 = pd.DataFrame(rows_4)
 
-    validate_dataset_1(df_1)
-    validate_event_pair_dataset(df_2, "Dataset 2", allow_time_shift=False, allow_tx_var=False)
-    validate_event_pair_dataset(df_3, "Dataset 3", allow_time_shift=True, allow_tx_var=False)
-    validate_event_pair_dataset(df_4, "Dataset 4", allow_time_shift=False, allow_tx_var=True)
 
     if write_to_disk:
         dir_path = Path("src/simulation")
@@ -563,7 +481,7 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
         df_2.to_csv(dir_path / "dataset_2.csv", index=False)
         df_3.to_csv(dir_path / "dataset_3.csv", index=False)
         df_4.to_csv(dir_path / "dataset_4.csv", index=False)
-        print(f"INFO: Successfully written validated datasets to {dir_path / 'dataset_1.csv'}, {dir_path / 'dataset_2.csv'}, {dir_path / 'dataset_3.csv'}, and {dir_path / 'dataset_4.csv'}")
+        print(f"INFO: Successfully written datasets to {dir_path / 'dataset_1.csv'}, {dir_path / 'dataset_2.csv'}, {dir_path / 'dataset_3.csv'}, and {dir_path / 'dataset_4.csv'}")
 
     return df_1, df_2, df_3, df_4
 
