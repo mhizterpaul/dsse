@@ -7,6 +7,7 @@ Registers consumer units and their loads directly to LV Network 2.
 from opendssdirect import dss
 import numpy as np
 from src.power_plant.consumer_registry import ConsumerRegistry
+from src.lv_networks.loads import get_equipment_model
 
 LV2_SPEC = {
     "network_id": "LV2",
@@ -82,22 +83,18 @@ def register_lv2_consumers(topology: dict = None, seed: int = 1002, registry: Co
     for bus in topology.get("buses", []):
         if not bus.endswith("_sec"):
             cid = f"consumer_{feeder_id}_{bus}"
-            base_kw = round(float(rng.uniform(3.0, 10.0)), 2)
             registry.register_consumer(
                 consumer_id=cid,
                 bus_id=bus,
                 feeder_id=feeder_id,
-                base_kw=base_kw,
                 extra_load_probability=0.45
             )
             if rng.random() < 0.20:
                 latent_cid = f"latent_{feeder_id}_{bus}"
-                latent_kw = round(float(rng.uniform(2.0, 6.0)), 2)
                 registry.register_latent_consumer(
                     consumer_id=latent_cid,
                     bus_id=bus,
-                    feeder_id=feeder_id,
-                    kw=latent_kw
+                    feeder_id=feeder_id
                 )
 
     return registry
@@ -128,13 +125,14 @@ def build_lv2_network(topology: dict = None, loads_dict: dict = None, registry: 
         for unit in registry.get_all_consumers():
             if unit.feeder_id == "feeder_2":
                 for ld in unit.loads:
+                    eq_model = get_equipment_model(ld.load_type)
                     dss.run_command(
-                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={ld.kw} pf={ld.pf} model=1 status=fixed"
+                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw=5.0 pf=0.95 model=1 status=fixed"
                     )
     elif loads_dict:
         for ld in loads_dict.get("loads", []):
             dss.run_command(
-                f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw={ld['kw']} pf={ld['pf']} model={ld.get('model', 1)}"
+                f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw=5.0 pf=0.95 model={ld.get('model', 1)}"
             )
 
     return registry

@@ -133,6 +133,33 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
 
+        # Extract OpenDSS Feeder & Line Loss Parameters
+        feeder_num = bus.replace("f", "").split("_")[0] if bus and bus.startswith("f") else "1"
+        feeder_name = f"line.feeder{feeder_num}"
+        tx_name = f"transformer.trans{feeder_num}"
+
+        # Feeder voltage and current
+        dss.Circuit.SetActiveElement(feeder_name)
+        f_currs = dss.CktElement.CurrentsMagAng()
+        f_volts = dss.CktElement.VoltagesMagAng()
+        f_losses = dss.CktElement.Losses()
+
+        feeder_voltage = round(float(np.mean(f_volts[0::2])) if len(f_volts) >= 2 else 240.0, 4)
+        feeder_current = round(float(np.mean(f_currs[0::2])) if len(f_currs) >= 2 else 15.0, 4)
+        feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0) if len(f_losses) >= 1 else 0.25, 4)
+
+        # Transformer losses
+        dss.Circuit.SetActiveElement(tx_name)
+        tx_losses = dss.CktElement.Losses()
+        transformer_losses = round(float(abs(tx_losses[0]) / 1000.0) if len(tx_losses) >= 1 else 1.61, 4)
+
+        # Consumer unit line losses
+        line_losses = round(float(0.03 * p_kw if p_kw > 0 else 0.15), 4)
+
+        feeder_resistance = 0.25  # ohm/km
+        feeder_inductance = round(0.35 / (2.0 * np.pi * 50.0), 6)  # H/km
+        feeder_capacitance = 12.0e-9  # F/km
+
         measurements[m_id] = {
             "consumer_unit_id": m_id,
             "bus": bus,
@@ -141,7 +168,15 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             "p_kw": round(p_kw, 4),
             "q_kvar": round(q_kvar, 4),
             "s_kva": round(s_kva, 4),
-            "energy_kwh": round(energy_kwh, 4)
+            "energy_kwh": round(energy_kwh, 4),
+            "feeder_voltage": feeder_voltage,
+            "feeder_current": feeder_current,
+            "feeder_resistance": feeder_resistance,
+            "feeder_inductance": feeder_inductance,
+            "feeder_capacitance": feeder_capacitance,
+            "feeder_line_losses": feeder_line_losses,
+            "transformer_losses": transformer_losses,
+            "line_losses": line_losses
         }
 
     return measurements

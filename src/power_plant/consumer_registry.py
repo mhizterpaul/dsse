@@ -7,9 +7,7 @@ import numpy as np
 class LoadDefinition:
     load_id: str
     circuit_id: str
-    kw: float
-    pf: float = 0.95
-    load_type: str = "base"  # e.g., 'base', 'extra_hvac', 'extra_ev_charger', 'extra_pv_der'
+    load_type: str = "ac_motor"  # e.g., 'ac_motor', 'dc_motor_inverter', 'microwave', 'induction_plate', 'compressor', 'audio_amplifier', 'ups', 'industrial_fan'
     is_extra_load: bool = False
 
 
@@ -38,7 +36,10 @@ class ConsumerRegistry:
     for calculating non-technical losses as specified in paper.md.
     """
     LOAD_CLASSES = ["residential", "commercial", "industrial", "agricultural"]
-    EXTRA_LOAD_TYPES = ["extra_hvac", "extra_ev_charger", "extra_heat_pump"]
+    LOAD_CIRCUIT_TYPES = [
+        "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
+        "compressor", "audio_amplifier", "ups", "industrial_fan"
+    ]
 
     def __init__(self, seed: int = 42):
         self.rng = np.random.default_rng(seed)
@@ -51,31 +52,25 @@ class ConsumerRegistry:
         bus_id: str,
         feeder_id: str,
         assigned_load_class: Optional[str] = None,
-        base_kw: float = 5.0,
-        pf: float = 0.95,
         extra_load_probability: float = 0.4
     ) -> ConsumerUnit:
         if assigned_load_class is None:
             assigned_load_class = str(self.rng.choice(self.LOAD_CLASSES, p=[0.60, 0.25, 0.10, 0.05]))
 
+        base_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
         base_load = LoadDefinition(
             load_id=f"{consumer_id}_load_base",
             circuit_id=f"{consumer_id}_circuit_1",
-            kw=base_kw,
-            pf=pf,
-            load_type="base",
+            load_type=base_type,
             is_extra_load=False
         )
         loads = [base_load]
 
         if self.rng.random() < extra_load_probability:
-            extra_type = str(self.rng.choice(self.EXTRA_LOAD_TYPES))
-            extra_kw = round(float(self.rng.uniform(2.0, 7.5)), 2)
+            extra_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
             extra_load = LoadDefinition(
                 load_id=f"{consumer_id}_{extra_type}",
                 circuit_id=f"{consumer_id}_circuit_extra",
-                kw=extra_kw,
-                pf=0.92,
                 load_type=extra_type,
                 is_extra_load=True
             )
@@ -97,8 +92,7 @@ class ConsumerRegistry:
         consumer_id: str,
         bus_id: str,
         feeder_id: str,
-        kw: float = 4.0,
-        pf: float = 0.95
+        load_type: str = "ac_motor"
     ) -> ConsumerUnit:
         """
         Registers a hidden/latent consumer unit without an assigned class in the LV network.
@@ -107,9 +101,7 @@ class ConsumerRegistry:
         load = LoadDefinition(
             load_id=f"{consumer_id}_latent_load",
             circuit_id=f"{consumer_id}_latent_circuit",
-            kw=kw,
-            pf=pf,
-            load_type="latent_unmetered",
+            load_type=load_type,
             is_extra_load=True
         )
         unit = ConsumerUnit(
@@ -153,34 +145,29 @@ class ConsumerRegistry:
                 for bus in sub_topo.get("buses", []):
                     if not bus.endswith("_sec"):
                         cid = f"consumer_{feeder_id}_{bus}"
-                        base_kw = round(float(self.rng.uniform(3.0, 10.0)), 2)
                         self.register_consumer(
                             consumer_id=cid,
                             bus_id=bus,
                             feeder_id=feeder_id,
-                            base_kw=base_kw,
                             extra_load_probability=0.45
                         )
-                        # Add latent/hidden consumer unit for 15% of nodes
-                        if self.rng.random() < 0.15:
+                        if self.rng.random() < 0.20:
                             latent_cid = f"latent_{feeder_id}_{bus}"
-                            latent_kw = round(float(self.rng.uniform(2.0, 6.0)), 2)
+                            latent_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
                             self.register_latent_consumer(
                                 consumer_id=latent_cid,
                                 bus_id=bus,
                                 feeder_id=feeder_id,
-                                kw=latent_kw
+                                load_type=latent_type
                             )
         else:
             for bus in topology.get("buses", []):
                 if not bus.endswith("_sec"):
                     cid = f"consumer_{bus}"
-                    base_kw = round(float(self.rng.uniform(3.0, 10.0)), 2)
                     self.register_consumer(
                         consumer_id=cid,
                         bus_id=bus,
                         feeder_id="feeder_1",
-                        base_kw=base_kw,
                         extra_load_probability=0.45
                     )
 

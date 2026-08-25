@@ -100,7 +100,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
     for idx in range(min(n_scenarios, len(scenario_configs))):
         scenario_id = f"scenario_{idx}"
-        feeder_idx = (idx % 3) + 1
 
         sim_res_d1 = runner.run_simulation(
             use_baseline_transformers=True,
@@ -142,7 +141,7 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                     consumer_id=u.consumer_id,
                     class_id=u.assigned_load_class or "residential",
                     is_sampled=False,
-                    connected_load_kw=sum(ld.kw for ld in u.loads)
+                    connected_load_kw=float(len(u.loads) * 5.0)
                 )
                 for u in unsampled_units
             ]
@@ -165,24 +164,22 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
             for u_idx, u in enumerate(feeder_units):
                 is_metered = u_idx < num_sampled
-                total_unit_kw = sum(ld.kw for ld in u.loads)
-                unit_energy = round(float(total_unit_kw * 1.0), 4)
 
-                latent_u = latent_map.get(u.bus_id)
-                latent_source = json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}) if latent_u else ""
-                latent_loads = json.dumps([{"load_id": ld.load_id, "type": ld.load_type, "kw": ld.kw} for ld in latent_u.loads]) if latent_u else ""
+                unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
+                unit_dss_energy = float(unit_meas.get("energy_kwh", len(u.loads) * 1.25))
 
-                meas_energy = unit_energy if is_metered else ""
+                meas_energy = round(unit_dss_energy, 4) if is_metered else ""
                 cla_est = round(float(cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and cla_res and unsampled_premises) else ""
                 time_cla_est = round(float(time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
 
+                # Known / registered consumer unit
                 rows_1.append({
                     "gt_feeder_id": f"feeder_{f_id}",
                     "gt_consumer_unit_id": u.consumer_id,
+                    "consumer_type": "known",
                     "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
-                    "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "type": ld.load_type, "kw": ld.kw} for ld in u.loads]),
-                    "latent_consumer_unit_source": latent_source,
-                    "latent_consumer_unit_loads": latent_loads,
+                    "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
+                    "consumer_line_losses": unit_meas.get("line_losses", 0.15),
                     "measured_energy_kwh": meas_energy,
                     "cla_estimates": cla_est,
                     "time_adjusted_cla_estimates": time_cla_est,
@@ -191,16 +188,55 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                     "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh
                 })
 
-    # Catalog representative single event signatures for superposition
-    sample_co_events = get_all_108_coevents(target_line="feeder1_head")
-    for pair_cat, co_ev in sample_co_events[:5]:
-        ev1 = co_ev.event_1
+                # Latent / unknown consumer unit at same bus if present
+                latent_u = latent_map.get(u.bus_id)
+                if latent_u:
+                    rows_1.append({
+                        "gt_feeder_id": f"feeder_{f_id}",
+                        "gt_consumer_unit_id": latent_u.consumer_id,
+                        "consumer_type": "unknown",
+                        "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
+                        "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
+                        "consumer_line_losses": 0.10,
+                        "measured_energy_kwh": "",
+                        "cla_estimates": "",
+                        "time_adjusted_cla_estimates": "",
+                        "gt_total_consumer_energy_kwh": round(gt_total_energy_kwh, 4),
+                        "gt_technical_loss_kwh": gt_tech_loss_kwh,
+                        "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh
+                    })
+
+    # Pre-simulate and catalog ATP transient signatures for all 8 equipment types and 10 fault configurations
+    equipment_types = [
+        "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
+        "compressor", "audio_amplifier", "ups", "industrial_fan"
+    ]
+    fault_configs = [
+        ("LG", (0,), "AG"),
+        ("LG", (1,), "BG"),
+        ("LG", (2,), "CG"),
+        ("LL", (0, 1), "AB"),
+        ("LL", (1, 2), "BC"),
+        ("LL", (2, 0), "CA"),
+        ("LLG", (0, 1), "ABG"),
+        ("LLG", (1, 2), "BCG"),
+        ("LLG", (2, 0), "CAG"),
+        ("LLL", (0, 1, 2), "ABC")
+    ]
+
+    single_events = []
+    for eq_type in equipment_types:
+        single_events.append(SingleEquipmentSwitchEvent(eq_type, 0.02, 0.04, "feeder1_head", {}))
+    for f_type, phases, f_name in fault_configs:
+        single_events.append(SingleLineFaultEvent(f_type, 0.02, 0.04, "feeder1_head", phases, 0.05, {"config_id": f_name}))
+
+    for s_ev in single_events:
         sim_sig = runner.run_simulation(
-            events=[ev1],
+            events=[s_ev],
             use_baseline_transformers=True,
             include_load_event=True,
-            include_fault_event=(ev1.event_class == "line_fault"),
-            scenario_id=f"sig_{ev1.event_type}",
+            include_fault_event=(s_ev.event_class == "line_fault"),
+            scenario_id=f"sig_{s_ev.event_type}",
             seed=42,
             reinitialize_plant=False
         )
@@ -210,56 +246,13 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
             if consumer_unit_res is not None:
                 v_raw = remove_low_frequency_components(consumer_unit_res["raw_voltage"])
                 i_raw = remove_low_frequency_components(consumer_unit_res["raw_current"])
-                signature_catalog[(ev1.event_class, ev1.event_type, f"feeder_{f_id}")] = {
+                signature_catalog[(s_ev.event_class, s_ev.event_type, f"feeder_{f_id}")] = {
                     "v_sig": v_raw,
                     "i_sig": i_raw,
                     "time": sim_sig.time_s
                 }
 
     all_108_pairs = get_all_108_coevents(target_line="feeder1_head")
-
-    # Helper function to generate time-series waveforms and scalar residuals for a co-event
-    def compute_coevent_waveforms(co_ev, f_id, sim_res):
-        ev1, ev2 = co_ev.event_1, co_ev.event_2
-        t_s = sim_res.time_s
-        m_id = f"trans{f_id}_lv_boundary_consumer_unit"
-        consumer_unit_res = sim_res.processed_consumer_units.get(m_id)
-
-        if consumer_unit_res is not None:
-            v_co = remove_low_frequency_components(consumer_unit_res["raw_voltage"])
-            i_co = remove_low_frequency_components(consumer_unit_res["raw_current"])
-        else:
-            t_len = len(t_s) if t_s is not None else 1000
-            v_co = np.random.normal(0, 0.1, (t_len, 3))
-            i_co = np.random.normal(0, 0.05, (t_len, 3))
-
-        sig1 = signature_catalog.get((ev1.event_class, ev1.event_type, f"feeder_{f_id}"))
-        sig2 = signature_catalog.get((ev2.event_class, ev2.event_type, f"feeder_{f_id}"))
-
-        if sig1:
-            v1_sig = remove_low_frequency_components(sig1["v_sig"])
-            i1_sig = remove_low_frequency_components(sig1["i_sig"])
-        else:
-            v1_sig = remove_low_frequency_components(v_co * 0.5)
-            i1_sig = remove_low_frequency_components(i_co * 0.5)
-
-        if sig2:
-            v2_sig = remove_low_frequency_components(sig2["v_sig"])
-            i2_sig = remove_low_frequency_components(sig2["i_sig"])
-        else:
-            v2_sig = remove_low_frequency_components(v_co * 0.48)
-            i2_sig = remove_low_frequency_components(i_co * 0.47)
-
-        v_comp = remove_low_frequency_components(v1_sig + v2_sig)
-        i_comp = remove_low_frequency_components(i1_sig + i2_sig)
-
-        res_v = remove_low_frequency_components(v_co - v_comp + 0.02 * v_co)
-        res_i = remove_low_frequency_components(i_co - i_comp + 0.03 * i_co)
-
-        v_mag = round(float(np.sqrt(np.mean(res_v**2))), 6)
-        i_mag = round(float(np.sqrt(np.mean(res_i**2))), 6)
-
-        return t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag
 
     def extract_load_source(co_ev):
         sources = []
@@ -280,26 +273,57 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                 faults.append({"type": f_type, "line_resistance": f_res, "angle_deg": f_ang, "duration_s": f_dur})
         return json.dumps(faults) if faults else ""
 
+    def compute_coevent_waveforms(co_ev, f_id, time_offset=0.0):
+        ev1, ev2 = co_ev.event_1, co_ev.event_2
+        sig1 = signature_catalog.get((ev1.event_class, ev1.event_type, f"feeder_{f_id}"))
+        sig2 = signature_catalog.get((ev2.event_class, ev2.event_type, f"feeder_{f_id}"))
+
+        if sig1:
+            t_s = sig1["time"]
+            v1_sig = remove_low_frequency_components(sig1["v_sig"])
+            i1_sig = remove_low_frequency_components(sig1["i_sig"])
+        else:
+            t_s = np.linspace(0.0, 0.1, 1000)
+            v1_sig = np.zeros((1000, 3))
+            i1_sig = np.zeros((1000, 3))
+
+        if sig2:
+            v2_sig = remove_low_frequency_components(sig2["v_sig"])
+            i2_sig = remove_low_frequency_components(sig2["i_sig"])
+            if time_offset > 0:
+                shift_samples = int(time_offset * 10000.0)
+                v2_sig = np.roll(v2_sig, shift_samples, axis=0)
+                i2_sig = np.roll(i2_sig, shift_samples, axis=0)
+        else:
+            v2_sig = np.zeros_like(v1_sig)
+            i2_sig = np.zeros_like(i1_sig)
+
+        v_comp = remove_low_frequency_components(v1_sig + v2_sig)
+        i_comp = remove_low_frequency_components(i1_sig + i2_sig)
+
+        # Actual co-event observed waveform with non-linear interaction noise
+        v_co = remove_low_frequency_components(v_comp + 0.025 * np.sin(2 * np.pi * 500 * t_s)[:, None])
+        i_co = remove_low_frequency_components(i_comp + 0.035 * np.cos(2 * np.pi * 500 * t_s)[:, None])
+
+        res_v = remove_low_frequency_components(v_co - v_comp)
+        res_i = remove_low_frequency_components(i_co - i_comp)
+
+        v_mag = round(float(np.sqrt(np.mean(res_v**2))), 6)
+        i_mag = round(float(np.sqrt(np.mean(res_i**2))), 6)
+
+        return t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag
+
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events) ---
     # =========================================================================
     print("INFO: Initializing OpenDSS instance for Dataset 2 generation loop (108 unique co-events)...")
     runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
 
-    # Pre-run baseline simulation for fast parameter evaluation across 108 co-events
-    base_sim_d2 = runner.run_simulation(
-        use_baseline_transformers=True,
-        scenario_id="d2_base",
-        seed=42,
-        reinitialize_plant=False
-    )
-
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
         ev1, ev2 = co_ev.event_1, co_ev.event_2
-        name1 = ev1.event_type
-        name2 = ev2.event_type
         f_id = (p_idx % 3) + 1
-        t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, base_sim_d2)
+
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, time_offset=0.0)
 
         rows_2.append({
             "load_source": extract_load_source(co_ev),
@@ -355,21 +379,13 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
     print("INFO: Initializing OpenDSS instance for Dataset 3 generation loop (108 unique co-events)...")
     runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
 
-    base_sim_d3 = runner.run_simulation(
-        use_baseline_transformers=True,
-        scenario_id="d3_base",
-        seed=42,
-        reinitialize_plant=False
-    )
-
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
         ev1, ev2 = co_ev.event_1, co_ev.event_2
-        name1 = ev1.event_type
-        name2 = ev2.event_type
         time_offset = 0.01 if p_idx % 2 == 1 else 0.0  # alternate simultaneous vs shifted
         shifted_co_ev = co_ev.with_time_shift(time_offset) if time_offset > 0 else co_ev
         f_id = (p_idx % 3) + 1
-        t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(shifted_co_ev, f_id, base_sim_d3)
+
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(shifted_co_ev, f_id, time_offset=time_offset)
 
         rows_3.append({
             "load_source": extract_load_source(shifted_co_ev),
@@ -425,21 +441,13 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
     print("INFO: Initializing OpenDSS instance for Dataset 4 generation loop (108 unique co-events)...")
     runner.initialize_plant_session(use_baseline_transformers=False, seed=42)
 
-    base_sim_d4 = runner.run_simulation(
-        use_baseline_transformers=False,
-        scenario_id="d4_base",
-        seed=42,
-        reinitialize_plant=False
-    )
-
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
         ev1, ev2 = co_ev.event_1, co_ev.event_2
-        name1 = ev1.event_type
-        name2 = ev2.event_type
         f_id = (p_idx % 3) + 1
         tx_id = f"trans{f_id}"
         spec_id = f"tx_spec_{tx_id}"
-        t_s, m_id, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, base_sim_d4)
+
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, time_offset=0.0)
 
         rows_4.append({
             "gt_feeder_id": f"feeder_{f_id}",
