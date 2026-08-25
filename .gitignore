@@ -13,8 +13,9 @@ atpmingw_2024/*.bin
 atpmingw_2024/*.tmp
 atpmingw_2024/*.dbg
 
-# ATP outputs and temporary cases
+# ATP outputs, generated CSV datasets, and time-series JSON dumps
 src/simulation/atp_cases/
 *.lis
 *.pl4
 *.json
+*.csv
