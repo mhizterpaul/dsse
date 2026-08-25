@@ -5,10 +5,10 @@ from opendssdirect import dss
 from src.power_plant.sources import configure_generator, apply_generator_profile
 from src.power_plant.transformers import get_distribution_transformer_spec
 from src.lv_networks.meters import extract_consumer_meter_data
-from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network
-from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network
-from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network
-from src.simulation.consumer_registry import create_default_consumer_registry, ConsumerRegistry
+from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network, register_lv1_consumers
+from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network, register_lv2_consumers
+from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network, register_lv3_consumers
+from src.power_plant.consumer_registry import ConsumerRegistry
 
 
 def generate_known_radial_topology(feeder_idx: int, num_buses: int = 20, rng=None) -> dict:
@@ -126,15 +126,9 @@ class OperatingPoint:
         self.transient_waveforms = atp_waveforms
 
 
-def initialize_known_plant(use_baseline_transformers: bool = False):
+def initialize_known_plant(use_baseline_transformers: bool = False, topology: dict = None, seed: int = 42) -> ConsumerRegistry:
     """
-    Initializes the fixed upstream distribution station using OpenDSS.
-    - Utility Grid Source (33 kV)
-    - Substation Transformer (33 kV to 11 kV, 7.5 MVA)
-    - Main Distribution Bus (11 kV)
-    - PCU / Shared Generator
-    - Three 11 kV Feeders (Feeder 1, Feeder 2, Feeder 3)
-    - Three 11/0.415 kV Step-down Distribution Transformers
+    Initializes the fixed upstream distribution station and registers downstream consumers on each LV network.
     """
     print("INFO: Initializing OpenDSS Physics-Based Known Plant Model (33/11/0.415 kV)...")
 
@@ -178,7 +172,21 @@ def initialize_known_plant(use_baseline_transformers: bool = False):
             f"%imag={spec.get('imag_pct', 0.8)}"
         )
 
-    print("INFO: OpenDSS Known Plant Model successfully initialized.")
+    if topology is None:
+        top1 = generate_lv1_topology(seed=seed + 1)
+        top2 = generate_lv2_topology(seed=seed + 2)
+        top3 = generate_lv3_topology(seed=seed + 3)
+        topology = {"topologies": {1: top1, 2: top2, 3: top3}}
+
+    registry = ConsumerRegistry(seed=seed)
+    topologies = topology.get("topologies", {})
+
+    register_lv1_consumers(topology=topologies.get(1), seed=seed + 1, registry=registry)
+    register_lv2_consumers(topology=topologies.get(2), seed=seed + 2, registry=registry)
+    register_lv3_consumers(topology=topologies.get(3), seed=seed + 3, registry=registry)
+
+    print("INFO: OpenDSS Known Plant Model and Consumer Registry successfully initialized.")
+    return registry
 
 
 def build_power_plant_and_downstream_networks(
@@ -192,13 +200,8 @@ def build_power_plant_and_downstream_networks(
     Full composition function in plant.py combining:
     - Upstream generator, HV substation transformer, LV transformers
     - LV Networks (LV1, LV2, LV3)
-    - Consumer loads and meter points from ConsumerRegistry / src/lv_networks
+    - Consumer loads registered to LV networks
     """
-    initialize_known_plant(use_baseline_transformers=use_baseline_transformers)
-
-    if generator_p_kw > 0:
-        configure_generator(p_kw=generator_p_kw, q_kvar=generator_q_kvar)
-
     top1 = generate_lv1_topology(seed=seed + 1)
     top2 = generate_lv2_topology(seed=seed + 2)
     top3 = generate_lv3_topology(seed=seed + 3)
@@ -211,18 +214,14 @@ def build_power_plant_and_downstream_networks(
         }
     }
 
-    registry = create_default_consumer_registry(combined_topology, seed=seed)
+    registry = initialize_known_plant(use_baseline_transformers=use_baseline_transformers, topology=combined_topology, seed=seed)
 
-    build_lv1_network(topology=top1, loads_dict=loads_dict)
-    build_lv2_network(topology=top2, loads_dict=loads_dict)
-    build_lv3_network(topology=top3, loads_dict=loads_dict)
+    if generator_p_kw > 0:
+        configure_generator(p_kw=generator_p_kw, q_kvar=generator_q_kvar)
 
-    if loads_dict is None:
-        for unit in registry.get_all_consumers():
-            for ld in unit.loads:
-                dss.run_command(
-                    f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={ld.kw} pf={ld.pf} model=1 status=fixed"
-                )
+    build_lv1_network(topology=top1, loads_dict=loads_dict, registry=registry, seed=seed + 1)
+    build_lv2_network(topology=top2, loads_dict=loads_dict, registry=registry, seed=seed + 2)
+    build_lv3_network(topology=top3, loads_dict=loads_dict, registry=registry, seed=seed + 3)
 
     dss.run_command("solve")
 

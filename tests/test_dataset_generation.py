@@ -8,7 +8,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.dataset import generate_experiments_dataset
-from src.simulation.consumer_registry import ConsumerRegistry, create_default_consumer_registry
+from src.power_plant.consumer_registry import ConsumerRegistry, create_default_consumer_registry
 from src.power_plant.plant import generate_known_radial_topology
 
 def test_consumer_registry():

@@ -22,10 +22,6 @@ class ConsumerUnit:
     loads: List[LoadDefinition] = field(default_factory=list)
 
     @property
-    def total_kw(self) -> float:
-        return sum(ld.kw for ld in self.loads)
-
-    @property
     def load_circuit_ids(self) -> List[str]:
         return [ld.circuit_id for ld in self.loads]
 

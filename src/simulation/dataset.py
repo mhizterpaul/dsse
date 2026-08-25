@@ -1,4 +1,4 @@
-from src.simulation.consumer_registry import ConsumerRegistry, create_default_consumer_registry
+from src.power_plant.consumer_registry import ConsumerRegistry, create_default_consumer_registry
 import os
 import csv
 import json

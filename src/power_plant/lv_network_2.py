@@ -1,10 +1,12 @@
 """
 LV Distribution Network 2 Specification & Implementation
 Aligns with docs/specs/lv2: Network ID LV2, 25 buses, 24 branches, 415V/240V, 1.2 MVA.
+Registers consumer units and their loads directly to LV Network 2.
 """
 
 from opendssdirect import dss
 import numpy as np
+from src.power_plant.consumer_registry import ConsumerRegistry
 
 LV2_SPEC = {
     "network_id": "LV2",
@@ -44,7 +46,6 @@ def generate_lv2_topology(seed: int = 1002) -> dict:
         "r1": 0.21, "x1": 0.08, "r0": 0.63, "x0": 0.24, "norm_amps": 350.0
     })
 
-    # Buses 3 to 24 (LV2 25 buses total)
     for i in range(3, 25):
         bus_name = f"f2_node{i}"
         buses.append(bus_name)
@@ -66,9 +67,38 @@ def generate_lv2_topology(seed: int = 1002) -> dict:
         "lines": lines
     }
 
-def build_lv2_network(topology: dict = None, loads_dict: dict = None):
+def register_lv2_consumers(topology: dict = None, seed: int = 1002, registry: ConsumerRegistry = None) -> ConsumerRegistry:
+    """
+    Registers consumer units and their load circuits directly to LV Network 2.
+    """
     if topology is None:
-        topology = generate_lv2_topology()
+        topology = generate_lv2_topology(seed=seed)
+
+    if registry is None:
+        registry = ConsumerRegistry(seed=seed)
+
+    rng = np.random.default_rng(seed)
+    feeder_id = "feeder_2"
+    for bus in topology.get("buses", []):
+        if not bus.endswith("_sec"):
+            cid = f"consumer_{feeder_id}_{bus}"
+            base_kw = round(float(rng.uniform(3.0, 10.0)), 2)
+            registry.register_consumer(
+                consumer_id=cid,
+                bus_id=bus,
+                feeder_id=feeder_id,
+                base_kw=base_kw,
+                extra_load_probability=0.45
+            )
+
+    return registry
+
+def build_lv2_network(topology: dict = None, loads_dict: dict = None, registry: ConsumerRegistry = None, seed: int = 1002):
+    if topology is None:
+        topology = generate_lv2_topology(seed=seed)
+
+    if registry is None and loads_dict is None:
+        registry = register_lv2_consumers(topology=topology, seed=seed)
 
     dss.run_command(
         f"new linecode.{LV2_SPEC['line_code']} "
@@ -84,8 +114,18 @@ def build_lv2_network(topology: dict = None, loads_dict: dict = None):
             f"length={ln.get('length', 0.05)} units=km normamps=350.0"
         )
 
-    if loads_dict:
+    # Apply consumer units and their loads registered to LV Network 2
+    if registry is not None:
+        for unit in registry.get_all_consumers():
+            if unit.feeder_id == "feeder_2":
+                for ld in unit.loads:
+                    dss.run_command(
+                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={ld.kw} pf={ld.pf} model=1 status=fixed"
+                    )
+    elif loads_dict:
         for ld in loads_dict.get("loads", []):
             dss.run_command(
                 f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw={ld['kw']} pf={ld['pf']} model={ld.get('model', 1)}"
             )
+
+    return registry
