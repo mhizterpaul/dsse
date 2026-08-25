@@ -16,6 +16,17 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
 
     bf_stats_list, bf_p_list = [], []
 
+    if "gt_pair_category" not in df_3.columns:
+        group_sim = df_3[df_3["gt_time_offset_s"] == 0.0]
+        group_shift = df_3[df_3["gt_time_offset_s"] > 0.0]
+        v_sim = group_sim["residual_voltage_magnitude"].values
+        v_shift = group_shift["residual_voltage_magnitude"].values
+        stat_v, p_v = (stats.levene(v_sim, v_shift, center="median") if len(v_sim) > 0 and len(v_shift) > 0 else (0.0, 1.0))
+        results["avg_brown_forsythe_stat"] = float(stat_v) if np.isfinite(stat_v) else 0.0
+        results["avg_p_val"] = float(p_v) if np.isfinite(p_v) else 1.0
+        print(f"Overall Dataset 3 Time Shift (N_sim={len(v_sim)}, N_shift={len(v_shift)}): Stat={results['avg_brown_forsythe_stat']:.4f}, p={results['avg_p_val']:.4e}")
+        return results
+
     for cat in pair_categories:
         df_cat = df_3[df_3["gt_pair_category"] == cat]
 
