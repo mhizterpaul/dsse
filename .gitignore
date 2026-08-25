@@ -12,3 +12,9 @@ atpmingw_2024/TEMP_CASE*
 atpmingw_2024/*.bin
 atpmingw_2024/*.tmp
 atpmingw_2024/*.dbg
+
+# ATP outputs and temporary cases
+src/simulation/atp_cases/
+*.lis
+*.pl4
+*.json

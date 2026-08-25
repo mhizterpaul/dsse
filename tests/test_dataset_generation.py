@@ -24,7 +24,7 @@ def test_dataset_generation_only():
     print(f"Dataset 4 shape: {dataset_4.shape}\n")
 
     print("--- DATASET 1 HEAD ---")
-    print(dataset_1[['gt_scenario_id', 'gt_feeder_id', 'gt_total_consumer_energy_kwh', 'est_time_adjusted_cla_unmetered_energy_kwh']].head(5))
+    print(dataset_1[['gt_scenario_id', 'gt_feeder_id', 'gt_total_consumer_energy_kwh', 'est_time_adjusted_cla_unsampled_energy_kwh']].head(5))
 
     print("\n--- DATASET 2 HEAD ---")
     print(dataset_2[['gt_scenario_id', 'gt_pair_category', 'residual_voltage_magnitude', 'residual_current_magnitude']].head(5))

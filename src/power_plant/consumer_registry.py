@@ -18,8 +18,9 @@ class ConsumerUnit:
     consumer_id: str
     bus_id: str
     feeder_id: str
-    assigned_load_class: str  # e.g., 'residential', 'commercial', 'industrial', 'agricultural'
+    assigned_load_class: Optional[str] = None  # None for latent/unmetered hidden consumers
     loads: List[LoadDefinition] = field(default_factory=list)
+    is_latent_unmetered: bool = False
 
     @property
     def load_circuit_ids(self) -> List[str]:
@@ -32,16 +33,17 @@ class ConsumerUnit:
 
 class ConsumerRegistry:
     """
-    Consumer Registry in simulation module managing assigned load classes,
-    multiple loads, and extra loads for consumer units / load circuits
-    during network initialization conditions.
+    Consumer Registry in power_plant module managing assigned load classes,
+    registered consumer units, and hidden/latent consumer units without assigned classes
+    for calculating non-technical losses as specified in paper.md.
     """
     LOAD_CLASSES = ["residential", "commercial", "industrial", "agricultural"]
     EXTRA_LOAD_TYPES = ["extra_hvac", "extra_ev_charger", "extra_heat_pump"]
 
     def __init__(self, seed: int = 42):
         self.rng = np.random.default_rng(seed)
-        self._consumers: Dict[str, ConsumerUnit] = {}
+        self._registered_consumers: Dict[str, ConsumerUnit] = {}
+        self._latent_consumers: Dict[str, ConsumerUnit] = {}
 
     def register_consumer(
         self,
@@ -56,7 +58,6 @@ class ConsumerRegistry:
         if assigned_load_class is None:
             assigned_load_class = str(self.rng.choice(self.LOAD_CLASSES, p=[0.60, 0.25, 0.10, 0.05]))
 
-        # Base primary load
         base_load = LoadDefinition(
             load_id=f"{consumer_id}_load_base",
             circuit_id=f"{consumer_id}_circuit_1",
@@ -67,7 +68,6 @@ class ConsumerRegistry:
         )
         loads = [base_load]
 
-        # Assign extra loads during network initialization if triggered by probability
         if self.rng.random() < extra_load_probability:
             extra_type = str(self.rng.choice(self.EXTRA_LOAD_TYPES))
             extra_kw = round(float(self.rng.uniform(2.0, 7.5)), 2)
@@ -86,27 +86,65 @@ class ConsumerRegistry:
             bus_id=bus_id,
             feeder_id=feeder_id,
             assigned_load_class=assigned_load_class,
-            loads=loads
+            loads=loads,
+            is_latent_unmetered=False
         )
-        self._consumers[consumer_id] = unit
+        self._registered_consumers[consumer_id] = unit
+        return unit
+
+    def register_latent_consumer(
+        self,
+        consumer_id: str,
+        bus_id: str,
+        feeder_id: str,
+        kw: float = 4.0,
+        pf: float = 0.95
+    ) -> ConsumerUnit:
+        """
+        Registers a hidden/latent consumer unit without an assigned class in the LV network.
+        Used for evaluating non-technical losses (NTL) and theft estimation error.
+        """
+        load = LoadDefinition(
+            load_id=f"{consumer_id}_latent_load",
+            circuit_id=f"{consumer_id}_latent_circuit",
+            kw=kw,
+            pf=pf,
+            load_type="latent_unmetered",
+            is_extra_load=True
+        )
+        unit = ConsumerUnit(
+            consumer_id=consumer_id,
+            bus_id=bus_id,
+            feeder_id=feeder_id,
+            assigned_load_class=None,  # No assigned class for latent/unmetered units
+            loads=[load],
+            is_latent_unmetered=True
+        )
+        self._latent_consumers[consumer_id] = unit
         return unit
 
     def get_consumer(self, consumer_id: str) -> Optional[ConsumerUnit]:
-        return self._consumers.get(consumer_id)
+        return self._registered_consumers.get(consumer_id, self._latent_consumers.get(consumer_id))
 
     def get_all_consumers(self) -> List[ConsumerUnit]:
-        return list(self._consumers.values())
+        return list(self._registered_consumers.values()) + list(self._latent_consumers.values())
+
+    def get_registered_consumers(self) -> List[ConsumerUnit]:
+        return list(self._registered_consumers.values())
+
+    def get_latent_consumers(self) -> List[ConsumerUnit]:
+        return list(self._latent_consumers.values())
 
     def get_consumers_by_class(self, load_class: str) -> List[ConsumerUnit]:
-        return [c for c in self._consumers.values() if c.assigned_load_class == load_class]
+        return [c for c in self._registered_consumers.values() if c.assigned_load_class == load_class]
 
     def get_consumers_with_extra_loads(self) -> List[ConsumerUnit]:
-        return [c for c in self._consumers.values() if c.has_extra_load]
+        return [c for c in self.get_all_consumers() if c.has_extra_load]
 
     def build_registry_from_topology(self, topology: dict) -> Dict[str, ConsumerUnit]:
         """
-        Builds and populates consumer registry for all consumer buses/load circuits in given LV topology
-        with explicit base and extra loads assigned as part of network initialization.
+        Builds and populates consumer registry for all consumer buses/load circuits in given LV topology,
+        including registered consumer units and hidden/latent consumer units for NTL evaluation.
         """
         topologies = topology.get("topologies", {})
         if topologies:
@@ -123,6 +161,16 @@ class ConsumerRegistry:
                             base_kw=base_kw,
                             extra_load_probability=0.45
                         )
+                        # Add latent/hidden consumer unit for 15% of nodes
+                        if self.rng.random() < 0.15:
+                            latent_cid = f"latent_{feeder_id}_{bus}"
+                            latent_kw = round(float(self.rng.uniform(2.0, 6.0)), 2)
+                            self.register_latent_consumer(
+                                consumer_id=latent_cid,
+                                bus_id=bus,
+                                feeder_id=feeder_id,
+                                kw=latent_kw
+                            )
         else:
             for bus in topology.get("buses", []):
                 if not bus.endswith("_sec"):
@@ -136,7 +184,7 @@ class ConsumerRegistry:
                         extra_load_probability=0.45
                     )
 
-        return self._consumers
+        return self._registered_consumers
 
 
 def create_default_consumer_registry(topology: dict, seed: int = 42) -> ConsumerRegistry:

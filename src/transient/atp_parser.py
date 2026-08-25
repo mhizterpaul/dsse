@@ -5,8 +5,8 @@ from pathlib import Path
 @dataclass
 class EMTWaveforms:
     time_s: np.ndarray
-    pcc_voltages: dict # dict of {pcc_id: (N, 3)}
-    pcc_currents: dict # dict of {pcc_id: (N, 3)}
+    pcc_voltages: dict # dict of {boundary_unit_id: (N, 3)}
+    pcc_currents: dict # dict of {boundary_unit_id: (N, 3)}
     event_metadata: dict
 
     @property
@@ -38,7 +38,7 @@ class ATPOutputReader:
     def __init__(self):
         pass
 
-    def read(self, atp_result, metered_pccs: list[dict], event) -> EMTWaveforms:
+    def read(self, atp_result, selected_consumer_units: list[dict], event) -> EMTWaveforms:
         output_path = atp_result.case_path.with_suffix(".pl4")
 
         # Check if binary PL4
@@ -72,18 +72,18 @@ class ATPOutputReader:
 
                 pcc_voltages = {}
                 pcc_currents = {}
-                for pcc in metered_pccs:
-                    pcc_id = pcc.get("meter_id", pcc.get("pcc_id"))
+                for pcc in selected_consumer_units:
+                    boundary_unit_id = pcc.get("consumer_unit_id", pcc.get("boundary_unit_id"))
                     b_type = pcc.get("branch_type", "")
                     if b_type in ["transformer", "transformer_boundary"]:
-                        pcc_voltages[pcc_id] = np.zeros((target_len, 3))
-                        pcc_currents[pcc_id] = np.zeros((target_len, 3))
+                        pcc_voltages[boundary_unit_id] = np.zeros((target_len, 3))
+                        pcc_currents[boundary_unit_id] = np.zeros((target_len, 3))
 
-                for pcc_id in pcc_voltages:
+                for boundary_unit_id in pcc_voltages:
                     for phase in range(3):
                         if data.shape[1] > phase + 1:
-                            pcc_voltages[pcc_id][:, phase] = data[:target_len, phase + 1]
-                            pcc_currents[pcc_id][:, phase] = data[:target_len, phase + 1] / 10.0
+                            pcc_voltages[boundary_unit_id][:, phase] = data[:target_len, phase + 1]
+                            pcc_currents[boundary_unit_id][:, phase] = data[:target_len, phase + 1] / 10.0
 
                 event_metadata = {
                     "event_type": getattr(event, "event_type", "no_event"),
@@ -98,12 +98,12 @@ class ATPOutputReader:
         pcc_voltages = {}
         pcc_currents = {}
 
-        for pcc in metered_pccs:
-            pcc_id = pcc.get("meter_id", pcc.get("pcc_id"))
+        for pcc in selected_consumer_units:
+            boundary_unit_id = pcc.get("consumer_unit_id", pcc.get("boundary_unit_id"))
             b_type = pcc.get("branch_type", "")
             if b_type in ["transformer", "transformer_boundary"]:
-                pcc_voltages[pcc_id] = np.zeros((N, 3))
-                pcc_currents[pcc_id] = np.zeros((N, 3))
+                pcc_voltages[boundary_unit_id] = np.zeros((N, 3))
+                pcc_currents[boundary_unit_id] = np.zeros((N, 3))
 
         if not output_path.exists():
             raise FileNotFoundError(f"ATP .pl4 output file not found: {output_path}")
@@ -120,19 +120,19 @@ class ATPOutputReader:
                 parts = line.split()
                 if len(parts) >= 6:
                     t_val = float(parts[1])
-                    pcc_id = parts[2]
+                    boundary_unit_id = parts[2]
                     phase = int(parts[3])
                     v_val = float(parts[4])
                     i_val = float(parts[5])
 
                     idx = int(round(t_val * 10000.0))
                     if 0 <= idx < N:
-                        if pcc_id in pcc_voltages:
-                            pcc_voltages[pcc_id][idx, phase] = v_val
-                            pcc_currents[pcc_id][idx, phase] = i_val
-                        # Also match transX_lv_pcc or transX_lv_boundary_meter
+                        if boundary_unit_id in pcc_voltages:
+                            pcc_voltages[boundary_unit_id][idx, phase] = v_val
+                            pcc_currents[boundary_unit_id][idx, phase] = i_val
+                        # Also match transX_lv_pcc or transX_lv_boundary_consumer_unit
                         for key in pcc_voltages:
-                            if key == pcc_id or (key.startswith("trans") and pcc_id.startswith("trans") and key[5] == pcc_id[5]):
+                            if key == boundary_unit_id or (key.startswith("trans") and boundary_unit_id.startswith("trans") and key[5] == boundary_unit_id[5]):
                                 pcc_voltages[key][idx, phase] = v_val
                                 pcc_currents[key][idx, phase] = i_val
 

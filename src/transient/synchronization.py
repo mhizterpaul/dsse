@@ -4,7 +4,7 @@ import numpy as np
 
 @dataclass
 class PCCMeasurement:
-    pcc_id: str
+    boundary_unit_id: str
     timestamp_s: float
     voltage_abc: tuple  # (v_a, v_b, v_c)
     current_abc: tuple  # (i_a, i_b, i_c)
@@ -19,7 +19,7 @@ class PCCMeasurement:
 
 @dataclass
 class SpectrumAnalyzerMeasurement:
-    pcc_id: str
+    boundary_unit_id: str
     timestamp_s: float
     voltage_fft_magnitudes: list
     current_fft_magnitudes: list
@@ -31,12 +31,12 @@ def synchronize_measurements(pcc_data_dict: dict, timestamp_s: float = 0.0) -> d
     Synchronizes the steady-state measurements into canonical PCCMeasurement records.
     """
     synced = {}
-    for pcc_id, data in pcc_data_dict.items():
+    for boundary_unit_id, data in pcc_data_dict.items():
         v_rms_abc = tuple(data["v_mags"])
         i_rms_abc = tuple(data["i_mags"])
 
-        synced[pcc_id] = PCCMeasurement(
-            pcc_id=pcc_id,
+        synced[boundary_unit_id] = PCCMeasurement(
+            boundary_unit_id=boundary_unit_id,
             timestamp_s=timestamp_s,
             voltage_abc=v_rms_abc,
             current_abc=i_rms_abc,
@@ -51,14 +51,14 @@ def synchronize_measurements(pcc_data_dict: dict, timestamp_s: float = 0.0) -> d
         )
     return synced
 
-def synchronize_spectrum_analyzer_measurements(processed_pccs_dict: dict, timestamp_s: float = 0.0) -> dict[str, SpectrumAnalyzerMeasurement]:
+def synchronize_spectrum_analyzer_measurements(processed_consumer_units_dict: dict, timestamp_s: float = 0.0) -> dict[str, SpectrumAnalyzerMeasurement]:
     """
     Synchronizes and aligns the spectrum analyzer (high-frequency wavelet/spectral) measurements.
     """
     synced_spectral = {}
-    for pcc_id, processed in processed_pccs_dict.items():
-        synced_spectral[pcc_id] = SpectrumAnalyzerMeasurement(
-            pcc_id=pcc_id,
+    for boundary_unit_id, processed in processed_consumer_units_dict.items():
+        synced_spectral[boundary_unit_id] = SpectrumAnalyzerMeasurement(
+            boundary_unit_id=boundary_unit_id,
             timestamp_s=timestamp_s,
             voltage_fft_magnitudes=processed.voltage_fft.tolist(),
             current_fft_magnitudes=processed.current_fft.tolist(),
