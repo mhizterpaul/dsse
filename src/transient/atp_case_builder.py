@@ -34,15 +34,16 @@ class ATPCaseBuilder:
 
         # Convert RMS voltage to peak amplitude in Volts
         import numpy as np
-        amp_a = max(float(phase_v[0]) * np.sqrt(2.0), 0.01)
-        amp_b = max(float(phase_v[1]) * np.sqrt(2.0), 0.01)
-        amp_c = max(float(phase_v[2]) * np.sqrt(2.0), 0.01)
+        amp_a = float(phase_v[0]) * np.sqrt(2.0)
+        amp_b = float(phase_v[1]) * np.sqrt(2.0)
+        amp_c = float(phase_v[2]) * np.sqrt(2.0)
 
         ang_a = float(phase_ang[0])
         ang_b = float(phase_ang[1])
         ang_c = float(phase_ang[2])
 
-        freq_str = f"50.00".rjust(10)
+        freq_hz = getattr(operating_point, "frequency_hz", 50.0) if operating_point else 50.0
+        freq_str = f"{freq_hz:.2f}".rjust(10)
         a1_str = " ".rjust(10)
         t1_str = " ".rjust(10)
         tstart_str = f"-1.00".rjust(10)
@@ -72,13 +73,13 @@ class ATPCaseBuilder:
                 eq_type = getattr(ev, "equipment_type", "ac_motor")
                 try:
                     eq_model = get_equipment_model(eq_type)
-                    r_eq = eq_model.atp_params.get("r_stator", 0.1)
-                    x_eq = eq_model.atp_params.get("x_stator", 0.2)
+                    r_eq = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", 0.1))
+                    x_eq = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("x_armature", 0.2))
                 except Exception:
-                    r_eq, x_eq = 0.2, 0.4
+                    r_eq, x_eq = 0.1, 0.2
 
                 r_str = f"{r_eq:.4f}".rjust(10)
-                l_str = f"{x_eq * 1000.0 / (2*3.14159*50.0):.4f}".rjust(10)
+                l_str = f"{x_eq * 1000.0 / (2*3.14159*freq_hz):.4f}".rjust(10)
                 c_str = f"0.8000".rjust(10)
 
                 node_prefix = f"E{idx}"
@@ -104,7 +105,7 @@ class ATPCaseBuilder:
         atp_lines = [
             "BEGIN NEW DATA CASE",
             f"C  ATP Case File for {scenario_id}",
-            "POWER FREQUENCY                      50.",
+            f"POWER FREQUENCY                      {freq_hz:.0f}.",
             "$DUMMY, XYZ000",
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
             "   1.E-4    0.1     50.     50.",

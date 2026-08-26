@@ -126,8 +126,11 @@ def build_lv3_network(topology: dict = None, loads_dict: dict = None, registry: 
             if unit.feeder_id == "feeder_3":
                 for ld in unit.loads:
                     eq_model = get_equipment_model(ld.load_type)
+                    kw = eq_model.rated_power_kw
+                    pf = eq_model.power_factor
+                    model_type = eq_model.opendss_params.get("model", 1)
                     dss.run_command(
-                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw=5.0 pf=0.95 model=1 status=fixed"
+                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={kw} pf={pf} model={model_type} status=fixed"
                     )
     elif loads_dict:
         for ld in loads_dict.get("loads", []):

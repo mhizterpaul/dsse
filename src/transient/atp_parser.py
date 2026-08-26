@@ -67,7 +67,7 @@ class ATPOutputReader:
 
             if read_fn is not None:
                 dfHEAD, data, miscData = read_fn(str(bin_path))
-                target_len = 1000
+                target_len = data.shape[0]
                 t = data[:target_len, 0]
 
                 pcc_voltages = {}
