@@ -52,34 +52,19 @@ def simulate_and_plot_load_circuit_transients():
             reinitialize_plant=False
         )
 
-        cu = sim_res.processed_consumer_units.get("trans1_lv_boundary_consumer_unit")
+        m_id = "trans1_lv_boundary_consumer_unit"
+        cu = sim_res.processed_consumer_units.get(m_id)
+
+        t = sim_res.time_s if (sim_res.time_s is not None and len(sim_res.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
+
         if cu is not None:
-            t = sim_res.time_s if sim_res.time_s is not None else np.linspace(0, 0.1, 1000)
             v_high = remove_low_frequency_components(cu["raw_voltage"])
             i_high = remove_low_frequency_components(cu["raw_current"])
-            waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
         else:
-            # Fallback signature generation
-            t = np.linspace(0, 0.1, 1000)
-            freqs = {
-                "ac_motor": 1200.0, "dc_motor_inverter": 1800.0, "microwave": 2400.0,
-                "induction_plate": 3000.0, "compressor": 1500.0, "audio_amplifier": 2100.0,
-                "ups": 2700.0, "industrial_fan": 3300.0
-            }
-            f = freqs.get(eq, 1500.0)
-            t_event = t - 0.02
-            decay = np.where(t_event >= 0, np.exp(-t_event / 0.015), 0.0)
-            v_high = np.column_stack([
-                0.15 * decay * np.sin(2 * np.pi * f * t_event),
-                0.15 * decay * np.sin(2 * np.pi * f * t_event - 2 * np.pi / 3),
-                0.15 * decay * np.sin(2 * np.pi * f * t_event - 4 * np.pi / 3)
-            ])
-            i_high = np.column_stack([
-                0.25 * decay * np.cos(2 * np.pi * f * t_event),
-                0.25 * decay * np.cos(2 * np.pi * f * t_event - 2 * np.pi / 3),
-                0.25 * decay * np.cos(2 * np.pi * f * t_event - 4 * np.pi / 3)
-            ])
-            waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
+            v_high = np.zeros((len(t), 3))
+            i_high = np.zeros((len(t), 3))
+
+        waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
 
     # Group 1: First 4 equipment types
     fig1, axes1 = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
@@ -118,6 +103,5 @@ def simulate_and_plot_load_circuit_transients():
 
 if __name__ == "__main__":
     fig1, fig2 = simulate_and_plot_load_circuit_transients()
-    fig1.savefig("src/visualization/load_transients_part1.png", dpi=300)
-    fig2.savefig("src/visualization/load_transients_part2.png", dpi=300)
-    print("Saved load circuit switch transient plots successfully.")
+    plt.close("all")
+    print("Simulated and generated transient figures successfully.")
