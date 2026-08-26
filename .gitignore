@@ -6,17 +6,16 @@ __pycache__/
 
 # Run and build artifacts
 *.egg-info/
-*.lis
 *.dbg
-*.pl4
 *.pl4.bin
 atpmingw_2024/TEMP_CASE*
 atpmingw_2024/*.bin
 atpmingw_2024/*.tmp
-atpmingw_2024/*.lis
 atpmingw_2024/*.dbg
-atpmingw_2024/*.pl4
+
+# ATP outputs, generated CSV datasets, and time-series JSON dumps
+src/simulation/atp_cases/
+*.lis
+*.pl4
 *.json
 *.csv
-src/simulation/*.json
-src/simulation/*.csv

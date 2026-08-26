@@ -16,6 +16,17 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
 
     bf_stats_list, bf_p_list = [], []
 
+    if "gt_pair_category" not in df_3.columns:
+        group_sim = df_3[df_3["gt_time_offset_s"] == 0.0]
+        group_shift = df_3[df_3["gt_time_offset_s"] > 0.0]
+        v_sim = group_sim["residual_voltage_magnitude"].values
+        v_shift = group_shift["residual_voltage_magnitude"].values
+        stat_v, p_v = (stats.levene(v_sim, v_shift, center="median") if len(v_sim) > 0 and len(v_shift) > 0 else (0.0, 1.0))
+        results["avg_brown_forsythe_stat"] = float(stat_v) if np.isfinite(stat_v) else 0.0
+        results["avg_p_val"] = float(p_v) if np.isfinite(p_v) else 1.0
+        print(f"Overall Dataset 3 Time Shift (N_sim={len(v_sim)}, N_shift={len(v_shift)}): Stat={results['avg_brown_forsythe_stat']:.4f}, p={results['avg_p_val']:.4e}")
+        return results
+
     for cat in pair_categories:
         df_cat = df_3[df_3["gt_pair_category"] == cat]
 
@@ -30,13 +41,17 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
         var_v = np.var(v_sim) + np.var(v_shift) if len(v_sim) > 0 and len(v_shift) > 0 else 0.0
         var_i = np.var(i_sim) + np.var(i_shift) if len(i_sim) > 0 and len(i_shift) > 0 else 0.0
 
-        if len(v_sim) > 0 and len(v_shift) > 0 and var_v > 0:
+        if len(v_sim) > 0 and len(v_shift) > 0 and var_v > 1e-9:
             stat_v, p_v = stats.levene(v_sim, v_shift, center="median")
+            if not np.isfinite(stat_v):
+                stat_v, p_v = 0.0, 1.0
         else:
             stat_v, p_v = 0.0, 1.0
 
-        if len(i_sim) > 0 and len(i_shift) > 0 and var_i > 0:
+        if len(i_sim) > 0 and len(i_shift) > 0 and var_i > 1e-9:
             stat_i, p_i = stats.levene(i_sim, i_shift, center="median")
+            if not np.isfinite(stat_i):
+                stat_i, p_i = 0.0, 1.0
         else:
             stat_i, p_i = 0.0, 1.0
 
@@ -57,13 +72,13 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
         print(f"Pair Category '{cat}':")
         print(f"  Simultaneous (N={len(group_sim)}): V_res = {np.mean(v_sim):.6f}, I_res = {np.mean(i_sim):.6f}")
         print(f"  Time-Shifted (N={len(group_shift)}): V_res = {np.mean(v_shift):.6f}, I_res = {np.mean(i_shift):.6f}")
-        print(f"  Brown-Forsythe Test (Voltage): Stat = {stat_v:.4f}, p = {p_v:.4e}\n")
+        print(f"  Brown-Forsythe Test (Voltage): Stat = {stat_v:.4f}, p = {p_v:.4e}")
 
-    results["avg_brown_forsythe_stat"] = float(np.mean(bf_stats_list))
-    results["avg_p_val"] = float(np.mean(bf_p_list))
+    results["avg_brown_forsythe_stat"] = float(np.nanmean(bf_stats_list))
+    results["avg_p_val"] = float(np.nanmean(bf_p_list))
 
     print("--- Summary Q2 Time Shift Variation Across All Pair Categories ---")
-    print(f"Average Brown-Forsythe Stat: {results['avg_brown_forsythe_stat']:.4f}, p-value: {results['avg_p_val']:.4e}\n")
+    print(f"Average Brown-Forsythe Stat: {results['avg_brown_forsythe_stat']:.4f}, p-value: {results['avg_p_val']:.4e}")
 
     return results
 

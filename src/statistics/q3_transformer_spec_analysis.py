@@ -16,6 +16,18 @@ def run_q3_transformer_spec_analysis(dataset_path: Path = Path("src/simulation/d
 
     f_v_list, p_v_list = [], []
 
+    if "gt_pair_category" not in df_4.columns or "gt_transformer_spec_id" not in df_4.columns:
+        spec_col = "gt_transformer_spec_id" if "gt_transformer_spec_id" in df_4.columns else ("gt_feeder_id" if "gt_feeder_id" in df_4.columns else None)
+        if spec_col:
+            tx_groups_v = [group["residual_voltage_magnitude"].values for _, group in df_4.groupby(spec_col)]
+            f_v, p_v = stats.f_oneway(*tx_groups_v) if len(tx_groups_v) > 1 else (0.0, 1.0)
+        else:
+            f_v, p_v = 0.0, 1.0
+        results["avg_f_stat_voltage"] = float(f_v) if np.isfinite(f_v) else 0.0
+        results["avg_p_val_voltage"] = float(p_v) if np.isfinite(p_v) else 1.0
+        print(f"Overall Dataset 4 Transformer Spec Effect (N={len(df_4)}): F={results['avg_f_stat_voltage']:.4f}, p={results['avg_p_val_voltage']:.4e}")
+        return results
+
     for cat in pair_categories:
         df_cat = df_4[df_4["gt_pair_category"] == cat]
 
