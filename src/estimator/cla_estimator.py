@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from typing import List, Dict, Union
 import numpy as np
+
 
 @dataclass
 class ConsumerLoadPremises:
@@ -9,6 +11,7 @@ class ConsumerLoadPremises:
     connected_load_kw: float
     historical_billing_kwh: float = 100.0
     supply_availability: float = 1.0
+
 
 class ConsumerLoadClassModel:
     """
@@ -41,9 +44,10 @@ class ConsumerLoadClassModel:
             profile = 0.5 + 0.5 * np.sin(2 * np.pi * t / 24.0)
         elif class_id == "commercial":
             profile = 0.2 + 0.8 * (1.0 / (1.0 + np.exp(-0.5 * (t - 12.0))))
-        else: # industrial_motor
+        else:  # industrial_motor
             profile = 0.8 + 0.2 * np.cos(2 * np.pi * t / 12.0)
         return np.maximum(0.05, profile)
+
 
 @dataclass
 class ClusterLoadAllocationEstimate:
@@ -52,7 +56,8 @@ class ClusterLoadAllocationEstimate:
     estimated_technical_loss_kwh: float
     unsampled_energy_pool_kwh: float
     estimated_unsampled_energy_kwh: float
-    allocated_unsampled_consumer_energy: dict[str, float]
+    allocated_unsampled_consumer_energy: Dict[str, float]
+
 
 class ClusterLoadAllocationEstimator:
     """
@@ -61,16 +66,59 @@ class ClusterLoadAllocationEstimator:
         E_i_hat = E_U * (w_i / sum(w_j))
     """
 
+    def averaging_function(self, values: Union[List[float], np.ndarray]) -> float:
+        """
+        Computes the arithmetic average of allocated/observed energy consumption values.
+        """
+        vals = np.asarray(values, dtype=float)
+        if len(vals) == 0:
+            return 0.0
+        return float(np.mean(vals))
+
+    def weighting_function(self, premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]]) -> Dict[str, float]:
+        """
+        Computes expected consumption weights w_i = E[E_i | C_i, X_i] for unsampled consumer units.
+        """
+        if isinstance(premises_list, ConsumerLoadPremises):
+            premises_list = [premises_list]
+
+        weights = {}
+        for p in premises_list:
+            w_i = ConsumerLoadClassModel.compute_expected_weight(p)
+            weights[p.consumer_id] = w_i
+        return weights
+
+    def validation_function(
+        self,
+        feeder_supply_energy_kwh: float,
+        sampled_consumer_energy_kwh: float,
+        estimated_technical_loss_kwh: float
+    ) -> bool:
+        """
+        Validates energy balance conservation equation E_F >= E_M + E_L.
+        """
+        if feeder_supply_energy_kwh <= 0:
+            return False
+        if sampled_consumer_energy_kwh < 0 or estimated_technical_loss_kwh < 0:
+            return False
+        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + estimated_technical_loss_kwh))
+
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
         estimated_technical_loss_kwh: float,
-        unsampled_premises: list[ConsumerLoadPremises]
+        unsampled_premises: List[ConsumerLoadPremises]
     ) -> ClusterLoadAllocationEstimate:
         """
         Estimates unsampled customer energy allocations using baseline CLA.
         """
+        self.validation_function(
+            feeder_supply_energy_kwh=feeder_supply_energy_kwh,
+            sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
+            estimated_technical_loss_kwh=estimated_technical_loss_kwh
+        )
+
         e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - estimated_technical_loss_kwh))
 
         if not unsampled_premises:
@@ -83,11 +131,7 @@ class ClusterLoadAllocationEstimator:
                 allocated_unsampled_consumer_energy={}
             )
 
-        weights = {}
-        for p in unsampled_premises:
-            w_i = ConsumerLoadClassModel.compute_expected_weight(p)
-            weights[p.consumer_id] = w_i
-
+        weights = self.weighting_function(unsampled_premises)
         sum_w = sum(weights.values())
         if sum_w <= 0:
             sum_w = float(len(unsampled_premises))

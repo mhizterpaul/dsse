@@ -146,19 +146,27 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                 for u in unsampled_units
             ]
 
+            is_valid_cla = cla_estimator.validation_function(
+                feeder_supply_energy_kwh=feeder_supply_energy_kwh,
+                sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
+                estimated_technical_loss_kwh=gt_tech_loss_kwh
+            )
+
             cla_res = cla_estimator.estimate(
                 feeder_supply_energy_kwh=feeder_supply_energy_kwh,
                 sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
                 estimated_technical_loss_kwh=gt_tech_loss_kwh,
                 unsampled_premises=unsampled_premises
-            ) if unsampled_premises else None
+            ) if (is_valid_cla and unsampled_premises) else None
 
             time_cla_res = time_cla_estimator.estimate(
                 feeder_supply_energy_kwh=feeder_supply_energy_kwh,
                 sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
                 estimated_technical_loss_kwh=gt_tech_loss_kwh,
                 unsampled_premises=unsampled_premises
-            ) if unsampled_premises else None
+            ) if (is_valid_cla and unsampled_premises) else None
+
+            weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
 
             num_sampled = int(len(feeder_units) * 0.36)
 
@@ -169,41 +177,37 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
                 unit_dss_energy = float(unit_meas.get("energy_kwh", len(u.loads) * 1.25))
 
                 meas_energy = round(unit_dss_energy, 4) if is_metered else ""
-                cla_est = round(float(cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and cla_res and unsampled_premises) else ""
-                time_cla_est = round(float(time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises)), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
+                cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises))), 4) if (not is_metered and cla_res and unsampled_premises) else ""
+                time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises))), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
+
+                unit_weight = round(float(weights_map.get(u.consumer_id, 1.0)), 4) if not is_metered else ""
 
                 # Known / registered consumer unit
                 rows_1.append({
-                    "gt_feeder_id": f"feeder_{f_id}",
                     "gt_consumer_unit_id": u.consumer_id,
                     "consumer_type": "known",
                     "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
                     "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
+                    "assigned_weight": unit_weight,
                     "consumer_line_losses": unit_meas.get("line_losses", 0.15),
                     "measured_energy_kwh": meas_energy,
                     "cla_estimates": cla_est,
-                    "time_adjusted_cla_estimates": time_cla_est,
-                    "gt_total_consumer_energy_kwh": round(gt_total_energy_kwh, 4),
-                    "gt_technical_loss_kwh": gt_tech_loss_kwh,
-                    "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh
+                    "time_adjusted_cla_estimates": time_cla_est
                 })
 
                 # Latent / unknown consumer unit at same bus if present
                 latent_u = latent_map.get(u.bus_id)
                 if latent_u:
                     rows_1.append({
-                        "gt_feeder_id": f"feeder_{f_id}",
                         "gt_consumer_unit_id": latent_u.consumer_id,
                         "consumer_type": "unknown",
                         "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
                         "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
+                        "assigned_weight": "",
                         "consumer_line_losses": 0.10,
                         "measured_energy_kwh": "",
                         "cla_estimates": "",
-                        "time_adjusted_cla_estimates": "",
-                        "gt_total_consumer_energy_kwh": round(gt_total_energy_kwh, 4),
-                        "gt_technical_loss_kwh": gt_tech_loss_kwh,
-                        "gt_non_technical_loss_kwh": gt_non_tech_loss_kwh
+                        "time_adjusted_cla_estimates": ""
                     })
 
     # Pre-simulate and catalog ATP transient signatures for all 8 equipment types and 10 fault configurations
