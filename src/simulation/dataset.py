@@ -111,13 +111,31 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         m_key = f"trans{f_id}_lv_boundary_consumer_unit"
         meas = sim_res_d1.steady_state_measurements.get(m_key, {})
-        gt_total_energy_kwh = float(meas.get("energy_kwh", 0.0))
 
         num_sampled = int(len(feeder_units) * 0.36)
+        sampled_units = feeder_units[:num_sampled]
+        unsampled_units = feeder_units[num_sampled:]
+
         gt_sampled_energy_kwh = round(
             sum(
-                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
-                for u in feeder_units[:num_sampled]
+                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", len(u.loads) * 1.25 * (5.0 / 60.0)))
+                for u in sampled_units
+            ),
+            4
+        )
+
+        gt_unsampled_known_energy_kwh = round(
+            sum(
+                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", len(u.loads) * 1.25 * (5.0 / 60.0)))
+                for u in unsampled_units
+            ),
+            4
+        )
+
+        gt_latent_energy_kwh = round(
+            sum(
+                float(sim_res_d1.steady_state_measurements.get(latent_map[u.bus_id].consumer_id, {}).get("energy_kwh", len(latent_map[u.bus_id].loads) * 1.0 * (5.0 / 60.0)))
+                for u in feeder_units if u.bus_id in latent_map
             ),
             4
         )
@@ -133,10 +151,19 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         )
         line_loss_kwh = round((feeder_line_loss_kw + consumer_line_loss_kw) * (5.0 / 60.0), 4)
 
-        feeder_supply_energy_kwh = round(gt_total_energy_kwh + transformer_loss_kwh + line_loss_kwh, 4)
+        gt_tech_loss_kwh = round(transformer_loss_kwh + line_loss_kwh, 4)
+
+        feeder_supply_energy_kwh = round(
+            gt_sampled_energy_kwh + gt_unsampled_known_energy_kwh + gt_latent_energy_kwh + gt_tech_loss_kwh,
+            4
+        )
+
+        gt_non_tech_loss_kwh = round(
+            feeder_supply_energy_kwh - gt_sampled_energy_kwh - gt_unsampled_known_energy_kwh - gt_tech_loss_kwh,
+            4
+        )
 
         # Estimate energy for unsampled units
-        unsampled_units = feeder_units[int(len(feeder_units) * 0.36):]
         unsampled_premises = [
             ConsumerLoadPremises(
                 consumer_id=u.consumer_id,
@@ -147,25 +174,23 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             for u in unsampled_units
         ]
 
-        tech_loss_kwh = round(transformer_loss_kwh + line_loss_kwh, 4)
-
         is_valid_cla = cla_estimator.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=tech_loss_kwh
+            estimated_technical_loss_kwh=gt_tech_loss_kwh
         )
 
         cla_res = cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=tech_loss_kwh,
+            estimated_technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=tech_loss_kwh,
+            estimated_technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
 
