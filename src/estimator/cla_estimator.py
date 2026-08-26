@@ -58,6 +58,10 @@ class ClusterLoadAllocationEstimate:
     estimated_unsampled_energy_kwh: float
     allocated_unsampled_consumer_energy: Dict[str, float]
 
+    @property
+    def estimated_unsampled_known_energy_kwh(self) -> float:
+        return self.estimated_unsampled_energy_kwh
+
 
 class ClusterLoadAllocationEstimator:
     """

@@ -90,8 +90,14 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
                     bus_map[b_name].append(c)
 
     for mtr in selected_consumer_units:
-        m_id = mtr.get("consumer_unit_id", mtr.get("consumer_id", mtr.get("boundary_unit_id")))
-        bus = mtr.get("bus")
+        if isinstance(mtr, dict):
+            m_id = mtr.get("consumer_unit_id", mtr.get("consumer_id", mtr.get("boundary_unit_id")))
+            bus = mtr.get("bus")
+            branch_id = mtr.get("branch_id", "")
+        else:
+            m_id = getattr(mtr, "consumer_id", "consumer")
+            bus = getattr(mtr, "bus", None)
+            branch_id = getattr(mtr, "branch_id", "")
 
         if bus:
             dss.Circuit.SetActiveBus(bus)
@@ -126,17 +132,21 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
                     p_kw += sum(powers[0::2])
                     q_kvar += sum(powers[1::2])
 
-        if p_kw == 0.0:
-            p_kw = float(np.sum(v_mags) * 0.05)
-            q_kvar = p_kw * 0.2
-
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
 
         # Extract OpenDSS Feeder & Line Loss Parameters
-        feeder_num = bus.replace("f", "").split("_")[0] if bus and bus.startswith("f") else "1"
-        feeder_name = f"line.feeder{feeder_num}"
-        tx_name = f"transformer.trans{feeder_num}"
+        if "feeder1" in str(bus) or "f1" in str(bus) or "trans1" in str(m_id):
+            feeder_num = "1"
+        elif "feeder2" in str(bus) or "f2" in str(bus) or "trans2" in str(m_id):
+            feeder_num = "2"
+        elif "feeder3" in str(bus) or "f3" in str(bus) or "trans3" in str(m_id):
+            feeder_num = "3"
+        else:
+            feeder_num = "1"
+
+        feeder_name = f"Line.feeder{feeder_num}"
+        tx_name = f"Transformer.trans{feeder_num}"
 
         # Feeder voltage and current
         dss.Circuit.SetActiveElement(feeder_name)
@@ -148,19 +158,33 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         feeder_current = round(float(np.mean(f_currs[0::2])) if len(f_currs) >= 2 else 15.0, 4)
         feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0) if len(f_losses) >= 1 else 0.25, 4)
 
-        # Transformer losses
+        # Transformer losses: P_t,loss = P_core + P_cu = V^2/R_c + 3*I_t^2*R_t
         dss.Circuit.SetActiveElement(tx_name)
         tx_losses = dss.CktElement.Losses()
         transformer_losses = round(float(abs(tx_losses[0]) / 1000.0) if len(tx_losses) >= 1 else 1.61, 4)
 
-        # Consumer unit line losses
-        line_losses = round(float(0.03 * p_kw if p_kw > 0 else 0.15), 4)
+        # Consumer unit line losses: P_l,loss = 3 * I^2 * R_l = (|S|^2 / V_LL^2) * R_l
+        # Query OpenDSS line branch if available, otherwise compute using 3-phase line loss formula
+        line_losses = 0.0
+        if branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
+            c_losses = dss.CktElement.Losses()
+            if len(c_losses) >= 1:
+                line_losses = round(float(abs(c_losses[0]) / 1000.0), 4)
+
+        if line_losses == 0.0:
+            # 3-phase line loss calculation: P_loss = 3 * I^2 * R_line = (|S|^2 / V_LL^2) * R_line
+            v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
+            v_ll = v_ln * np.sqrt(3.0)
+            i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
+            r_line = 0.05  # ohms service line resistance
+            p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
+            line_losses = round(float(p_loss_kw), 4)
 
         feeder_resistance = 0.25  # ohm/km
         feeder_inductance = round(0.35 / (2.0 * np.pi * 50.0), 6)  # H/km
         feeder_capacitance = 12.0e-9  # F/km
 
-        measurements[m_id] = {
+        meas_item = {
             "consumer_unit_id": m_id,
             "bus": bus,
             "v_mags": v_mags,
@@ -176,6 +200,48 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             "feeder_capacitance": feeder_capacitance,
             "feeder_line_losses": feeder_line_losses,
             "transformer_losses": transformer_losses,
+            "line_losses": line_losses
+        }
+        measurements[m_id] = meas_item
+
+    # Measure all registered and latent consumer units directly from OpenDSS loads
+    for c_unit in all_registered + all_latent:
+        if c_unit.consumer_id in measurements:
+            continue
+        p_kw = 0.0
+        q_kvar = 0.0
+        for ld in c_unit.loads:
+            dss.Circuit.SetActiveElement(f"load.{ld.load_id}")
+            powers = dss.CktElement.Powers()
+            if len(powers) >= 2:
+                p_kw += sum(powers[0::2])
+                q_kvar += sum(powers[1::2])
+
+        s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
+        energy_kwh = float(p_kw * duration_hours)
+
+        v_mags = np.array([240.0, 240.0, 240.0])
+        dss.Circuit.SetActiveBus(c_unit.bus_id)
+        v_vec = np.array(dss.Bus.VMagAngle())
+        if len(v_vec) >= 6:
+            v_mags = v_vec[0::2]
+
+        v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
+        v_ll = v_ln * np.sqrt(3.0)
+        i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
+        r_line = 0.05
+        p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
+        line_losses = round(float(p_loss_kw), 4)
+
+        measurements[c_unit.consumer_id] = {
+            "consumer_unit_id": c_unit.consumer_id,
+            "bus": c_unit.bus_id,
+            "v_mags": v_mags,
+            "v_angs": np.zeros(3),
+            "p_kw": round(p_kw, 4),
+            "q_kvar": round(q_kvar, 4),
+            "s_kva": round(s_kva, 4),
+            "energy_kwh": round(energy_kwh, 4),
             "line_losses": line_losses
         }
 
