@@ -11,7 +11,7 @@ but does not know the actual consumption of every customer.
 
 The formulation is:
 
-[ E_U = E_F - E_M - E_L ]
+$$ E_U = E_F - E_M - E_L $$
 
 where:
 - $E_F$: feeder supply energy,
@@ -21,7 +21,7 @@ where:
 
 Then estimate an expected consumption for each unmetered customer:
 
-[ w_i = \mathbb{E}[E_i \mid C_i, X_i] ]
+$$ w_i = \mathbb{E}[E_i \mid C_i, X_i] $$
 
 where $X_i$ could include:
 - customer class,
@@ -38,28 +38,26 @@ $$ \boxed{ \hat{E}_i = E_U \frac{w_i}{\sum_{j\in U}w_j} } $$
 
 with time-adjusted consumer/load-class information.
 
-Suppose consumer $i$ belongs to class $c$, with metered class profile
-
-[ \mu_c(t). ]
+Suppose consumer $i$ belongs to class $c$, with metered class profile $\mu_c(t)$.
 
 For an unmetered consumer, rather than assigning a static class average, estimate:
 
-[ \hat{E}_i = \int_{t_0}^{t_1} \alpha_i(t)\mu_{c_i}(t)\,dt ]
+$$ \hat{E}_i = \int_{t_0}^{t_1} \alpha_i(t)\mu_{c_i}(t)\,dt $$
 
 where $\alpha_i(t)$ is your time adjustment factor for observed metered-class behaviour.
 
-Let the actual feeder energy be
+Let the actual feeder energy be:
 
-[ E_F = E_L + E_{NTL} + E_T ]
+$$ E_F = E_L + E_{\mathrm{NTL}} + E_T $$
 
 where:
 - $E_L$: legitimate consumer consumption;
-- $E_{NTL}$: technical network losses (transformer and line losses);
+- $E_{\mathrm{NTL}}$: technical network losses (transformer and line losses);
 - $E_T$: non-technical losses/theft.
 
 Therefore the allocation error is:
 
-[ E_F - \hat{E}_L = \hat{E}_{\mathrm{loss}} + \hat{E}_T. ]
+$$ E_F - \hat{E}_L = \hat{E}_{\mathrm{loss}} + \hat{E}_T $$
 
 We report the baseline CLA error and time-adjusted CLA error, and derive a transient-assisted CLA error correction factor.
 
