@@ -15,8 +15,10 @@ atpmingw_2024/*.dbg
 atpmingw_2024/fort.*
 fort.*
 
-# ATP outputs, generated CSV datasets, and time-series JSON dumps
+# ATP outputs, generated CSV datasets, time-series JSON dumps, and plots
 src/simulation/atp_cases/
+src/visualization/*.png
+*.png
 *.lis
 *.pl4
 *.json

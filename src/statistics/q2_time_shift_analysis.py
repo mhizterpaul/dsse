@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tuple[float, float, float]:
+
+def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> dict:
     pairs = [
         ("obs_single_event_1_v_phase_a", "obs_single_event_2_v_phase_a"),
         ("obs_single_event_1_v_phase_b", "obs_single_event_2_v_phase_b"),
@@ -15,12 +16,36 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tu
     ]
 
     eta_noise = 10.0 ** (-snr_db / 20.0)
-    r_means = []
-    r_stds = []
+
+    # Compute average scalar residual and composed magnitudes to form the magnitude penalty ratio
+    res_mags = []
+    comp_mags = []
+    for _, row in df.iterrows():
+        v_a = np.array(json.loads(row["obs_composed_event_v_phase_a"])) if isinstance(row["obs_composed_event_v_phase_a"], str) else np.array(row["obs_composed_event_v_phase_a"])
+        v_b = np.array(json.loads(row["obs_composed_event_v_phase_b"])) if isinstance(row["obs_composed_event_v_phase_b"], str) else np.array(row["obs_composed_event_v_phase_b"])
+        v_c = np.array(json.loads(row["obs_composed_event_v_phase_c"])) if isinstance(row["obs_composed_event_v_phase_c"], str) else np.array(row["obs_composed_event_v_phase_c"])
+
+        i_a = np.array(json.loads(row["obs_composed_event_i_phase_a"])) if isinstance(row["obs_composed_event_i_phase_a"], str) else np.array(row["obs_composed_event_i_phase_a"])
+        i_b = np.array(json.loads(row["obs_composed_event_i_phase_b"])) if isinstance(row["obs_composed_event_i_phase_b"], str) else np.array(row["obs_composed_event_i_phase_b"])
+        i_c = np.array(json.loads(row["obs_composed_event_i_phase_c"])) if isinstance(row["obs_composed_event_i_phase_c"], str) else np.array(row["obs_composed_event_i_phase_c"])
+
+        comp_v = np.sqrt(np.mean(v_a**2 + v_b**2 + v_c**2))
+        comp_i = np.sqrt(np.mean(i_a**2 + i_b**2 + i_c**2))
+        comp_mags.append(comp_v + comp_i)
+
+        res_v = float(row.get("residual_voltage_magnitude", 0.0))
+        res_i = float(row.get("residual_current_magnitude", 0.0))
+        res_mags.append(res_v + res_i)
+
+    avg_res_mag = float(np.mean(res_mags)) if res_mags else 0.0
+    avg_comp_mag = float(np.mean(comp_mags)) if comp_mags else 1.0
+    mag_ratio = avg_res_mag / (avg_comp_mag + 1e-9)
+
+    discount_factor = eta_noise + mag_ratio
+    col_correlations = [[] for _ in pairs]
 
     for _, row in df.iterrows():
-        r_vals = []
-        for col1, col2 in pairs:
+        for p_idx, (col1, col2) in enumerate(pairs):
             if col1 in row and col2 in row:
                 v1 = row[col1]
                 v2 = row[col2]
@@ -30,23 +55,27 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tu
                 if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
                     val, _ = stats.pearsonr(arr1, arr2)
                     raw_val = 0.0 if np.isnan(val) else abs(val)
-                    val = max(0.0, raw_val - eta_noise)
+                    val = max(0.0, raw_val - discount_factor)
                 else:
                     val = 0.0
             else:
                 val = 0.0
-            r_vals.append(val)
+            col_correlations[p_idx].append(val)
 
-        r_arr = np.asarray(r_vals)
-        r_bar = float(np.mean(r_arr))
-        r_std = float(np.sqrt(np.sum((r_arr - r_bar) ** 2) / 5.0))
-        r_means.append(r_bar)
-        r_stds.append(r_std)
+    col_corr_vector = [float(np.mean(c_list)) if c_list else 0.0 for c_list in col_correlations]
+    mean_waveform_correlation = float(np.mean(col_corr_vector)) if col_corr_vector else 0.0
+    corr_std = float(np.std(col_corr_vector)) if col_corr_vector else 0.0
 
-    avg_r = float(np.mean(r_means)) if r_means else 0.0
-    avg_std = float(np.mean(r_stds)) if r_stds else 0.0
-    dissimilarity = float(1.0 - avg_r)
-    return avg_r, avg_std, dissimilarity
+    return {
+        "col_corr_vector": col_corr_vector,
+        "mean_waveform_correlation": mean_waveform_correlation,
+        "corr_std": corr_std,
+        "avg_res_mag": avg_res_mag,
+        "avg_comp_mag": avg_comp_mag,
+        "mag_ratio": mag_ratio,
+        "discount_factor": discount_factor
+    }
+
 
 def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset_3.csv")) -> dict:
     if not dataset_path.exists():
@@ -55,83 +84,39 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
     df_3 = pd.read_csv(dataset_path)
     print("--- Running Question 2 Analysis: Time Shift Operation Variation (Dataset 3) ---")
 
-    pair_categories = ["load_load", "fault_fault", "load_fault"]
-    results = {"per_category": {}}
+    stats_res = compute_waveform_pearson_stats(df_3)
+    col_corr_vector = stats_res["col_corr_vector"]
+    mean_waveform_correlation = stats_res["mean_waveform_correlation"]
+    corr_std = stats_res["corr_std"]
+    mag_ratio = stats_res["mag_ratio"]
+    discount_factor = stats_res["discount_factor"]
 
-    bf_stats_list, bf_p_list = [], []
+    print(f"Waveform Pearson Correlation (Dataset 3): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
+    print(f"  Residual/Composed Magnitude Ratio: {mag_ratio:.4f}, Total Discount Factor = {discount_factor:.4f}")
+    print(f"  Per-Column Correlation Vector: {[round(c, 4) for c in col_corr_vector]}")
 
-    avg_r, avg_std, dissimilarity = compute_waveform_pearson_stats(df_3)
-    results["avg_pearson_corr"] = avg_r
-    results["std_pearson_corr"] = avg_std
-    results["dissimilarity"] = dissimilarity
+    group_sim = df_3[df_3["gt_time_offset_s"] == 0.0]
+    group_shift = df_3[df_3["gt_time_offset_s"] > 0.0]
 
-    print(f"Waveform Pearson Correlation (Dataset 3): Mean r_bar = {avg_r:.4f}, Std sigma_r = {avg_std:.4f}, Dissimilarity D = {dissimilarity:.4f}")
+    v_sim = group_sim["residual_voltage_magnitude"].values
+    v_shift = group_shift["residual_voltage_magnitude"].values
+    i_sim = group_sim["residual_current_magnitude"].values
+    i_shift = group_shift["residual_current_magnitude"].values
 
-    if "gt_pair_category" not in df_3.columns:
-        group_sim = df_3[df_3["gt_time_offset_s"] == 0.0]
-        group_shift = df_3[df_3["gt_time_offset_s"] > 0.0]
-        v_sim = group_sim["residual_voltage_magnitude"].values
-        v_shift = group_shift["residual_voltage_magnitude"].values
-        stat_v, p_v = (stats.levene(v_sim, v_shift, center="median") if len(v_sim) > 0 and len(v_shift) > 0 else (0.0, 1.0))
-        results["avg_brown_forsythe_stat"] = float(stat_v) if np.isfinite(stat_v) else 0.0
-        results["avg_p_val"] = float(p_v) if np.isfinite(p_v) else 1.0
-        print(f"Overall Dataset 3 Time Shift (N_sim={len(v_sim)}, N_shift={len(v_shift)}): Stat={results['avg_brown_forsythe_stat']:.4f}, p={results['avg_p_val']:.4e}")
-        return results
+    print(f"Overall Dataset 3 Time Shift (N_sim={len(group_sim)}, N_shift={len(group_shift)}):")
+    print(f"  Simultaneous: Mean V_res = {np.mean(v_sim):.6f}, Mean I_res = {np.mean(i_sim):.6f}")
+    print(f"  Time-Shifted: Mean V_res = {np.mean(v_shift):.6f}, Mean I_res = {np.mean(i_shift):.6f}")
 
-    for cat in pair_categories:
-        df_cat = df_3[df_3["gt_pair_category"] == cat]
+    return {
+        "col_corr_vector": col_corr_vector,
+        "mean_waveform_correlation": mean_waveform_correlation,
+        "corr_std": corr_std,
+        "mag_ratio": mag_ratio,
+        "discount_factor": discount_factor,
+        "mean_v_residual_simultaneous": float(np.mean(v_sim)) if len(v_sim) > 0 else 0.0,
+        "mean_v_residual_shifted": float(np.mean(v_shift)) if len(v_shift) > 0 else 0.0
+    }
 
-        group_sim = df_cat[df_cat["gt_time_offset_s"] == 0.0]
-        group_shift = df_cat[df_cat["gt_time_offset_s"] > 0.0]
-
-        v_sim = group_sim["residual_voltage_magnitude"].values
-        v_shift = group_shift["residual_voltage_magnitude"].values
-        i_sim = group_sim["residual_current_magnitude"].values
-        i_shift = group_shift["residual_current_magnitude"].values
-
-        var_v = np.var(v_sim) + np.var(v_shift) if len(v_sim) > 0 and len(v_shift) > 0 else 0.0
-        var_i = np.var(i_sim) + np.var(i_shift) if len(i_sim) > 0 and len(i_shift) > 0 else 0.0
-
-        if len(v_sim) > 0 and len(v_shift) > 0 and var_v > 1e-9:
-            stat_v, p_v = stats.levene(v_sim, v_shift, center="median")
-            if not np.isfinite(stat_v):
-                stat_v, p_v = 0.0, 1.0
-        else:
-            stat_v, p_v = 0.0, 1.0
-
-        if len(i_sim) > 0 and len(i_shift) > 0 and var_i > 1e-9:
-            stat_i, p_i = stats.levene(i_sim, i_shift, center="median")
-            if not np.isfinite(stat_i):
-                stat_i, p_i = 0.0, 1.0
-        else:
-            stat_i, p_i = 0.0, 1.0
-
-        bf_stats_list.append(stat_v)
-        bf_p_list.append(p_v)
-
-        results["per_category"][cat] = {
-            "n_simultaneous": len(group_sim),
-            "n_shifted": len(group_shift),
-            "mean_v_residual_simultaneous": float(np.mean(v_sim)) if len(v_sim) > 0 else 0.0,
-            "mean_v_residual_shifted": float(np.mean(v_shift)) if len(v_shift) > 0 else 0.0,
-            "brown_forsythe_stat_voltage": float(stat_v),
-            "p_val_voltage": float(p_v),
-            "brown_forsythe_stat_current": float(stat_i),
-            "p_val_current": float(p_i)
-        }
-
-        print(f"Pair Category '{cat}':")
-        print(f"  Simultaneous (N={len(group_sim)}): V_res = {np.mean(v_sim):.6f}, I_res = {np.mean(i_sim):.6f}")
-        print(f"  Time-Shifted (N={len(group_shift)}): V_res = {np.mean(v_shift):.6f}, I_res = {np.mean(i_shift):.6f}")
-        print(f"  Brown-Forsythe Test (Voltage): Stat = {stat_v:.4f}, p = {p_v:.4e}")
-
-    results["avg_brown_forsythe_stat"] = float(np.nanmean(bf_stats_list))
-    results["avg_p_val"] = float(np.nanmean(bf_p_list))
-
-    print("--- Summary Q2 Time Shift Variation Across All Pair Categories ---")
-    print(f"Average Brown-Forsythe Stat: {results['avg_brown_forsythe_stat']:.4f}, p-value: {results['avg_p_val']:.4e}")
-
-    return results
 
 if __name__ == "__main__":
     run_q2_time_shift_analysis()

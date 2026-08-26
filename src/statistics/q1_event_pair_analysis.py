@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tuple[float, float, float]:
+
+def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> dict:
     pairs = [
         ("obs_single_event_1_v_phase_a", "obs_single_event_2_v_phase_a"),
         ("obs_single_event_1_v_phase_b", "obs_single_event_2_v_phase_b"),
@@ -15,12 +16,36 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tu
     ]
 
     eta_noise = 10.0 ** (-snr_db / 20.0)
-    r_means = []
-    r_stds = []
+
+    # Compute average scalar residual and composed magnitudes to form the magnitude penalty ratio
+    res_mags = []
+    comp_mags = []
+    for _, row in df.iterrows():
+        v_a = np.array(json.loads(row["obs_composed_event_v_phase_a"])) if isinstance(row["obs_composed_event_v_phase_a"], str) else np.array(row["obs_composed_event_v_phase_a"])
+        v_b = np.array(json.loads(row["obs_composed_event_v_phase_b"])) if isinstance(row["obs_composed_event_v_phase_b"], str) else np.array(row["obs_composed_event_v_phase_b"])
+        v_c = np.array(json.loads(row["obs_composed_event_v_phase_c"])) if isinstance(row["obs_composed_event_v_phase_c"], str) else np.array(row["obs_composed_event_v_phase_c"])
+
+        i_a = np.array(json.loads(row["obs_composed_event_i_phase_a"])) if isinstance(row["obs_composed_event_i_phase_a"], str) else np.array(row["obs_composed_event_i_phase_a"])
+        i_b = np.array(json.loads(row["obs_composed_event_i_phase_b"])) if isinstance(row["obs_composed_event_i_phase_b"], str) else np.array(row["obs_composed_event_i_phase_b"])
+        i_c = np.array(json.loads(row["obs_composed_event_i_phase_c"])) if isinstance(row["obs_composed_event_i_phase_c"], str) else np.array(row["obs_composed_event_i_phase_c"])
+
+        comp_v = np.sqrt(np.mean(v_a**2 + v_b**2 + v_c**2))
+        comp_i = np.sqrt(np.mean(i_a**2 + i_b**2 + i_c**2))
+        comp_mags.append(comp_v + comp_i)
+
+        res_v = float(row.get("residual_voltage_magnitude", 0.0))
+        res_i = float(row.get("residual_current_magnitude", 0.0))
+        res_mags.append(res_v + res_i)
+
+    avg_res_mag = float(np.mean(res_mags)) if res_mags else 0.0
+    avg_comp_mag = float(np.mean(comp_mags)) if comp_mags else 1.0
+    mag_ratio = avg_res_mag / (avg_comp_mag + 1e-9)
+
+    discount_factor = eta_noise + mag_ratio
+    col_correlations = [[] for _ in pairs]
 
     for _, row in df.iterrows():
-        r_vals = []
-        for col1, col2 in pairs:
+        for p_idx, (col1, col2) in enumerate(pairs):
             if col1 in row and col2 in row:
                 v1 = row[col1]
                 v2 = row[col2]
@@ -30,23 +55,27 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tu
                 if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
                     val, _ = stats.pearsonr(arr1, arr2)
                     raw_val = 0.0 if np.isnan(val) else abs(val)
-                    val = max(0.0, raw_val - eta_noise)
+                    val = max(0.0, raw_val - discount_factor)
                 else:
                     val = 0.0
             else:
                 val = 0.0
-            r_vals.append(val)
+            col_correlations[p_idx].append(val)
 
-        r_arr = np.asarray(r_vals)
-        r_bar = float(np.mean(r_arr))
-        r_std = float(np.sqrt(np.sum((r_arr - r_bar) ** 2) / 5.0))
-        r_means.append(r_bar)
-        r_stds.append(r_std)
+    col_corr_vector = [float(np.mean(c_list)) if c_list else 0.0 for c_list in col_correlations]
+    mean_waveform_correlation = float(np.mean(col_corr_vector)) if col_corr_vector else 0.0
+    corr_std = float(np.std(col_corr_vector)) if col_corr_vector else 0.0
 
-    avg_r = float(np.mean(r_means)) if r_means else 0.0
-    avg_std = float(np.mean(r_stds)) if r_stds else 0.0
-    dissimilarity = float(1.0 - avg_r)
-    return avg_r, avg_std, dissimilarity
+    return {
+        "col_corr_vector": col_corr_vector,
+        "mean_waveform_correlation": mean_waveform_correlation,
+        "corr_std": corr_std,
+        "avg_res_mag": avg_res_mag,
+        "avg_comp_mag": avg_comp_mag,
+        "mag_ratio": mag_ratio,
+        "discount_factor": discount_factor
+    }
+
 
 def run_q1_event_pair_analysis(dataset_path: Path = Path("src/simulation/dataset_2.csv")) -> dict:
     if not dataset_path.exists():
@@ -55,84 +84,31 @@ def run_q1_event_pair_analysis(dataset_path: Path = Path("src/simulation/dataset
     df_2 = pd.read_csv(dataset_path)
     print("--- Running Question 1 Analysis: Event Pair Observability (Dataset 2) ---")
 
-    subgroups = ["feeder_1", "feeder_2", "feeder_3"]
-    results = {"per_subgroup": {}}
+    stats_res = compute_waveform_pearson_stats(df_2)
+    col_corr_vector = stats_res["col_corr_vector"]
+    mean_waveform_correlation = stats_res["mean_waveform_correlation"]
+    corr_std = stats_res["corr_std"]
+    mag_ratio = stats_res["mag_ratio"]
+    discount_factor = stats_res["discount_factor"]
 
-    f_v_list, p_v_list = [], []
-    f_i_list, p_i_list = [], []
+    print(f"Waveform Pearson Correlation (Dataset 2): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
+    print(f"  Residual/Composed Magnitude Ratio: {mag_ratio:.4f}, Total Discount Factor = {discount_factor:.4f}")
+    print(f"  Per-Column Correlation Vector: {[round(c, 4) for c in col_corr_vector]}")
 
-    avg_r, avg_std, dissimilarity = compute_waveform_pearson_stats(df_2)
-    results["avg_pearson_corr"] = avg_r
-    results["std_pearson_corr"] = avg_std
-    results["dissimilarity"] = dissimilarity
+    v_vals = df_2["residual_voltage_magnitude"].values
+    i_vals = df_2["residual_current_magnitude"].values
+    print(f"Overall Dataset 2 (N={len(df_2)}): Mean V_res = {np.mean(v_vals):.6f}, Mean I_res = {np.mean(i_vals):.6f}")
 
-    print(f"Waveform Pearson Correlation (Dataset 2): Mean r_bar = {avg_r:.4f}, Std sigma_r = {avg_std:.4f}, Dissimilarity D = {dissimilarity:.4f}")
+    return {
+        "col_corr_vector": col_corr_vector,
+        "mean_waveform_correlation": mean_waveform_correlation,
+        "corr_std": corr_std,
+        "mag_ratio": mag_ratio,
+        "discount_factor": discount_factor,
+        "mean_v_residual": float(np.mean(v_vals)),
+        "mean_i_residual": float(np.mean(i_vals))
+    }
 
-    # If gt_feeder_id or gt_pair_category are absent, perform full dataset ANOVA across load_source / fault_info
-    if "gt_feeder_id" not in df_2.columns or "gt_pair_category" not in df_2.columns:
-        n_obs = len(df_2)
-        v_vals = df_2["residual_voltage_magnitude"].values
-        i_vals = df_2["residual_current_magnitude"].values
-        results["avg_f_stat_voltage"] = 0.0
-        results["avg_p_val_voltage"] = 1.0
-        results["avg_f_stat_current"] = 0.0
-        results["avg_p_val_current"] = 1.0
-        print(f"Overall Dataset 2 (N={n_obs}): Mean V_res = {np.mean(v_vals):.6f}, Mean I_res = {np.mean(i_vals):.6f}")
-        return results
-
-    for sg in subgroups:
-        df_sg = df_2[df_2["gt_feeder_id"] == sg]
-        n_obs = len(df_sg)
-
-        groups_v = [group["residual_voltage_magnitude"].values for _, group in df_sg.groupby("gt_pair_category")] if "gt_pair_category" in df_sg.columns else []
-        groups_i = [group["residual_current_magnitude"].values for _, group in df_sg.groupby("gt_pair_category")] if "gt_pair_category" in df_sg.columns else []
-
-        # Check if groups have non-zero variance before running ANOVA
-        all_var_v = sum(np.var(g) for g in groups_v) if groups_v else 0.0
-        all_var_i = sum(np.var(g) for g in groups_i) if groups_i else 0.0
-
-        if len(groups_v) > 1 and all(len(g) > 0 for g in groups_v) and all_var_v > 0:
-            f_val_v, p_val_v = stats.f_oneway(*groups_v)
-        else:
-            f_val_v, p_val_v = 0.0, 1.0
-
-        if len(groups_i) > 1 and all(len(g) > 0 for g in groups_i) and all_var_i > 0:
-            f_val_i, p_val_i = stats.f_oneway(*groups_i)
-        else:
-            f_val_i, p_val_i = 0.0, 1.0
-
-        f_v_list.append(f_val_v)
-        p_v_list.append(p_val_v)
-        f_i_list.append(f_val_i)
-        p_i_list.append(p_val_i)
-
-        cat_means = df_sg.groupby("gt_pair_category")[["residual_voltage_magnitude", "residual_current_magnitude"]].mean().to_dict(orient="index")
-
-        results["per_subgroup"][sg] = {
-            "n_observations": n_obs,
-            "f_stat_voltage": float(f_val_v),
-            "p_val_voltage": float(p_val_v),
-            "f_stat_current": float(f_val_i),
-            "p_val_current": float(p_val_i),
-            "category_means": cat_means
-        }
-
-        print(f"Subgroup {sg} (N={n_obs}):")
-        print(f"  Q1 Voltage Residual Pair Effect: F = {f_val_v:.4f}, p = {p_val_v:.4e}")
-        print(f"  Q1 Current Residual Pair Effect: F = {f_val_i:.4f}, p = {p_val_i:.4e}")
-        for cat, means in cat_means.items():
-            print(f"    - Category '{cat}': V_res = {means['residual_voltage_magnitude']:.6f}, I_res = {means['residual_current_magnitude']:.6f}")
-
-    results["avg_f_stat_voltage"] = float(np.mean(f_v_list))
-    results["avg_p_val_voltage"] = float(np.mean(p_v_list))
-    results["avg_f_stat_current"] = float(np.mean(f_i_list))
-    results["avg_p_val_current"] = float(np.mean(p_i_list))
-
-    print("\n--- Average Q1 Event Pair Observability Across All Subgroups ---")
-    print(f"Average F-stat Voltage: {results['avg_f_stat_voltage']:.4f}, p-value: {results['avg_p_val_voltage']:.4e}")
-    print(f"Average F-stat Current: {results['avg_f_stat_current']:.4f}, p-value: {results['avg_p_val_current']:.4e}\n")
-
-    return results
 
 if __name__ == "__main__":
     run_q1_event_pair_analysis()
