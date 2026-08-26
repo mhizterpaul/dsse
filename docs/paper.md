@@ -11,7 +11,7 @@ but does not know the actual consumption of every customer.
 
 The formulation is:
 
-[ E_U = E_F - E_M - E_L ]
+$$ E_U = E_F - E_M - E_L $$
 
 where:
 - $E_F$: feeder supply energy,
@@ -21,7 +21,7 @@ where:
 
 Then estimate an expected consumption for each unmetered customer:
 
-[ w_i = \mathbb{E}[E_i \mid C_i, X_i] ]
+$$ w_i = \mathbb{E}[E_i \mid C_i, X_i] $$
 
 where $X_i$ could include:
 - customer class,
@@ -38,28 +38,26 @@ $$ \boxed{ \hat{E}_i = E_U \frac{w_i}{\sum_{j\in U}w_j} } $$
 
 with time-adjusted consumer/load-class information.
 
-Suppose consumer $i$ belongs to class $c$, with metered class profile
-
-[ \mu_c(t). ]
+Suppose consumer $i$ belongs to class $c$, with metered class profile $\mu_c(t)$.
 
 For an unmetered consumer, rather than assigning a static class average, estimate:
 
-[ \hat{E}_i = \int_{t_0}^{t_1} \alpha_i(t)\mu_{c_i}(t)\,dt ]
+$$ \hat{E}_i = \int_{t_0}^{t_1} \alpha_i(t)\mu_{c_i}(t)\,dt $$
 
 where $\alpha_i(t)$ is your time adjustment factor for observed metered-class behaviour.
 
-Let the actual feeder energy be
+Let the actual feeder energy be:
 
-[ E_F = E_L + E_{NTL} + E_T ]
+$$ E_F = E_L + E_{\mathrm{NTL}} + E_T $$
 
 where:
 - $E_L$: legitimate consumer consumption;
-- $E_{NTL}$: technical network losses (transformer and line losses);
+- $E_{\mathrm{NTL}}$: technical network losses (transformer and line losses);
 - $E_T$: non-technical losses/theft.
 
 Therefore the allocation error is:
 
-[ E_F - \hat{E}_L = \hat{E}_{\mathrm{loss}} + \hat{E}_T. ]
+$$ E_F - \hat{E}_L = \hat{E}_{\mathrm{loss}} + \hat{E}_T $$
 
 We report the baseline CLA error and time-adjusted CLA error, and derive a transient-assisted CLA error correction factor.
 
@@ -159,7 +157,7 @@ Dynamic Quantities
 The simulation involves first assigning consumer load classes to consumer load circuits. The 3 LV transformer models have fixed varied specifications as detailed in `docs/specs/lv1/lv_transformer.md`, `docs/specs/lv2/lv_transformer.md`, and `docs/specs/lv3/lv_transformer.md`. We take energy consumption from the metered consumer load circuits for time $dt$, and construct Dataset 1 which includes the assigned classes and the energy consumption of the metered group in the network. We compute baseline CLA error and time-adjusted CLA error, considering non-technical losses included in the model. We generated 3 datasets including consumer load circuit switch transient co-events under 3 network conditions, and analyze the observability of these events from which we compute the error correction factor of transformer transients-based consumer load prediction on time-adjusted CLA error. The simulation is performed using OpenDSS and ATP-EMTP.
 
 1. **Dataset 1**: Focuses on Cluster Load Allocation (CLA) energy estimation.
-   - **Ground Truth Variables:** `gt_consumer_unit_id`, `consumer_type` (`known` for registered units, `unknown` for latent units), `consumer_unit_source` (bus and line connected to), `consumer_unit_loads`, `assigned_weight` (weight $w_i = \mathbb{E}[E_i \mid C_i, X_i]$ populated for known unmetered units), `consumer_line_losses`.
+   - **Ground Truth Variables:** `gt_consumer_unit_id`, `consumer_type` (`known` for registered units, `unknown` for latent units), `consumer_unit_source` (bus and line connected to), `consumer_unit_loads`, `assigned_weight` (weight $w_i = \mathbb{E}[E_i \mid C_i, X_i]$ populated for known unmetered units), `gt_consumed_energy_kwh` (populated for known units, empty/NaN for unknown units), `consumer_line_losses`.
    - **Observed Variables:** `measured_energy_kwh` (populated for metered units, empty for unmetered/unknown), `cla_estimates` (populated for unmetered known units, empty for metered/unknown), `time_adjusted_cla_estimates` (populated for unmetered known units, empty for metered/unknown).
 
 2. **Dataset 2**: Evaluates what type of co-events are observable across load switch pairs (`load_load`) and mixed load switch and fault pairs (`load_fault`).
