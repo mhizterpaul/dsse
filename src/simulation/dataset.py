@@ -169,6 +169,21 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             for u in unsampled_units
         ]
 
+        metered_premises = [
+            ConsumerLoadPremises(
+                consumer_id=u.consumer_id,
+                class_id=u.assigned_load_class or "residential",
+                is_sampled=True,
+                connected_load_kw=float(len(u.loads) * 5.0)
+            )
+            for u in sampled_units
+        ]
+
+        metered_consumer_energies = {
+            u.consumer_id: float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
+            for u in sampled_units
+        }
+
         is_valid_cla = cla_estimator.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
@@ -186,7 +201,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             estimated_technical_loss_kwh=gt_tech_loss_kwh,
-            unsampled_premises=unsampled_premises
+            unsampled_premises=unsampled_premises,
+            metered_premises=metered_premises,
+            metered_consumer_energies=metered_consumer_energies
         ) if (is_valid_cla and unsampled_premises) else None
 
         weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
