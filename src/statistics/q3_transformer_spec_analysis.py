@@ -4,6 +4,48 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+def compute_waveform_pearson_stats(df: pd.DataFrame) -> tuple[float, float, float]:
+    pairs = [
+        ("obs_single_event_1_v_phase_a", "obs_single_event_2_v_phase_a"),
+        ("obs_single_event_1_v_phase_b", "obs_single_event_2_v_phase_b"),
+        ("obs_single_event_1_v_phase_c", "obs_single_event_2_v_phase_c"),
+        ("obs_single_event_1_i_phase_a", "obs_single_event_2_i_phase_a"),
+        ("obs_single_event_1_i_phase_b", "obs_single_event_2_i_phase_b"),
+        ("obs_single_event_1_i_phase_c", "obs_single_event_2_i_phase_c"),
+    ]
+
+    r_means = []
+    r_stds = []
+
+    for _, row in df.iterrows():
+        r_vals = []
+        for col1, col2 in pairs:
+            if col1 in row and col2 in row:
+                v1 = row[col1]
+                v2 = row[col2]
+                arr1 = np.array(json.loads(v1)) if isinstance(v1, str) else np.array(v1)
+                arr2 = np.array(json.loads(v2)) if isinstance(v2, str) else np.array(v2)
+
+                if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
+                    val, _ = stats.pearsonr(arr1, arr2)
+                    val = 0.0 if np.isnan(val) else abs(val)
+                else:
+                    val = 0.0
+            else:
+                val = 0.0
+            r_vals.append(val)
+
+        r_arr = np.asarray(r_vals)
+        r_bar = float(np.mean(r_arr))
+        r_std = float(np.sqrt(np.sum((r_arr - r_bar) ** 2) / 5.0))
+        r_means.append(r_bar)
+        r_stds.append(r_std)
+
+    avg_r = float(np.mean(r_means)) if r_means else 0.0
+    avg_std = float(np.mean(r_stds)) if r_stds else 0.0
+    dissimilarity = float(1.0 - avg_r)
+    return avg_r, avg_std, dissimilarity
+
 def run_q3_transformer_spec_analysis(dataset_path: Path = Path("src/simulation/dataset_4.csv")) -> dict:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset 4 not found at {dataset_path}. Run src/simulation/dataset.py first.")
@@ -15,6 +57,13 @@ def run_q3_transformer_spec_analysis(dataset_path: Path = Path("src/simulation/d
     results = {"per_category": {}}
 
     f_v_list, p_v_list = [], []
+
+    avg_r, avg_std, dissimilarity = compute_waveform_pearson_stats(df_4)
+    results["avg_pearson_corr"] = avg_r
+    results["std_pearson_corr"] = avg_std
+    results["dissimilarity"] = dissimilarity
+
+    print(f"Waveform Pearson Correlation (Dataset 4): Mean r_bar = {avg_r:.4f}, Std sigma_r = {avg_std:.4f}, Dissimilarity D = {dissimilarity:.4f}")
 
     if "gt_pair_category" not in df_4.columns or "gt_transformer_spec_id" not in df_4.columns:
         spec_col = "gt_transformer_spec_id" if "gt_transformer_spec_id" in df_4.columns else ("gt_feeder_id" if "gt_feeder_id" in df_4.columns else None)
