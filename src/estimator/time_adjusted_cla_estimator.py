@@ -39,10 +39,13 @@ class TimeAdjustedCLAEstimator:
         self,
         premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]],
         time_points: Optional[np.ndarray] = None,
-        observed_time_adjustment_factors: Optional[Dict[str, float]] = None
+        observed_time_adjustment_factors: Optional[Dict[str, float]] = None,
+        metered_premises: Optional[List[ConsumerLoadPremises]] = None,
+        metered_consumer_energies: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
-        Computes time-adjusted integration weights for unsampled consumer units.
+        Computes time-adjusted integration weights for unsampled consumer units,
+        adjusting unit weights based on the average energy consumed by metered consumer units of the same class.
         """
         if isinstance(premises_list, ConsumerLoadPremises):
             premises_list = [premises_list]
@@ -51,12 +54,34 @@ class TimeAdjustedCLAEstimator:
             time_points = np.linspace(0.0, 24.0, 100)
         dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 1.0
 
+        # Compute average metered energy per load class
+        class_metered_energies: Dict[str, List[float]] = {}
+        all_metered_energies: List[float] = []
+
+        if metered_premises and metered_consumer_energies:
+            for mp in metered_premises:
+                e_val = float(metered_consumer_energies.get(mp.consumer_id, 0.0))
+                class_metered_energies.setdefault(mp.class_id, []).append(e_val)
+                all_metered_energies.append(e_val)
+
+        overall_metered_avg = float(np.mean(all_metered_energies)) if all_metered_energies else 0.0
+        class_metered_avg = {
+            c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
+        }
+
         raw_time_integrals = {}
         for p in premises_list:
+            base_w = ConsumerLoadClassModel.compute_expected_weight(p)
+            if p.class_id in class_metered_avg and overall_metered_avg > 0:
+                class_factor = class_metered_avg[p.class_id] / overall_metered_avg
+            else:
+                class_factor = 1.0
+
+            adjusted_weight = base_w * class_factor
             alpha_i = observed_time_adjustment_factors.get(p.consumer_id, 1.05) if observed_time_adjustment_factors else 1.05
             mu_c = ConsumerLoadClassModel.get_sampled_class_profile(p.class_id, time_points)
             raw_integral = float(np.sum(alpha_i * mu_c * dt))
-            raw_time_integrals[p.consumer_id] = max(0.01, raw_integral)
+            raw_time_integrals[p.consumer_id] = max(0.01, float(adjusted_weight * raw_integral))
 
         return raw_time_integrals
 
@@ -82,7 +107,9 @@ class TimeAdjustedCLAEstimator:
         estimated_technical_loss_kwh: float,
         unsampled_premises: List[ConsumerLoadPremises],
         time_points: Optional[np.ndarray] = None,
-        observed_time_adjustment_factors: Optional[Dict[str, float]] = None
+        observed_time_adjustment_factors: Optional[Dict[str, float]] = None,
+        metered_premises: Optional[List[ConsumerLoadPremises]] = None,
+        metered_consumer_energies: Optional[Dict[str, float]] = None
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
@@ -108,7 +135,9 @@ class TimeAdjustedCLAEstimator:
         raw_time_integrals = self.weighting_function(
             premises_list=unsampled_premises,
             time_points=time_points,
-            observed_time_adjustment_factors=observed_time_adjustment_factors
+            observed_time_adjustment_factors=observed_time_adjustment_factors,
+            metered_premises=metered_premises,
+            metered_consumer_energies=metered_consumer_energies
         )
 
         sum_integrals = sum(raw_time_integrals.values())
