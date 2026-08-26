@@ -451,7 +451,6 @@ def generate_experiments_dataset(n_scenarios: int = 15, write_to_disk: bool = Tr
 
         rows_4.append({
             "gt_feeder_id": f"feeder_{f_id}",
-            "gt_transformer_spec_id": spec_id,
             "load_source": extract_load_source(co_ev),
             "fault_info": extract_fault_info(co_ev),
             "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ""),
