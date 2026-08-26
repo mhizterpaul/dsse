@@ -178,15 +178,15 @@ The simulation involves first assigning consumer load classes to consumer load c
 
 ##### Dataset 2 Event Pair Observability Testing
 
-Factorial ANOVA analysis (`src/statistics/q1_event_pair_analysis.py`) evaluates event pair observability across load switch pairs (`load_load`) and mixed load switch and fault pairs (`load_fault`), measuring $F_{\mathrm{voltage}}, p_{\mathrm{voltage}}$ and $F_{\mathrm{current}}, p_{\mathrm{current}}$. In addition, the Pearson correlation $r_i$ is computed across the six phase-specific single event voltage and current waveform columns (`obs_single_event_1/2_v_phase_a/b/c`, `obs_single_event_2/2_i_phase_a/b/c`), along with its standard deviation $\sigma_r = \sqrt{\frac{1}{5}\sum_{i=1}^{6}(r_i - \bar{r})^2}$, dataset mean correlation $\bar{r}_2$, and mean dissimilarity $D_2 = 1 - \bar{r}_2$.
+`src/statistics/q1_event_pair_analysis.py` evaluates event pair observability across load switch pairs (`load_load`) and mixed load switch and fault pairs (`load_fault`), measuring $F_{\mathrm{voltage}}, p_{\mathrm{voltage}}$ and $F_{\mathrm{current}}, p_{\mathrm{current}}$. In addition, the Pearson correlation $r_i$ is computed across the six phase-specific single event voltage and current waveform columns (`obs_single_event_1/2_v_phase_a/b/c`, `obs_single_event_2/2_i_phase_a/b/c`), along with its standard deviation $\sigma_r = \sqrt{\frac{1}{5}\sum_{i=1}^{6}(r_i - \bar{r})^2}$, dataset mean correlation $\bar{r}_2$, and mean dissimilarity $D_2 = 1 - \bar{r}_2$.
 
 ##### Dataset 3 Time Shift Operation Variation Testing
 
-Levene / Brown-Forsythe variance analysis (`src/statistics/q2_time_shift_analysis.py`) evaluates residual magnitude variation under time shift operations ($t_{\mathrm{offset}} = 0.0\,\mathrm{s}$ vs $t_{\mathrm{offset}} > 0.0\,\mathrm{s}$) using Dataset 3 across load switch pairs and mixed load-fault pairs. The waveform Pearson correlation statistics ($\bar{r}_3$, $\sigma_{r,3}$, and dissimilarity $D_3 = 1 - \bar{r}_3$) quantify signal consistency under temporal offsets.
+`src/statistics/q2_time_shift_analysis.py` evaluates residual magnitude variation under time shift operations ($t_{\mathrm{offset}} = 0.0\,\mathrm{s}$ vs $t_{\mathrm{offset}} > 0.0\,\mathrm{s}$) using Dataset 3 across load switch pairs and mixed load-fault pairs. The waveform Pearson correlation statistics ($\bar{r}_3$, $\sigma_{r,3}$, and dissimilarity $D_3 = 1 - \bar{r}_3$) quantify signal consistency under temporal offsets.
 
 ##### Dataset 4 Transformer Specification Effect Testing
 
-One-Way ANOVA testing (`src/statistics/q3_transformer_spec_analysis.py`) evaluates how transformer specification variations affect observability across load switch pairs and mixed pairs, measuring $F_{\mathrm{spec}}, p_{\mathrm{spec}}$ across transformer specifications alongside waveform Pearson correlation statistics ($\bar{r}_4$, $\sigma_{r,4}$, and dissimilarity $D_4 = 1 - \bar{r}_4$).
+`src/statistics/q3_transformer_spec_analysis.py` evaluates how transformer specification variations affect observability across load switch pairs and mixed pairs, measuring $F_{\mathrm{spec}}, p_{\mathrm{spec}}$ across transformer specifications alongside waveform Pearson correlation statistics ($\bar{r}_4$, $\sigma_{r,4}$, and dissimilarity $D_4 = 1 - \bar{r}_4$).
 
 ##### Transient-Assisted Error Reduction Factor
 
