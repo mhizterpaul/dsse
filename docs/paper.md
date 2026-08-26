@@ -175,14 +175,12 @@ The simulation involves first assigning consumer load classes to consumer load c
 #### 4. Observability Tests for LV Network Using Transformer Transients
 
 the Pearson correlation $r_k^{\mathrm{raw}}$ is discounted by the ambient noise amplitude ratio:
-\[
-\boxed{
+$$
 \eta_{\mathrm{noise}}
 = 10^{-\mathrm{SNR}/20}
 = 10^{-35/20}
 \approx 0.0178
-}
-\] 
+$$
 and an ambient noise level of $\mathrm{SNR} = 35\,\mathrm{dB}$, yielding the discounted correlation $r_k = \max(0, r_k^{\mathrm{raw}} - \eta_{\mathrm{noise}})$. The per-event aggregate similarity $S = \frac{1}{6}\sum_{k=1}^6 r_k$, standard deviation $\sigma_r = \sqrt{\frac{1}{5}\sum_{k=1}^6 (r_k - S)^2}$, dataset mean correlation $\bar{r}_2$, and mean dissimilarity $D_2 = 1 - \bar{r}_2$ are then evaluated for the events datasets.
 
 ##### Dataset 2 Event Pair Observability Testing
