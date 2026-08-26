@@ -118,7 +118,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         gt_sampled_energy_kwh = round(
             sum(
-                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", len(u.loads) * 1.25 * (5.0 / 60.0)))
+                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
                 for u in sampled_units
             ),
             4
@@ -126,7 +126,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         gt_unsampled_true_kwh = round(
             sum(
-                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", len(u.loads) * 1.25 * (5.0 / 60.0)))
+                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
                 for u in unsampled_units
             ),
             4
@@ -134,7 +134,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         gt_latent_energy_kwh = round(
             sum(
-                float(sim_res_d1.steady_state_measurements.get(latent_map[u.bus_id].consumer_id, {}).get("energy_kwh", len(latent_map[u.bus_id].loads) * 1.0 * (5.0 / 60.0)))
+                float(sim_res_d1.steady_state_measurements.get(latent_map[u.bus_id].consumer_id, {}).get("energy_kwh", 0.0))
                 for u in feeder_units if u.bus_id in latent_map
             ),
             4
@@ -189,13 +189,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
 
-        estimated_unsampled_known_energy_kwh = round(float(cla_res.estimated_unsampled_energy_kwh), 4) if cla_res else 0.0
-
-        gt_non_tech_loss_kwh = round(
-            feeder_supply_energy_kwh - gt_sampled_energy_kwh - estimated_unsampled_known_energy_kwh - gt_tech_loss_kwh,
-            4
-        )
-
         weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
 
         num_sampled = int(len(feeder_units) * 0.36)
@@ -204,7 +197,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             is_metered = u_idx < num_sampled
 
             unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
-            unit_dss_energy = float(unit_meas.get("energy_kwh", len(u.loads) * 1.25))
+            unit_dss_energy = float(unit_meas.get("energy_kwh", 0.0))
 
             meas_energy = round(unit_dss_energy, 4) if is_metered else ""
             cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises))), 4) if (not is_metered and cla_res and unsampled_premises) else ""
