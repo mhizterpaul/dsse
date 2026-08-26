@@ -115,14 +115,36 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         if gt_total_energy_kwh <= 0:
             gt_total_energy_kwh = 150.0
 
-        gt_sampled_energy_kwh = round(gt_total_energy_kwh * 0.36, 4)
+        num_sampled = int(len(feeder_units) * 0.36)
+        gt_sampled_energy_kwh = round(
+            sum(
+                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
+                for u in feeder_units[:num_sampled]
+            ),
+            4
+        )
+        if gt_sampled_energy_kwh <= 0:
+            gt_sampled_energy_kwh = round(gt_total_energy_kwh * 0.36, 4)
 
-        transformer_loss_kwh = round(0.02 * gt_total_energy_kwh, 4)
-        line_loss_kwh = round(0.03 * gt_total_energy_kwh, 4)
+        # Dynamic physics-based transformer losses and line losses (for 5-min run, dt = 5/60 hours)
+        transformer_loss_kw = float(meas.get("transformer_losses", 0.0))
+        transformer_loss_kwh = round(transformer_loss_kw * (5.0 / 60.0), 4)
+        if transformer_loss_kwh <= 0:
+            transformer_loss_kwh = round(0.02 * gt_total_energy_kwh, 4)
+
+        feeder_line_loss_kw = float(meas.get("feeder_line_losses", 0.0))
+        consumer_line_loss_kw = sum(
+            float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("line_losses", 0.0))
+            for u in feeder_units
+        )
+        line_loss_kwh = round((feeder_line_loss_kw + consumer_line_loss_kw) * (5.0 / 60.0), 4)
+        if line_loss_kwh <= 0:
+            line_loss_kwh = round(0.03 * gt_total_energy_kwh, 4)
+
         gt_tech_loss_kwh = round(transformer_loss_kwh + line_loss_kwh, 4)
         gt_non_tech_loss_kwh = round(0.08 * gt_total_energy_kwh, 4)
 
-        feeder_supply_energy_kwh = gt_total_energy_kwh + gt_tech_loss_kwh + gt_non_tech_loss_kwh
+        feeder_supply_energy_kwh = round(gt_total_energy_kwh + gt_tech_loss_kwh + gt_non_tech_loss_kwh, 4)
 
         # Estimate energy for unsampled units
         unsampled_units = feeder_units[int(len(feeder_units) * 0.36):]
