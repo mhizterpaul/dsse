@@ -313,6 +313,7 @@ def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> Op
     """
     apply_generator_profile(p_kw, q_kvar)
 
+    dss.run_command("set mode=snapshot")
     dss.Solution.Solve()
     if not dss.Solution.Converged():
         dss.run_command("Solve mode=direct")
