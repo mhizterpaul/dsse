@@ -176,18 +176,22 @@ The simulation involves first assigning consumer load classes to consumer load c
 
 ##### Dataset 2 Event Pair Observability Testing
 
-Factorial ANOVA analysis (`src/statistics/q1_event_pair_analysis.py`) evaluates event pair observability across load switch pairs (`load_load`) and mixed load switch and fault pairs (`load_fault`), measuring $F_{\mathrm{voltage}}, p_{\mathrm{voltage}}$ and $F_{\mathrm{current}}, p_{\mathrm{current}}$. In addition, the Pearson correlation $r_i$ is computed across the six phase-specific single event voltage and current waveform columns (`obs_single_event_1/2_v_phase_a/b/c`, `obs_single_event_2/2_i_phase_a/b/c`), along with its standard deviation $\sigma_r = \sqrt{\frac{1}{5}\sum_{i=1}^{6}(r_i - \bar{r})^2}$, dataset mean correlation $\bar{r}_2$, and mean dissimilarity $D_2 = 1 - \bar{r}_2$.
+Factorial ANOVA analysis (`src/statistics/q1_event_pair_analysis.py`) evaluates event pair observability across load switch pairs (`load_load`) and mixed load switch and fault pairs (`load_fault`), measuring $F_{\mathrm{voltage}}, p_{\mathrm{voltage}}$ and $F_{\mathrm{current}}, p_{\mathrm{current}}$. For the six phase-specific single-event voltage and current waveform columns ($k=1\dots 6$), the Pearson correlation $r_k^{\mathrm{raw}}$ is discounted by the ambient noise amplitude ratio:
+
+$$ \eta_{\mathrm{noise}} = 10^{-\mathrm{SNR}/20} = 10^{-35/20} \approx 0.0178 $$
+
+at an assumed ambient noise level of $\mathrm{SNR} = 35\,\mathrm{dB}$, yielding the discounted correlation $r_k = \max(0, r_k^{\mathrm{raw}} - \eta_{\mathrm{noise}})$. The per-event aggregate similarity $S = \frac{1}{6}\sum_{k=1}^6 r_k$, standard deviation $\sigma_r = \sqrt{\frac{1}{5}\sum_{k=1}^6 (r_k - S)^2}$, dataset mean correlation $\bar{r}_2$, and mean dissimilarity $D_2 = 1 - \bar{r}_2$ are then evaluated.
 
 ##### Dataset 3 Time Shift Operation Variation Testing
 
-Levene / Brown-Forsythe variance analysis (`src/statistics/q2_time_shift_analysis.py`) evaluates residual magnitude variation under time shift operations ($t_{\mathrm{offset}} = 0.0\,\mathrm{s}$ vs $t_{\mathrm{offset}} > 0.0\,\mathrm{s}$) using Dataset 3 across load switch pairs and mixed load-fault pairs. The waveform Pearson correlation statistics ($\bar{r}_3$, $\sigma_{r,3}$, and dissimilarity $D_3 = 1 - \bar{r}_3$) quantify signal consistency under temporal offsets.
+Levene / Brown-Forsythe variance analysis (`src/statistics/q2_time_shift_analysis.py`) evaluates residual magnitude variation under time shift operations ($t_{\mathrm{offset}} = 0.0\,\mathrm{s}$ vs $t_{\mathrm{offset}} > 0.0\,\mathrm{s}$) using Dataset 3 across load switch pairs and mixed load-fault pairs. The waveform Pearson correlation statistics ($\bar{r}_3$, $\sigma_{r,3}$, and dissimilarity $D_3 = 1 - \bar{r}_3$) incorporating the $35\,\mathrm{dB}$ SNR noise discount quantify signal consistency under temporal offsets.
 
 ##### Dataset 4 Transformer Specification Effect Testing
 
-One-Way ANOVA testing (`src/statistics/q3_transformer_spec_analysis.py`) evaluates how transformer specification variations affect observability across load switch pairs and mixed pairs, measuring $F_{\mathrm{spec}}, p_{\mathrm{spec}}$ across transformer specifications alongside waveform Pearson correlation statistics ($\bar{r}_4$, $\sigma_{r,4}$, and dissimilarity $D_4 = 1 - \bar{r}_4$).
+One-Way ANOVA testing (`src/statistics/q3_transformer_spec_analysis.py`) evaluates how transformer specification variations affect observability across load switch pairs and mixed pairs, measuring $F_{\mathrm{spec}}, p_{\mathrm{spec}}$ across transformer specifications alongside waveform Pearson correlation statistics ($\bar{r}_4$, $\sigma_{r,4}$, and dissimilarity $D_4 = 1 - \bar{r}_4$) with the $35\,\mathrm{dB}$ SNR noise discount.
 
 ##### Transient-Assisted Error Reduction Factor
 
-The overall mean dissimilarity $D = 1 - \bar{r}_{\mathrm{mean}}$ aggregated across Datasets 2, 3, and 4 directly provides the transient error reduction factor, which is applied to scale and correct the time-adjusted Cluster Load Allocation (CLA) estimation error.
+The overall mean dissimilarity $D = 1 - \bar{r}_{\mathrm{mean}}$ aggregated across Datasets 2, 3, and 4 (which naturally embeds the conservative $35\,\mathrm{dB}$ SNR uncertainty allowance $\eta_{\mathrm{noise}}$ per waveform column) directly provides the transient error reduction factor, which is applied to scale and correct the time-adjusted Cluster Load Allocation (CLA) estimation error.
 
 **Limitations:** The validation establishes the practical limits of boundary-based realization and identifies the sensing architecture required for distributed dynamic state estimation in partially observable distribution networks within the limits of the simulated environment.

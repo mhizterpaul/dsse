@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-def compute_waveform_pearson_stats(df: pd.DataFrame) -> tuple[float, float, float]:
+def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> tuple[float, float, float]:
     pairs = [
         ("obs_single_event_1_v_phase_a", "obs_single_event_2_v_phase_a"),
         ("obs_single_event_1_v_phase_b", "obs_single_event_2_v_phase_b"),
@@ -14,6 +14,7 @@ def compute_waveform_pearson_stats(df: pd.DataFrame) -> tuple[float, float, floa
         ("obs_single_event_1_i_phase_c", "obs_single_event_2_i_phase_c"),
     ]
 
+    eta_noise = 10.0 ** (-snr_db / 20.0)
     r_means = []
     r_stds = []
 
@@ -28,7 +29,8 @@ def compute_waveform_pearson_stats(df: pd.DataFrame) -> tuple[float, float, floa
 
                 if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
                     val, _ = stats.pearsonr(arr1, arr2)
-                    val = 0.0 if np.isnan(val) else abs(val)
+                    raw_val = 0.0 if np.isnan(val) else abs(val)
+                    val = max(0.0, raw_val - eta_noise)
                 else:
                     val = 0.0
             else:
