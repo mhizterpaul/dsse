@@ -1,5 +1,6 @@
 import os
-from loads import get_equipment_model
+import traceback
+from src.loads import get_equipment_model
 
 class ATPCaseBuilder:
     def __init__(self, template_path: str = None):
@@ -42,7 +43,15 @@ class ATPCaseBuilder:
         ang_b = float(phase_ang[1])
         ang_c = float(phase_ang[2])
 
-        freq_hz = getattr(operating_point, "frequency_hz", 50.0) if operating_point else 50.0
+        if operating_point is None or not hasattr(operating_point, "frequency_hz"):
+            print(f"ERROR: Operating point is missing or frequency_hz attribute absent\n{traceback.format_exc()}")
+            raise ValueError("Operating point must be provided with frequency_hz")
+
+        freq_hz = float(operating_point.frequency_hz)
+        if freq_hz <= 0:
+            print(f"ERROR: Invalid frequency_hz in operating point: {freq_hz}\n{traceback.format_exc()}")
+            raise ValueError(f"frequency_hz in operating point must be positive, got {freq_hz}")
+
         freq_str = f"{freq_hz:.2f}".rjust(10)
         a1_str = " ".rjust(10)
         t1_str = " ".rjust(10)
@@ -75,7 +84,8 @@ class ATPCaseBuilder:
                     eq_model = get_equipment_model(eq_type)
                     r_eq = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", 0.1))
                     x_eq = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("x_armature", 0.2))
-                except Exception:
+                except Exception as e:
+                    print(f"WARNING: Exception loading equipment model {eq_type}: {e}\n{traceback.format_exc()}")
                     r_eq, x_eq = 0.1, 0.2
 
                 r_str = f"{r_eq:.4f}".rjust(10)

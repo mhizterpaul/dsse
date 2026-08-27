@@ -46,17 +46,18 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
 
     for _, row in df.iterrows():
         for p_idx, (col1, col2) in enumerate(pairs):
+            val = 0.0
             if col1 in row and col2 in row:
                 v1 = row[col1]
                 v2 = row[col2]
                 arr1 = np.array(json.loads(v1)) if isinstance(v1, str) else np.array(v1)
-                arr2 = np.array(json.loads(v2)) if isinstance(v2, str) else np.array(v2)  
+                arr2 = np.array(json.loads(v2)) if isinstance(v2, str) else np.array(v2)
 
                 if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
-                    val, _ = stats.pearsonr(arr1, arr2)
-                    raw_val = 0.0 if np.isnan(val) else abs(val)
+                    val_calc, _ = stats.pearsonr(arr1, arr2)
+                    raw_val = 0.0 if np.isnan(val_calc) else abs(val_calc)
                     val = max(0.0, raw_val - discount_factor)
-                
+
             col_correlations[p_idx].append(val)
 
     col_corr_vector = [float(np.mean(c_list)) if c_list else 0.0 for c_list in col_correlations]

@@ -300,6 +300,45 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
     all_108_pairs = get_all_108_coevents(target_line="feeder1_head")
 
+    def compute_coevent_waveforms(co_ev, feeder_idx, time_offset=0.0):
+        t_vec = np.linspace(0.0, 0.1, 1000)
+        ev1, ev2 = co_ev.event_1, co_ev.event_2
+
+        key1 = (ev1.event_class, ev1.event_type, f"feeder_{feeder_idx}")
+        key2 = (ev2.event_class, ev2.event_type, f"feeder_{feeder_idx}")
+
+        sig1 = signature_catalog.get(key1, {})
+        sig2 = signature_catalog.get(key2, {})
+
+        v1 = sig1.get("v_sig", np.zeros((1000, 3)))
+        i1 = sig1.get("i_sig", np.zeros((1000, 3)))
+        v2 = sig2.get("v_sig", np.zeros((1000, 3)))
+        i2 = sig2.get("i_sig", np.zeros((1000, 3)))
+
+        if time_offset > 0:
+            shift_idx = int(time_offset * 10000)
+            v2_shifted = np.roll(v2, shift_idx, axis=0)
+            i2_shifted = np.roll(i2, shift_idx, axis=0)
+            v2_shifted[:shift_idx, :] = 0.0
+            i2_shifted[:shift_idx, :] = 0.0
+        else:
+            v2_shifted, i2_shifted = v2, i2
+
+        v_composed = v1 + v2_shifted
+        i_composed = i1 + i2_shifted
+
+        # Add small non-linear residual interaction term
+        res_v = 0.05 * np.sin(2 * np.pi * 50 * t_vec)[:, None] * np.ones((1, 3))
+        res_i = 0.02 * np.cos(2 * np.pi * 50 * t_vec)[:, None] * np.ones((1, 3))
+
+        v_co = v_composed + res_v
+        i_co = i_composed + res_i
+
+        v_mag = float(np.max(np.abs(res_v)))
+        i_mag = float(np.max(np.abs(res_i)))
+
+        return t_vec, v_co, i_co, v1, i1, v2_shifted, i2_shifted, v_composed, i_composed, res_v, res_i, v_mag, i_mag
+
     def extract_load_source(co_ev):
         sources = []
         for ev in [co_ev.event_1, co_ev.event_2]:
