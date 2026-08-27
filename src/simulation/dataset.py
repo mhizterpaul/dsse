@@ -84,8 +84,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     rows_3 = []
     rows_4 = []
 
-    signature_catalog = {}
-
     # =========================================================================
     # --- A. DATASET 1 GENERATION (Single 5-minute steady-state experiment) ---
     # =========================================================================
@@ -252,92 +250,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                     "time_adjusted_cla_estimates": ""
                 })
 
-    # Pre-simulate and catalog ATP transient signatures for all 8 equipment types and 10 fault configurations
-    equipment_types = [
-        "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
-        "compressor", "audio_amplifier", "ups", "industrial_fan"
-    ]
-    fault_configs = [
-        ("LG", (0,), "AG"),
-        ("LG", (1,), "BG"),
-        ("LG", (2,), "CG"),
-        ("LL", (0, 1), "AB"),
-        ("LL", (1, 2), "BC"),
-        ("LL", (2, 0), "CA"),
-        ("LLG", (0, 1), "ABG"),
-        ("LLG", (1, 2), "BCG"),
-        ("LLG", (2, 0), "CAG"),
-        ("LLL", (0, 1, 2), "ABC")
-    ]
-
-    single_events = []
-    for eq_type in equipment_types:
-        single_events.append(SingleEquipmentSwitchEvent(eq_type, 0.02, 0.04, "feeder1_head", {}))
-    for f_type, phases, f_name in fault_configs:
-        single_events.append(SingleLineFaultEvent(f_type, 0.02, 0.04, "feeder1_head", phases, 0.05, {"config_id": f_name}))
-
-    for s_ev in single_events:
-        sim_sig = runner.run_simulation(
-            events=[s_ev],
-            use_baseline_transformers=True,
-            include_load_event=True,
-            include_fault_event=(s_ev.event_class == "line_fault"),
-            scenario_id=f"sig_{s_ev.event_type}",
-            seed=42,
-            reinitialize_plant=False
-        )
-        for f_id in [1, 2, 3]:
-            m_id = f"trans{f_id}_lv_boundary_consumer_unit"
-            consumer_unit_res = sim_sig.processed_consumer_units.get(m_id)
-            if consumer_unit_res is not None:
-                v_raw = remove_low_frequency_components(consumer_unit_res["raw_voltage"])
-                i_raw = remove_low_frequency_components(consumer_unit_res["raw_current"])
-                signature_catalog[(s_ev.event_class, s_ev.event_type, f"feeder_{f_id}")] = {
-                    "v_sig": v_raw,
-                    "i_sig": i_raw,
-                    "time": sim_sig.time_s
-                }
-
     all_108_pairs = get_all_108_coevents(target_line="feeder1_head")
-
-    def compute_coevent_waveforms(co_ev, feeder_idx, time_offset=0.0):
-        t_vec = np.linspace(0.0, 0.1, 1000)
-        ev1, ev2 = co_ev.event_1, co_ev.event_2
-
-        key1 = (ev1.event_class, ev1.event_type, f"feeder_{feeder_idx}")
-        key2 = (ev2.event_class, ev2.event_type, f"feeder_{feeder_idx}")
-
-        sig1 = signature_catalog.get(key1, {})
-        sig2 = signature_catalog.get(key2, {})
-
-        v1 = sig1.get("v_sig", np.zeros((1000, 3)))
-        i1 = sig1.get("i_sig", np.zeros((1000, 3)))
-        v2 = sig2.get("v_sig", np.zeros((1000, 3)))
-        i2 = sig2.get("i_sig", np.zeros((1000, 3)))
-
-        if time_offset > 0:
-            shift_idx = int(time_offset * 10000)
-            v2_shifted = np.roll(v2, shift_idx, axis=0)
-            i2_shifted = np.roll(i2, shift_idx, axis=0)
-            v2_shifted[:shift_idx, :] = 0.0
-            i2_shifted[:shift_idx, :] = 0.0
-        else:
-            v2_shifted, i2_shifted = v2, i2
-
-        v_composed = v1 + v2_shifted
-        i_composed = i1 + i2_shifted
-
-        # Add small non-linear residual interaction term
-        res_v = 0.05 * np.sin(2 * np.pi * 50 * t_vec)[:, None] * np.ones((1, 3))
-        res_i = 0.02 * np.cos(2 * np.pi * 50 * t_vec)[:, None] * np.ones((1, 3))
-
-        v_co = v_composed + res_v
-        i_co = i_composed + res_i
-
-        v_mag = float(np.max(np.abs(res_v)))
-        i_mag = float(np.max(np.abs(res_i)))
-
-        return t_vec, v_co, i_co, v1, i1, v2_shifted, i2_shifted, v_composed, i_composed, res_v, res_i, v_mag, i_mag
 
     def extract_load_source(co_ev):
         sources = []
@@ -347,7 +260,74 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 sources.append({"bus": target, "line": f"line_{target}"})
         return json.dumps(sources) if sources else ""
 
-    
+    def process_coevent_simulation(co_ev, f_id, use_baseline_transformers: bool = True):
+        ev1, ev2 = co_ev.event_1, co_ev.event_2
+        m_id = f"trans{f_id}_lv_boundary_consumer_unit"
+
+        # 1. Simulate combined co-event (load transients powered under stipulated network conditions)
+        sim_co = runner.run_simulation(
+            events=[co_ev],
+            use_baseline_transformers=use_baseline_transformers,
+            include_load_event=True,
+            include_fault_event=True,
+            scenario_id=f"coev_{f_id}_{getattr(ev1, 'event_type', '')}_{getattr(ev2, 'event_type', '')}",
+            seed=42,
+            reinitialize_plant=False
+        )
+        unit_co = sim_co.processed_consumer_units.get(m_id, {})
+        v_co = np.array(unit_co.get("raw_voltage", np.zeros((1000, 3))))
+        i_co = np.array(unit_co.get("raw_current", np.zeros((1000, 3))))
+
+        # 2. Simulate constituent event 1
+        sim_1 = runner.run_simulation(
+            events=[ev1],
+            use_baseline_transformers=use_baseline_transformers,
+            include_load_event=True,
+            include_fault_event=(getattr(ev1, "event_class", "") == "line_fault"),
+            scenario_id=f"ev1_{f_id}_{getattr(ev1, 'event_type', '')}",
+            seed=42,
+            reinitialize_plant=False
+        )
+        unit_1 = sim_1.processed_consumer_units.get(m_id, {})
+        v1_sig = np.array(unit_1.get("raw_voltage", np.zeros((1000, 3))))
+        i1_sig = np.array(unit_1.get("raw_current", np.zeros((1000, 3))))
+
+        # 3. Simulate constituent event 2
+        sim_2 = runner.run_simulation(
+            events=[ev2],
+            use_baseline_transformers=use_baseline_transformers,
+            include_load_event=True,
+            include_fault_event=(getattr(ev2, "event_class", "") == "line_fault"),
+            scenario_id=f"ev2_{f_id}_{getattr(ev2, 'event_type', '')}",
+            seed=42,
+            reinitialize_plant=False
+        )
+        unit_2 = sim_2.processed_consumer_units.get(m_id, {})
+        v2_sig = np.array(unit_2.get("raw_voltage", np.zeros((1000, 3))))
+        i2_sig = np.array(unit_2.get("raw_current", np.zeros((1000, 3))))
+
+        t_s = sim_co.time_s if len(sim_co.time_s) > 0 else np.linspace(0.0, 0.1, 1000)
+
+        # High-pass filter low-frequency fundamentals
+        v1_hp = remove_low_frequency_components(v1_sig)
+        i1_hp = remove_low_frequency_components(i1_sig)
+        v2_hp = remove_low_frequency_components(v2_sig)
+        i2_hp = remove_low_frequency_components(i2_sig)
+
+        v_comp = v1_hp + v2_hp
+        i_comp = i1_hp + i2_hp
+
+        v_co_hp = remove_low_frequency_components(v_co)
+        i_co_hp = remove_low_frequency_components(i_co)
+
+        res_v = v_co_hp - v_comp
+        res_i = i_co_hp - i_comp
+
+        v_mag = float(np.max(np.abs(res_v)))
+        i_mag = float(np.max(np.abs(res_i)))
+
+        return t_s, v_co, i_co, v1_hp, i1_hp, v2_hp, i2_hp, v_comp, i_comp, res_v, res_i, v_mag, i_mag
+
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events) ---
     # =========================================================================
@@ -358,7 +338,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         ev1, ev2 = co_ev.event_1, co_ev.event_2
         f_id = (p_idx % 3) + 1
 
-        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, time_offset=0.0)
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = process_coevent_simulation(
+            co_ev, f_id, use_baseline_transformers=True
+        )
 
         rows_2.append({
             "load_source": extract_load_source(co_ev),
@@ -420,7 +402,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         shifted_co_ev = co_ev.with_time_shift(time_offset) if time_offset > 0 else co_ev
         f_id = (p_idx % 3) + 1
 
-        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(shifted_co_ev, f_id, time_offset=time_offset)
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = process_coevent_simulation(
+            shifted_co_ev, f_id, use_baseline_transformers=True
+        )
 
         rows_3.append({
             "load_source": extract_load_source(shifted_co_ev),
@@ -479,10 +463,10 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
         ev1, ev2 = co_ev.event_1, co_ev.event_2
         f_id = (p_idx % 3) + 1
-        tx_id = f"trans{f_id}"
-        spec_id = f"tx_spec_{tx_id}"
 
-        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = compute_coevent_waveforms(co_ev, f_id, time_offset=0.0)
+        t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag = process_coevent_simulation(
+            co_ev, f_id, use_baseline_transformers=False
+        )
 
         rows_4.append({
             "gt_feeder_id": f"feeder_{f_id}",

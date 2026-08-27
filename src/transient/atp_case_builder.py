@@ -80,13 +80,14 @@ class ATPCaseBuilder:
 
             if ev_class == "equipment_switch":
                 eq_type = getattr(ev, "equipment_type", "ac_motor")
-                try:
-                    eq_model = get_equipment_model(eq_type)
-                    r_eq = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", 0.1))
-                    x_eq = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("x_armature", 0.2))
-                except Exception as e:
-                    print(f"WARNING: Exception loading equipment model {eq_type}: {e}\n{traceback.format_exc()}")
-                    r_eq, x_eq = 0.1, 0.2
+                eq_model = get_equipment_model(eq_type)
+                r_stator = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", eq_model.atp_params.get("r_coil", eq_model.atp_params.get("r_internal", eq_model.atp_params.get("r_magnetron")))))
+                x_stator = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("l_armature", eq_model.atp_params.get("l_coil", eq_model.atp_params.get("l_ac_filter", eq_model.atp_params.get("l_filter", 0.1)))))
+                if r_stator is None:
+                    print(f"ERROR: Equipment model {eq_type} missing resistance in atp_params")
+                    raise ValueError(f"Equipment model {eq_type} missing required R atp_params")
+                r_eq = float(r_stator)
+                x_eq = float(x_stator) if x_stator is not None else 0.1
 
                 r_str = f"{r_eq:.4f}".rjust(10)
                 l_str = f"{x_eq * 1000.0 / (2*3.14159*freq_hz):.4f}".rjust(10)

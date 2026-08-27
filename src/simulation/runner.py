@@ -1,29 +1,50 @@
 from opendssdirect import dss
 import numpy as np
 import traceback
+import json
 from typing import Dict, Any, List, Optional
 
 import src.power_plant.plant as plant
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
+from src.transient.events import SingleLineFaultEvent
 
 
 def extract_fault_info(co_ev: Any) -> str:
     """
-    Extracts JSON representation of fault parameters from a co-event.
+    Extracts JSON representation of fault parameters from a co-event using SingleLineFaultEvent
+    or OpenDSS Fault element properties.
     """
     fault_info = {}
+
+    # First check event objects (SingleLineFaultEvent) inside co_ev
     for ev in [getattr(co_ev, "event_1", None), getattr(co_ev, "event_2", None)]:
-        if ev and getattr(ev, "event_class", "") == "line_fault":
+        if isinstance(ev, SingleLineFaultEvent) or (ev and getattr(ev, "event_class", "") == "line_fault"):
             fault_info = {
                 "fault_type": getattr(ev, "fault_type", ""),
                 "fault_resistance_ohm": getattr(ev, "fault_resistance", 0.05),
                 "faulted_phases": list(getattr(ev, "faulted_phases", (0,))),
-                "config_id": getattr(ev, "extra_params", {}).get("config_id", "")
+                "target": getattr(ev, "target", ""),
+                "config_id": getattr(ev, "parameters", {}).get("config_id", "")
             }
             break
-    import json
+
+    # If not found in event dataclass, query active OpenDSS Fault element
+    if not fault_info and dss.Circuit.SetActiveElement("Fault.dist_fault_1"):
+        try:
+            r_val = float(dss.Properties.Value("r"))
+            phases_val = int(dss.Properties.Value("phases"))
+            bus_names = dss.CktElement.BusNames()
+            fault_info = {
+                "fault_type": "LG" if phases_val == 1 else "LL",
+                "fault_resistance_ohm": r_val,
+                "faulted_phases": [0] if phases_val == 1 else [0, 1],
+                "bus": bus_names[0] if bus_names else ""
+            }
+        except Exception:
+            pass
+
     return json.dumps(fault_info) if fault_info else ""
 
 
@@ -84,7 +105,7 @@ class SimulationResult:
 def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[dict], duration_hours: float = 5 / 60.0) -> dict:
     """
     Calculates power flow measurements and active/reactive energy consumed during the experiment
-    using the ConsumerRegistry interface and OpenDSS API via single passed dss instance.
+    using the ConsumerRegistry interface and OpenDSS API directly.
     """
     measurements = {}
 
@@ -118,12 +139,12 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             bus = getattr(mtr, "bus", None)
             branch_id = getattr(mtr, "branch_id", "")
 
-        v_mags = np.array([240.0, 240.0, 240.0])
-        v_angs = np.zeros(3)
+        v_mags = np.array([])
+        v_angs = np.array([])
         if bus:
             dss.Circuit.SetActiveBus(bus)
             v_vec = np.array(dss.Bus.VMagAngle())
-            if len(v_vec) >= 6:
+            if len(v_vec) >= 2:
                 v_mags = v_vec[0::2]
                 v_angs = v_vec[1::2]
 
@@ -163,8 +184,8 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         feeder_name = f"Line.feeder{feeder_num}"
         tx_name = f"Transformer.trans{feeder_num}"
 
-        feeder_voltage = 240.0
-        feeder_current = 100.0
+        feeder_voltage = 0.0
+        feeder_current = 0.0
         feeder_line_losses = 0.0
 
         if dss.Circuit.SetActiveElement(feeder_name):
@@ -178,33 +199,32 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             if len(f_losses) >= 1:
                 feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0))
 
-        # Transformer losses: P_t,loss = P_core + P_cu = V^2/R_c + 3*I_t^2*R_t
+        # Transformer losses queried directly from OpenDSS
         transformer_losses = 0.0
         if dss.Circuit.SetActiveElement(tx_name):
             tx_losses = dss.CktElement.Losses()
             if len(tx_losses) >= 1:
                 transformer_losses = round(float(abs(tx_losses[0]) / 1000.0))
 
-        # Consumer unit line losses: P_l,loss = 3 * I^2 * R_l = (|S|^2 / V_LL^2) * R_l
-        # Query OpenDSS line branch if available, otherwise compute using 3-phase line loss formula
+        # Consumer unit line losses queried directly from OpenDSS
         line_losses = 0.0
         if branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
             c_losses = dss.CktElement.Losses()
             if len(c_losses) >= 1:
                 line_losses = round(float(abs(c_losses[0]) / 1000.0), 4)
 
-        if line_losses == 0.0:
-            # 3-phase line loss calculation: P_loss = 3 * I^2 * R_line = (|S|^2 / V_LL^2) * R_line
-            v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
+        if line_losses == 0.0 and len(v_mags) > 0:
+            v_ln = float(np.mean(v_mags))
             v_ll = v_ln * np.sqrt(3.0)
             i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-            r_line = 0.05  # ohms service line resistance
+            r_line = 0.05
+            if branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
+                try:
+                    r_line = float(dss.Properties.Value("r1"))
+                except Exception:
+                    pass
             p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
             line_losses = round(float(p_loss_kw), 4)
-
-        feeder_resistance = 0.25  # ohm/km
-        feeder_inductance = round(0.35 / (2.0 * np.pi * 50.0), 6)  # H/km
-        feeder_capacitance = 12.0e-9  # F/km
 
         meas_item = {
             "consumer_unit_id": m_id,
@@ -217,9 +237,6 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             "energy_kwh": round(energy_kwh, 4),
             "feeder_voltage": feeder_voltage,
             "feeder_current": feeder_current,
-            "feeder_resistance": feeder_resistance,
-            "feeder_inductance": feeder_inductance,
-            "feeder_capacitance": feeder_capacitance,
             "feeder_line_losses": feeder_line_losses,
             "transformer_losses": transformer_losses,
             "line_losses": line_losses
@@ -242,24 +259,26 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
 
-        v_mags = np.array([240.0, 240.0, 240.0])
-        dss.Circuit.SetActiveBus(c_unit.bus_id)
-        v_vec = np.array(dss.Bus.VMagAngle())
-        if len(v_vec) >= 6:
-            v_mags = v_vec[0::2]
+        v_mags = np.array([])
+        if dss.Circuit.SetActiveBus(c_unit.bus_id):
+            v_vec = np.array(dss.Bus.VMagAngle())
+            if len(v_vec) >= 2:
+                v_mags = v_vec[0::2]
 
-        v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
-        v_ll = v_ln * np.sqrt(3.0)
-        i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-        r_line = 0.05
-        p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
-        line_losses = round(float(p_loss_kw), 4)
+        line_losses = 0.0
+        if len(v_mags) > 0:
+            v_ln = float(np.mean(v_mags))
+            v_ll = v_ln * np.sqrt(3.0)
+            i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
+            r_line = 0.05
+            p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
+            line_losses = round(float(p_loss_kw), 4)
 
         measurements[c_unit.consumer_id] = {
             "consumer_unit_id": c_unit.consumer_id,
             "bus": c_unit.bus_id,
             "v_mags": v_mags,
-            "v_angs": np.zeros(3),
+            "v_angs": np.zeros(len(v_mags)),
             "p_kw": round(p_kw, 4),
             "q_kvar": round(q_kvar, 4),
             "s_kva": round(s_kva, 4),
