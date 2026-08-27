@@ -1,6 +1,4 @@
-from opendssdirect import dss
-
-def configure_generator(p_kw: float = 1500.0, q_kvar: float = 0.0):
+def configure_generator(dss, p_kw: float = 1500.0, q_kvar: float = 0.0):
     """
     Sets up or edits the shared generator in the OpenDSS model.
     The generator is treated as an actual controllable operating-condition/excitation source.
@@ -17,7 +15,7 @@ def configure_generator(p_kw: float = 1500.0, q_kvar: float = 0.0):
         f"model=1"
     )
 
-def apply_generator_profile(p_kw: float, q_kvar: float):
+def apply_generator_profile(dss, p_kw: float, q_kvar: float):
     """
     Dynamically edits the operating point of the shared generator.
     """

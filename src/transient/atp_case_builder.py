@@ -1,5 +1,6 @@
 import os
-from loads import get_equipment_model
+import traceback
+from src.loads import get_equipment_model
 
 class ATPCaseBuilder:
     def __init__(self, template_path: str = None):
@@ -42,7 +43,15 @@ class ATPCaseBuilder:
         ang_b = float(phase_ang[1])
         ang_c = float(phase_ang[2])
 
-        freq_hz = getattr(operating_point, "frequency_hz", 50.0) if operating_point else 50.0
+        if operating_point is None or not hasattr(operating_point, "frequency_hz"):
+            print(f"ERROR: Operating point is missing or frequency_hz attribute absent\n{traceback.format_exc()}")
+            raise ValueError("Operating point must be provided with frequency_hz")
+
+        freq_hz = float(operating_point.frequency_hz)
+        if freq_hz <= 0:
+            print(f"ERROR: Invalid frequency_hz in operating point: {freq_hz}\n{traceback.format_exc()}")
+            raise ValueError(f"frequency_hz in operating point must be positive, got {freq_hz}")
+
         freq_str = f"{freq_hz:.2f}".rjust(10)
         a1_str = " ".rjust(10)
         t1_str = " ".rjust(10)
@@ -71,12 +80,14 @@ class ATPCaseBuilder:
 
             if ev_class == "equipment_switch":
                 eq_type = getattr(ev, "equipment_type", "ac_motor")
-                try:
-                    eq_model = get_equipment_model(eq_type)
-                    r_eq = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", 0.1))
-                    x_eq = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("x_armature", 0.2))
-                except Exception:
-                    r_eq, x_eq = 0.1, 0.2
+                eq_model = get_equipment_model(eq_type)
+                r_stator = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", eq_model.atp_params.get("r_coil", eq_model.atp_params.get("r_internal", eq_model.atp_params.get("r_magnetron")))))
+                x_stator = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("l_armature", eq_model.atp_params.get("l_coil", eq_model.atp_params.get("l_ac_filter", eq_model.atp_params.get("l_filter", 0.1)))))
+                if r_stator is None:
+                    print(f"ERROR: Equipment model {eq_type} missing resistance in atp_params")
+                    raise ValueError(f"Equipment model {eq_type} missing required R atp_params")
+                r_eq = float(r_stator)
+                x_eq = float(x_stator) if x_stator is not None else 0.1
 
                 r_str = f"{r_eq:.4f}".rjust(10)
                 l_str = f"{x_eq * 1000.0 / (2*3.14159*freq_hz):.4f}".rjust(10)

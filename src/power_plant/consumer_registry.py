@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import numpy as np
 
+# Physical service line resistance constant for LV service drops (Ohms)
+DEFAULT_SERVICE_LINE_RESISTANCE_OHM = 0.05
+
 
 @dataclass
 class LoadDefinition:
@@ -19,6 +22,7 @@ class ConsumerUnit:
     assigned_load_class: Optional[str] = None  # None for latent/unmetered hidden consumers
     loads: List[LoadDefinition] = field(default_factory=list)
     is_latent_unmetered: bool = False
+    service_line_resistance_ohm: float = DEFAULT_SERVICE_LINE_RESISTANCE_OHM
 
     @property
     def load_circuit_ids(self) -> List[str]:
@@ -40,9 +44,11 @@ class ConsumerRegistry:
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
         "compressor", "audio_amplifier", "ups", "industrial_fan"
     ]
+    DEFAULT_SERVICE_LINE_RESISTANCE = DEFAULT_SERVICE_LINE_RESISTANCE_OHM
 
-    def __init__(self, seed: int = 42):
+    def __init__(self, seed: int = 42, service_line_resistance_ohm: float = DEFAULT_SERVICE_LINE_RESISTANCE_OHM):
         self.rng = np.random.default_rng(seed)
+        self.service_line_resistance_ohm = service_line_resistance_ohm
         self._registered_consumers: Dict[str, ConsumerUnit] = {}
         self._latent_consumers: Dict[str, ConsumerUnit] = {}
 
@@ -52,10 +58,14 @@ class ConsumerRegistry:
         bus_id: str,
         feeder_id: str,
         assigned_load_class: Optional[str] = None,
-        extra_load_probability: float = 0.4
+        extra_load_probability: float = 0.4,
+        service_line_resistance_ohm: Optional[float] = None
     ) -> ConsumerUnit:
         if assigned_load_class is None:
             assigned_load_class = str(self.rng.choice(self.LOAD_CLASSES, p=[0.60, 0.25, 0.10, 0.05]))
+
+        if service_line_resistance_ohm is None:
+            service_line_resistance_ohm = self.service_line_resistance_ohm
 
         base_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
         base_load = LoadDefinition(
@@ -82,7 +92,8 @@ class ConsumerRegistry:
             feeder_id=feeder_id,
             assigned_load_class=assigned_load_class,
             loads=loads,
-            is_latent_unmetered=False
+            is_latent_unmetered=False,
+            service_line_resistance_ohm=service_line_resistance_ohm
         )
         self._registered_consumers[consumer_id] = unit
         return unit
@@ -92,12 +103,16 @@ class ConsumerRegistry:
         consumer_id: str,
         bus_id: str,
         feeder_id: str,
-        load_type: str = "ac_motor"
+        load_type: str = "ac_motor",
+        service_line_resistance_ohm: Optional[float] = None
     ) -> ConsumerUnit:
         """
         Registers a hidden/latent consumer unit without an assigned class in the LV network.
         Used for evaluating non-technical losses (NTL) and theft estimation error.
         """
+        if service_line_resistance_ohm is None:
+            service_line_resistance_ohm = self.service_line_resistance_ohm
+
         load = LoadDefinition(
             load_id=f"{consumer_id}_latent_load",
             circuit_id=f"{consumer_id}_latent_circuit",
@@ -110,7 +125,8 @@ class ConsumerRegistry:
             feeder_id=feeder_id,
             assigned_load_class=None,  # No assigned class for latent/unmetered units
             loads=[load],
-            is_latent_unmetered=True
+            is_latent_unmetered=True,
+            service_line_resistance_ohm=service_line_resistance_ohm
         )
         self._latent_consumers[consumer_id] = unit
         return unit

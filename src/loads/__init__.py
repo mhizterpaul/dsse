@@ -1,12 +1,35 @@
-from loads.base import EquipmentCircuit
-from loads.ac_motor import get_ac_motor
-from loads.dc_motor_inverter import get_dc_motor_inverter
-from loads.microwave import get_microwave
-from loads.induction_plate import get_induction_plate
-from loads.compressor import get_compressor
-from loads.audio_amplifier import get_audio_amplifier
-from loads.ups import get_ups
-from loads.industrial_fan import get_industrial_fan
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_PATH = PROJECT_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+try:
+    from src.loads.base import EquipmentCircuit
+    from src.loads.ac_motor import get_ac_motor
+    from src.loads.dc_motor_inverter import get_dc_motor_inverter
+    from src.loads.microwave import get_microwave
+    from src.loads.induction_plate import get_induction_plate
+    from src.loads.compressor import get_compressor
+    from src.loads.audio_amplifier import get_audio_amplifier
+    from src.loads.ups import get_ups
+    from src.loads.industrial_fan import get_industrial_fan
+except ImportError:
+    from loads.base import EquipmentCircuit
+    from loads.ac_motor import get_ac_motor
+    from loads.dc_motor_inverter import get_dc_motor_inverter
+    from loads.microwave import get_microwave
+    from loads.induction_plate import get_induction_plate
+    from loads.compressor import get_compressor
+    from loads.audio_amplifier import get_audio_amplifier
+    from loads.ups import get_ups
+    from loads.industrial_fan import get_industrial_fan
+
 import numpy as np
 
 EQUIPMENT_REGISTRY = {

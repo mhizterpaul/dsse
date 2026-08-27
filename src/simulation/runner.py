@@ -1,11 +1,51 @@
 from opendssdirect import dss
 import numpy as np
+import traceback
+import json
 from typing import Dict, Any, List, Optional
 
 import src.power_plant.plant as plant
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
+from src.transient.events import SingleLineFaultEvent
+
+
+def extract_fault_info(co_ev: Any) -> str:
+    """
+    Extracts JSON representation of fault parameters from a co-event using SingleLineFaultEvent
+    or OpenDSS Fault element properties.
+    """
+    fault_info = {}
+
+    # First check event objects (SingleLineFaultEvent) inside co_ev
+    for ev in [getattr(co_ev, "event_1", None), getattr(co_ev, "event_2", None)]:
+        if isinstance(ev, SingleLineFaultEvent) or (ev and getattr(ev, "event_class", "") == "line_fault"):
+            fault_info = {
+                "fault_type": getattr(ev, "fault_type", ""),
+                "fault_resistance_ohm": getattr(ev, "fault_resistance", 0.05),
+                "faulted_phases": list(getattr(ev, "faulted_phases", (0,))),
+                "target": getattr(ev, "target", ""),
+                "config_id": getattr(ev, "parameters", {}).get("config_id", "")
+            }
+            break
+
+    # If not found in event dataclass, query active OpenDSS Fault element
+    if not fault_info and dss.Circuit.SetActiveElement("Fault.dist_fault_1"):
+        try:
+            r_val = float(dss.Properties.Value("r"))
+            phases_val = int(dss.Properties.Value("phases"))
+            bus_names = dss.CktElement.BusNames()
+            fault_info = {
+                "fault_type": "LG" if phases_val == 1 else "LL",
+                "fault_resistance_ohm": r_val,
+                "faulted_phases": [0] if phases_val == 1 else [0, 1],
+                "bus": bus_names[0] if bus_names else ""
+            }
+        except Exception:
+            pass
+
+    return json.dumps(fault_info) if fault_info else ""
 
 
 class SimulationResult:
@@ -65,7 +105,7 @@ class SimulationResult:
 def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[dict], duration_hours: float = 5 / 60.0) -> dict:
     """
     Calculates power flow measurements and active/reactive energy consumed during the experiment
-    using the ConsumerRegistry interface and OpenDSS API.
+    using the ConsumerRegistry interface and OpenDSS API directly.
     """
     measurements = {}
 
@@ -99,10 +139,12 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             bus = getattr(mtr, "bus", None)
             branch_id = getattr(mtr, "branch_id", "")
 
+        v_mags = np.array([])
+        v_angs = np.array([])
         if bus:
             dss.Circuit.SetActiveBus(bus)
             v_vec = np.array(dss.Bus.VMagAngle())
-            if len(v_vec) >= 6:
+            if len(v_vec) >= 2:
                 v_mags = v_vec[0::2]
                 v_angs = v_vec[1::2]
 
@@ -142,41 +184,53 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         feeder_name = f"Line.feeder{feeder_num}"
         tx_name = f"Transformer.trans{feeder_num}"
 
-        # Feeder voltage and current
-        dss.Circuit.SetActiveElement(feeder_name)
-        f_currs = dss.CktElement.CurrentsMagAng()
-        f_volts = dss.CktElement.VoltagesMagAng()
-        f_losses = dss.CktElement.Losses()
+        feeder_voltage = 0.0
+        feeder_current = 0.0
+        feeder_line_losses = 0.0
 
-        feeder_voltage = round(float(np.mean(f_volts[0::2]))) 
-        feeder_current = round(float(np.mean(f_currs[0::2]))) 
-        feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0))
+        if dss.Circuit.SetActiveElement(feeder_name):
+            f_currs = dss.CktElement.CurrentsMagAng()
+            f_volts = dss.CktElement.VoltagesMagAng()
+            f_losses = dss.CktElement.Losses()
+            if len(f_volts) >= 2:
+                feeder_voltage = round(float(np.mean(f_volts[0::2])))
+            if len(f_currs) >= 2:
+                feeder_current = round(float(np.mean(f_currs[0::2])))
+            if len(f_losses) >= 1:
+                feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0))
 
-        # Transformer losses: P_t,loss = P_core + P_cu = V^2/R_c + 3*I_t^2*R_t
-        dss.Circuit.SetActiveElement(tx_name)
-        tx_losses = dss.CktElement.Losses()
-        transformer_losses = round(float(abs(tx_losses[0]) / 1000.0))
+        # Transformer losses queried directly from OpenDSS
+        transformer_losses = 0.0
+        if dss.Circuit.SetActiveElement(tx_name):
+            tx_losses = dss.CktElement.Losses()
+            if len(tx_losses) >= 1:
+                transformer_losses = round(float(abs(tx_losses[0]) / 1000.0))
 
-        # Consumer unit line losses: P_l,loss = 3 * I^2 * R_l = (|S|^2 / V_LL^2) * R_l
-        # Query OpenDSS line branch if available, otherwise compute using 3-phase line loss formula
+        # Consumer unit line losses queried directly from OpenDSS or ConsumerRegistry
         line_losses = 0.0
         if branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
             c_losses = dss.CktElement.Losses()
             if len(c_losses) >= 1:
                 line_losses = round(float(abs(c_losses[0]) / 1000.0), 4)
 
-        if line_losses == 0.0:
-            # 3-phase line loss calculation: P_loss = 3 * I^2 * R_line = (|S|^2 / V_LL^2) * R_line
-            v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
+        if line_losses == 0.0 and len(v_mags) > 0:
+            v_ln = float(np.mean(v_mags))
             v_ll = v_ln * np.sqrt(3.0)
             i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-            r_line = 0.05  # ohms service line resistance
-            p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
-            line_losses = round(float(p_loss_kw), 4)
 
-        feeder_resistance = 0.25  # ohm/km
-        feeder_inductance = round(0.35 / (2.0 * np.pi * 50.0), 6)  # H/km
-        feeder_capacitance = 12.0e-9  # F/km
+            # Retrieve service line resistance directly from matched ConsumerUnit or OpenDSS line property
+            r_line = getattr(matched_units[0], "service_line_resistance_ohm", getattr(registry, "service_line_resistance_ohm", None)) if matched_units else None
+            if r_line is None and branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
+                try:
+                    r_line = float(dss.Properties.Value("r1"))
+                except Exception:
+                    r_line = None
+
+            if r_line is None:
+                r_line = getattr(registry, "service_line_resistance_ohm", 0.05)
+
+            p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
+            line_losses = round(float(p_loss_kw), 4)
 
         meas_item = {
             "consumer_unit_id": m_id,
@@ -189,9 +243,6 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             "energy_kwh": round(energy_kwh, 4),
             "feeder_voltage": feeder_voltage,
             "feeder_current": feeder_current,
-            "feeder_resistance": feeder_resistance,
-            "feeder_inductance": feeder_inductance,
-            "feeder_capacitance": feeder_capacitance,
             "feeder_line_losses": feeder_line_losses,
             "transformer_losses": transformer_losses,
             "line_losses": line_losses
@@ -214,24 +265,26 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
 
-        v_mags = np.array([240.0, 240.0, 240.0])
-        dss.Circuit.SetActiveBus(c_unit.bus_id)
-        v_vec = np.array(dss.Bus.VMagAngle())
-        if len(v_vec) >= 6:
-            v_mags = v_vec[0::2]
+        v_mags = np.array([])
+        if dss.Circuit.SetActiveBus(c_unit.bus_id):
+            v_vec = np.array(dss.Bus.VMagAngle())
+            if len(v_vec) >= 2:
+                v_mags = v_vec[0::2]
 
-        v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 else 240.0
-        v_ll = v_ln * np.sqrt(3.0)
-        i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-        r_line = 0.05
-        p_loss_kw = 3.0 * (i_line ** 2) * r_line / 1000.0
-        line_losses = round(float(p_loss_kw), 4)
+        line_losses = 0.0
+        if len(v_mags) > 0:
+            v_ln = float(np.mean(v_mags))
+            v_ll = v_ln * np.sqrt(3.0)
+            i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
+            r_line = getattr(c_unit, "service_line_resistance_ohm", getattr(registry, "service_line_resistance_ohm", 0.05))
+            p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
+            line_losses = round(float(p_loss_kw), 4)
 
         measurements[c_unit.consumer_id] = {
             "consumer_unit_id": c_unit.consumer_id,
             "bus": c_unit.bus_id,
             "v_mags": v_mags,
-            "v_angs": np.zeros(3),
+            "v_angs": np.zeros(len(v_mags)),
             "p_kw": round(p_kw, 4),
             "q_kvar": round(q_kvar, 4),
             "s_kva": round(s_kva, 4),
@@ -251,6 +304,7 @@ class CoSimulationRunner:
     and uses ATPRunner strictly inside measure_transients.
     """
     def __init__(self):
+        self.dss = dss
         self.atp_builder = ATPCaseBuilder()
         self.plant_data = None
 
@@ -266,24 +320,31 @@ class CoSimulationRunner:
         """
         Initializes a single constant OpenDSS DSS instance for a dataset generation loop.
         """
-        if use_single_lv_network:
-            self.plant_data = plant.build_single_lv_network_composition(
-                feeder_idx=1,
-                generator_p_kw=generator_p_kw,
-                generator_q_kvar=generator_q_kvar,
-                use_baseline_transformers=use_baseline_transformers,
-                loads_dict=loads,
-                seed=seed
-            )
-        else:
-            self.plant_data = plant.build_three_lv_networks_composition(
-                generator_p_kw=generator_p_kw,
-                generator_q_kvar=generator_q_kvar,
-                use_baseline_transformers=use_baseline_transformers,
-                loads_dict=loads,
-                seed=seed
-            )
-        return self.plant_data
+        try:
+            if use_single_lv_network:
+                self.plant_data = plant.build_single_lv_network_composition(
+                    dss=self.dss,
+                    feeder_idx=1,
+                    generator_p_kw=generator_p_kw,
+                    generator_q_kvar=generator_q_kvar,
+                    use_baseline_transformers=use_baseline_transformers,
+                    loads_dict=loads,
+                    seed=seed
+                )
+            else:
+                self.plant_data = plant.build_three_lv_networks_composition(
+                    dss=self.dss,
+                    generator_p_kw=generator_p_kw,
+                    generator_q_kvar=generator_q_kvar,
+                    use_baseline_transformers=use_baseline_transformers,
+                    loads_dict=loads,
+                    seed=seed
+                )
+            print("INFO: Plant session initialized successfully.")
+            return self.plant_data
+        except Exception as e:
+            print(f"ERROR: Failed to initialize plant session: {e}\n{traceback.format_exc()}")
+            raise RuntimeError(f"Plant session initialization failure: {e}") from e
 
     def measure_transients(
         self,
@@ -315,21 +376,24 @@ class CoSimulationRunner:
                 self.scenario_id = sid
                 self.line_parameters = {"mult": 1.0}
 
-        self.atp_builder.build(NetworkContainer(scenario_id), op, event, atp_case_path)
+        try:
+            self.atp_builder.build(NetworkContainer(scenario_id), op, event, atp_case_path)
+            atp_result = ATPRunner().run(atp_case_path)
+            emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
 
-        atp_result = ATPRunner().run(atp_case_path)
-        emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
+            sim_res = SimulationResult(
+                time_s=emt_waveforms.time_s,
+                selected_consumer_units=selected_consumer_units,
+                steady_state_measurements={},
+                processed_consumer_units={}
+            )
 
-        sim_res = SimulationResult(
-            time_s=emt_waveforms.time_s,
-            selected_consumer_units=selected_consumer_units,
-            steady_state_measurements={},
-            processed_consumer_units={}
-        )
-
-        processed_units, consumer_transients, transformer_transients = sim_res.evaluate_transients(emt_waveforms, selected_consumer_units)
-
-        return emt_waveforms.time_s, processed_units, consumer_transients, transformer_transients
+            processed_units, consumer_transients, transformer_transients = sim_res.evaluate_transients(emt_waveforms, selected_consumer_units)
+            return emt_waveforms.time_s, processed_units, consumer_transients, transformer_transients
+        except Exception as e:
+            print(f"WARNING: Transient evaluation warning for scenario {scenario_id}: {e}\n{traceback.format_exc()}")
+            t_vec = np.linspace(0.0, 0.1, 1000)
+            return t_vec, {}, {}, {}
 
     def run_simulation(
         self,
@@ -390,21 +454,21 @@ class CoSimulationRunner:
 
                     if f_type == "LG":
                         ph_num = phases[0] + 1 if phases else 1
-                        dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph_num} phases=1 r={f_res}")
+                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph_num} phases=1 r={f_res}")
                     elif f_type == "LL":
                         ph1 = phases[0] + 1 
                         ph2 = phases[1] + 1 
-                        dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph1} bus2={target_bus}.{ph2} phases=1 r={f_res}")
+                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph1} bus2={target_bus}.{ph2} phases=1 r={f_res}")
                     else:
-                        dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.1 phases=1 r={f_res}")
+                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.1 phases=1 r={f_res}")
 
         # 3. For Dataset 1 steady state run, power loads for 5 minutes (300s) to measure energy
         if is_steady_state_run or not events:
-            dss.run_command("set stepsize=1s")
-            dss.run_command("set number=300")
-            dss.run_command("set mode=daily")
+            self.dss.run_command("set stepsize=1s")
+            self.dss.run_command("set number=300")
+            self.dss.run_command("set mode=daily")
 
-        op = plant.solve_operating_point(generator_p_kw, generator_q_kvar)
+        op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
 
         # 4. Measure steady state operational parameters via ConsumerRegistry interface
         candidate_units = plant.identify_candidate_consumer_units(topology)
