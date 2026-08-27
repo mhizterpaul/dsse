@@ -1,4 +1,4 @@
-from src.lv_networks.loads.base import EquipmentCircuit
+from loads.base import EquipmentCircuit
 
 def get_compressor(rated_power_kw: float = 4.0) -> EquipmentCircuit:
     """

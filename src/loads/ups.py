@@ -1,4 +1,4 @@
-from src.lv_networks.loads.base import EquipmentCircuit
+from loads.base import EquipmentCircuit
 
 def get_ups(rated_power_kw: float = 8.0) -> EquipmentCircuit:
     """

@@ -60,30 +60,6 @@ class EquipmentEquipmentCoEvent:
         ev2_shifted = replace(self.event_2, start_time_s=self.event_1.start_time_s + offset_s)
         return EquipmentEquipmentCoEvent(event_1=self.event_1, event_2=ev2_shifted)
 
-@dataclass
-class LineFaultLineFaultCoEvent:
-    event_1: SingleLineFaultEvent
-    event_2: SingleLineFaultEvent
-
-    @property
-    def event_class(self) -> str:
-        return "line_fault_line_fault_coevent"
-
-    @property
-    def event_type(self) -> str:
-        return f"{self.event_1.event_type}_{self.event_2.event_type}"
-
-    @property
-    def is_simultaneous(self) -> bool:
-        return self.event_1.start_time_s == self.event_2.start_time_s
-
-    @property
-    def time_offset_s(self) -> float:
-        return abs(self.event_2.start_time_s - self.event_1.start_time_s)
-
-    def with_time_shift(self, offset_s: float):
-        ev2_shifted = replace(self.event_2, start_time_s=self.event_1.start_time_s + offset_s)
-        return LineFaultLineFaultCoEvent(event_1=self.event_1, event_2=ev2_shifted)
 
 @dataclass
 class EquipmentLineFaultCoEvent:
@@ -114,6 +90,5 @@ TransientEvent = Union[
     SingleEquipmentSwitchEvent,
     SingleLineFaultEvent,
     EquipmentEquipmentCoEvent,
-    LineFaultLineFaultCoEvent,
     EquipmentLineFaultCoEvent
 ]

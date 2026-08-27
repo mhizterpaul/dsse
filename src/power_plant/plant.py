@@ -1,50 +1,15 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
-from opendssdirect import dss
 from src.power_plant.sources import configure_generator, apply_generator_profile
-from src.power_plant.transformers import get_distribution_transformer_spec
+from power_plant.lv_transformers import get_distribution_transformer_spec
 from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network, register_lv1_consumers
 from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network, register_lv2_consumers
 from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network, register_lv3_consumers
 from src.power_plant.consumer_registry import ConsumerRegistry
 
 
-def extract_transformer_unit_data(consumer_unit: dict) -> dict:
-    """
-    Extracts transformer boundary voltage and power flow measurements directly from OpenDSS API.
-    """
-    bus = consumer_unit.get("bus", "feeder1_sec")
-    dss.Circuit.SetActiveBus(bus)
-    v_vec = np.array(dss.Bus.VMagAngle())
 
-    if len(v_vec) >= 6:
-        v_mags = v_vec[0::2]
-        v_angs = v_vec[1::2]
-    else:
-        v_mags = np.array([240.0, 240.0, 240.0])
-        v_angs = np.array([0.0, -120.0, -240.0])
-
-    branch_id = consumer_unit.get("branch_id", "transformer.trans1")
-    dss.Circuit.SetActiveElement(branch_id)
-    powers = dss.CktElement.Powers()
-
-    if len(powers) >= 2:
-        p_kw = float(abs(sum(powers[0::2])))
-        q_kvar = float(abs(sum(powers[1::2])))
-    else:
-        p_kw = 500.0
-        q_kvar = 100.0
-
-    s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
-
-    return {
-        "v_mags": v_mags,
-        "v_angs": v_angs,
-        "p_kw": p_kw,
-        "q_kvar": q_kvar,
-        "s_kva": s_kva
-    }
 
 
 def generate_known_radial_topology(feeder_idx: int, num_buses: int = 20, rng=None, seed: int = 42) -> dict:
@@ -168,30 +133,11 @@ def initialize_known_plant(use_baseline_transformers: bool = False, topology: di
     """
     print("INFO: Initializing OpenDSS Physics-Based Known Plant Model (33/11/0.415 kV)...")
 
-    dss.Basic.ClearAll()
-    dss.run_command("new circuit.FixedPlant basekv=33.0 pu=1.0 phases=3")
-
-    dss.run_command(
-        "new transformer.substation "
-        "phases=3 windings=2 "
-        "buses=[sourcebus, main_bus] "
-        "conns=[delta, wye] "
-        "kvs=[33.0, 11.0] "
-        "kvas=[7500, 7500] "
-        "%r=0.6 "
-        "%loadloss=0.667 "
-        "%noloadloss=0.1 "
-        "%imag=0.8 "
-        "xhl=8.33"
-    )
+    
 
     configure_generator(p_kw=1500.0, q_kvar=0.0)
 
-    dss.run_command("new linecode.feeder nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=12.0 c0=6.0 units=km")
-
-    dss.run_command("new line.feeder1 bus1=main_bus bus2=feeder1_head phases=3 linecode=feeder length=4.5 units=km")
-    dss.run_command("new line.feeder2 bus1=main_bus bus2=feeder2_head phases=3 linecode=feeder length=6.2 units=km")
-    dss.run_command("new line.feeder3 bus1=main_bus bus2=feeder3_head phases=3 linecode=feeder length=8.5 units=km")
+    
 
     for f_id in [1, 2, 3]:
         spec = get_distribution_transformer_spec(f_id, use_baseline=use_baseline_transformers)
@@ -313,12 +259,7 @@ def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> Op
     """
     apply_generator_profile(p_kw, q_kvar)
 
-    dss.run_command("set mode=snapshot")
-    dss.Solution.Solve()
-    if not dss.Solution.Converged():
-        dss.run_command("Solve mode=direct")
-        if not dss.Solution.Converged():
-            raise RuntimeError(f"OpenDSS failed to converge at t={time_s}s")
+    
 
     feeder_p = {}
     feeder_q = {}
@@ -336,19 +277,11 @@ def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> Op
             "branch_id": f"transformer.trans{idx}",
             "branch_type": "transformer"
         }
-        data = extract_transformer_unit_data(consumer_unit)
+        
 
-        feeder_p[f"feeder{idx}"] = data["p_kw"]
-        feeder_q[f"feeder{idx}"] = data["q_kvar"]
-        loading[f"transformer{idx}"] = (data["s_kva"] / 1500.0) * 100.0
-        v_avg_lv = float(np.mean(data["v_mags"]))
-        v_nom_lv = 415.0 / np.sqrt(3.0)
-        voltage_pu[f"transformer{idx}"] = v_avg_lv / v_nom_lv
+        
 
-        phase_voltages_v[f"trans{idx}"] = tuple(data["v_mags"])
-        phase_angles_deg[f"trans{idx}"] = tuple(data["v_angs"])
 
-    freq = float(dss.Solution.Frequency())
 
     return OperatingPoint(
         time_s=time_s,
@@ -358,7 +291,6 @@ def solve_operating_point(p_kw: float, q_kvar: float, time_s: float = 0.0) -> Op
         feeder_q_kvar=feeder_q,
         transformer_loading=loading,
         voltage_pu=voltage_pu,
-        frequency_hz=freq,
         phase_voltages_v=phase_voltages_v,
         phase_angles_deg=phase_angles_deg
     )

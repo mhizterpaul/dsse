@@ -1,4 +1,4 @@
-from src.lv_networks.loads.base import EquipmentCircuit
+from loads.base import EquipmentCircuit
 
 def get_microwave(rated_power_kw: float = 1.8) -> EquipmentCircuit:
     """

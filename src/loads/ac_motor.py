@@ -1,4 +1,4 @@
-from src.lv_networks.loads.base import EquipmentCircuit
+from loads.base import EquipmentCircuit
 
 def get_ac_motor(rated_power_kw: float = 15.0) -> EquipmentCircuit:
     """

@@ -1,5 +1,5 @@
 import os
-from src.lv_networks.loads import get_equipment_model
+from loads import get_equipment_model
 
 class ATPCaseBuilder:
     def __init__(self, template_path: str = None):

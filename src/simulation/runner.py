@@ -105,12 +105,6 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             if len(v_vec) >= 6:
                 v_mags = v_vec[0::2]
                 v_angs = v_vec[1::2]
-            else:
-                v_mags = np.array([240.0, 240.0, 240.0])
-                v_angs = np.array([0.0, -120.0, -240.0])
-        else:
-            v_mags = np.array([240.0, 240.0, 240.0])
-            v_angs = np.array([0.0, -120.0, -240.0])
 
         p_kw = 0.0
         q_kvar = 0.0
@@ -154,14 +148,14 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         f_volts = dss.CktElement.VoltagesMagAng()
         f_losses = dss.CktElement.Losses()
 
-        feeder_voltage = round(float(np.mean(f_volts[0::2])) if len(f_volts) >= 2 else 240.0, 4)
-        feeder_current = round(float(np.mean(f_currs[0::2])) if len(f_currs) >= 2 else 15.0, 4)
-        feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0) if len(f_losses) >= 1 else 0.25, 4)
+        feeder_voltage = round(float(np.mean(f_volts[0::2]))) 
+        feeder_current = round(float(np.mean(f_currs[0::2]))) 
+        feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0))
 
         # Transformer losses: P_t,loss = P_core + P_cu = V^2/R_c + 3*I_t^2*R_t
         dss.Circuit.SetActiveElement(tx_name)
         tx_losses = dss.CktElement.Losses()
-        transformer_losses = round(float(abs(tx_losses[0]) / 1000.0) if len(tx_losses) >= 1 else 1.61, 4)
+        transformer_losses = round(float(abs(tx_losses[0]) / 1000.0))
 
         # Consumer unit line losses: P_l,loss = 3 * I^2 * R_l = (|S|^2 / V_LL^2) * R_l
         # Query OpenDSS line branch if available, otherwise compute using 3-phase line loss formula
@@ -398,8 +392,8 @@ class CoSimulationRunner:
                         ph_num = phases[0] + 1 if phases else 1
                         dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph_num} phases=1 r={f_res}")
                     elif f_type == "LL":
-                        ph1 = phases[0] + 1 if len(phases) > 0 else 1
-                        ph2 = phases[1] + 1 if len(phases) > 1 else 2
+                        ph1 = phases[0] + 1 
+                        ph2 = phases[1] + 1 
                         dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph1} bus2={target_bus}.{ph2} phases=1 r={f_res}")
                     else:
                         dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.1 phases=1 r={f_res}")

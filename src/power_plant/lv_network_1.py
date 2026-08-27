@@ -4,10 +4,10 @@ Aligns with docs/specs/lv1: Network ID LV1, 20 buses, 19 branches, 415V/240V, 1.
 Registers consumer units and their loads directly to LV Network 1.
 """
 
-from opendssdirect import dss
+
 import numpy as np
 from src.power_plant.consumer_registry import ConsumerRegistry
-from src.lv_networks.loads import get_equipment_model
+from loads import get_equipment_model
 
 LV1_SPEC = {
     "network_id": "LV1",
@@ -106,10 +106,7 @@ def build_lv1_network(topology: dict = None, loads_dict: dict = None, registry: 
     if registry is None and loads_dict is None:
         registry = register_lv1_consumers(topology=topology, seed=seed)
 
-    dss.run_command(
-        f"new linecode.{LV1_SPEC['line_code']} "
-        f"nphases=3 r1=0.21 x1=0.08 r0=0.63 x0=0.24 c1=10.0 c0=5.0 units=km normamps=350.0"
-    )
+    
 
     for ln in topology.get("lines", []):
         dss.run_command(
@@ -129,13 +126,7 @@ def build_lv1_network(topology: dict = None, loads_dict: dict = None, registry: 
                     kw = eq_model.rated_power_kw
                     pf = eq_model.power_factor
                     model_type = eq_model.opendss_params.get("model", 1)
-                    dss.run_command(
-                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={kw} pf={pf} model={model_type} status=fixed"
-                    )
-    elif loads_dict:
-        for ld in loads_dict.get("loads", []):
-            dss.run_command(
-                f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw=5.0 pf=0.95 model={ld.get('model', 1)}"
-            )
+                    
+    
 
     return registry

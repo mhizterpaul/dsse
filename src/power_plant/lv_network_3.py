@@ -4,10 +4,10 @@ Aligns with docs/specs/lv3: Network ID LV3, 30 buses, 29 branches, 415V/240V, 2.
 Registers consumer units and their loads directly to LV Network 3.
 """
 
-from opendssdirect import dss
+
 import numpy as np
 from src.power_plant.consumer_registry import ConsumerRegistry
-from src.lv_networks.loads import get_equipment_model
+from loads import get_equipment_model
 
 LV3_SPEC = {
     "network_id": "LV3",
@@ -106,19 +106,8 @@ def build_lv3_network(topology: dict = None, loads_dict: dict = None, registry: 
     if registry is None and loads_dict is None:
         registry = register_lv3_consumers(topology=topology, seed=seed)
 
-    dss.run_command(
-        f"new linecode.{LV3_SPEC['line_code']} "
-        f"nphases=3 r1=0.21 x1=0.08 r0=0.63 x0=0.24 c1=10.0 c0=5.0 units=km normamps=350.0"
-    )
-
-    for ln in topology.get("lines", []):
-        dss.run_command(
-            f"new line.{ln['name']} "
-            f"bus1={ln['bus1']} bus2={ln['bus2']} phases=3 "
-            f"r1={ln.get('r1', 0.21)} x1={ln.get('x1', 0.08)} "
-            f"r0={ln.get('r0', 0.63)} x0={ln.get('x0', 0.24)} "
-            f"length={ln.get('length', 0.05)} units=km normamps=350.0"
-        )
+    
+        
 
     # Apply consumer units and their loads registered to LV Network 3
     if registry is not None:
@@ -132,10 +121,6 @@ def build_lv3_network(topology: dict = None, loads_dict: dict = None, registry: 
                     dss.run_command(
                         f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={kw} pf={pf} model={model_type} status=fixed"
                     )
-    elif loads_dict:
-        for ld in loads_dict.get("loads", []):
-            dss.run_command(
-                f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw=5.0 pf=0.95 model={ld.get('model', 1)}"
-            )
+    
 
     return registry

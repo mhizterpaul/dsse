@@ -1,4 +1,4 @@
-from src.lv_networks.loads.base import EquipmentCircuit
+from loads.base import EquipmentCircuit
 
 def get_dc_motor_inverter(rated_power_kw: float = 10.0) -> EquipmentCircuit:
     """

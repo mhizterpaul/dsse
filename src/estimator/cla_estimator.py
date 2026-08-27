@@ -34,19 +34,8 @@ class ConsumerLoadClassModel:
         base_w = cls.CLASS_WEIGHTS.get(premises.class_id, 1.0)
         return float(base_w * (premises.connected_load_kw / 10.0) * premises.supply_availability)
 
-    @classmethod
-    def get_sampled_class_profile(cls, class_id: str, t_points: np.ndarray) -> np.ndarray:
-        """
-        Returns normalized sampled class profile mu_c(t).
-        """
-        t = np.asarray(t_points, dtype=float)
-        if class_id == "residential_light":
-            profile = 0.5 + 0.5 * np.sin(2 * np.pi * t / 24.0)
-        elif class_id == "commercial":
-            profile = 0.2 + 0.8 * (1.0 / (1.0 + np.exp(-0.5 * (t - 12.0))))
-        else:  # industrial_motor
-            profile = 0.8 + 0.2 * np.cos(2 * np.pi * t / 12.0)
-        return np.maximum(0.05, profile)
+    
+       
 
 
 @dataclass

@@ -4,10 +4,10 @@ Aligns with docs/specs/lv2: Network ID LV2, 25 buses, 24 branches, 415V/240V, 1.
 Registers consumer units and their loads directly to LV Network 2.
 """
 
-from opendssdirect import dss
+
 import numpy as np
 from src.power_plant.consumer_registry import ConsumerRegistry
-from src.lv_networks.loads import get_equipment_model
+from loads import get_equipment_model
 
 LV2_SPEC = {
     "network_id": "LV2",
@@ -129,13 +129,6 @@ def build_lv2_network(topology: dict = None, loads_dict: dict = None, registry: 
                     kw = eq_model.rated_power_kw
                     pf = eq_model.power_factor
                     model_type = eq_model.opendss_params.get("model", 1)
-                    dss.run_command(
-                        f"new load.{ld.load_id} bus1={unit.bus_id} phases=3 kv=0.415 kw={kw} pf={pf} model={model_type} status=fixed"
-                    )
-    elif loads_dict:
-        for ld in loads_dict.get("loads", []):
-            dss.run_command(
-                f"new load.{ld['name']} bus1={ld['bus']} phases=3 kv=0.415 kw=5.0 pf=0.95 model={ld.get('model', 1)}"
-            )
-
+                    
+    
     return registry

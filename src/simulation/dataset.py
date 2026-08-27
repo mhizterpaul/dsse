@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.simulation.runner import CoSimulationRunner
+from src.simulation.runner import CoSimulationRunner, extract_fault_info
 from src.simulation.filter import remove_low_frequency_components
 from src.estimator.cla_estimator import ConsumerLoadPremises, ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
@@ -308,83 +308,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 sources.append({"bus": target, "line": f"line_{target}"})
         return json.dumps(sources) if sources else ""
 
-    def extract_fault_info(co_ev):
-        faults = []
-        for ev in [co_ev.event_1, co_ev.event_2]:
-            if getattr(ev, "event_class", "") == "line_fault":
-                f_type = getattr(ev, "fault_type", "LG")
-                f_res = getattr(ev, "fault_resistance", 0.05)
-                f_ang = getattr(ev, "inception_angle_deg", 0.0)
-                f_dur = getattr(ev, "duration_s", 0.04)
-                faults.append({"type": f_type, "line_resistance": f_res, "angle_deg": f_ang, "duration_s": f_dur})
-        return json.dumps(faults) if faults else ""
-
-    def generate_transient_signature(event_class, event_type, fault_type, time_s):
-        freqs = {
-            "ac_motor": 1200.0, "dc_motor_inverter": 1800.0, "microwave": 2400.0,
-            "induction_plate": 3000.0, "compressor": 1500.0, "audio_amplifier": 2100.0,
-            "ups": 2700.0, "industrial_fan": 3300.0
-        }
-        fault_freqs = {"LG": 800.0, "LL": 1400.0, "LLG": 2000.0, "LLL": 2600.0}
-
-        if event_class == "equipment_switch":
-            f = freqs.get(event_type, 1500.0)
-        else:
-            f = fault_freqs.get(fault_type or event_type, 1000.0)
-
-        tau = 0.015
-        t_event = time_s - 0.02
-        mask = t_event >= 0
-        decay = np.where(mask, np.exp(-t_event / tau), 0.0)
-
-        v_sig = np.column_stack([
-            0.15 * decay * np.sin(2 * np.pi * f * t_event),
-            0.15 * decay * np.sin(2 * np.pi * f * t_event - 2 * np.pi / 3),
-            0.15 * decay * np.sin(2 * np.pi * f * t_event - 4 * np.pi / 3)
-        ])
-        i_sig = np.column_stack([
-            0.25 * decay * np.cos(2 * np.pi * f * t_event),
-            0.25 * decay * np.cos(2 * np.pi * f * t_event - 2 * np.pi / 3),
-            0.25 * decay * np.cos(2 * np.pi * f * t_event - 4 * np.pi / 3)
-        ])
-        return v_sig, i_sig
-
-    def compute_coevent_waveforms(co_ev, f_id, time_offset=0.0):
-        ev1, ev2 = co_ev.event_1, co_ev.event_2
-        sig1 = signature_catalog.get((ev1.event_class, ev1.event_type, f"feeder_{f_id}"))
-        sig2 = signature_catalog.get((ev2.event_class, ev2.event_type, f"feeder_{f_id}"))
-
-        t_s = sig1["time"] if sig1 else np.linspace(0.0, 0.1, 1000)
-
-        v1_gen, i1_gen = generate_transient_signature(ev1.event_class, getattr(ev1, "equipment_type", ev1.event_type), getattr(ev1, "fault_type", ""), t_s)
-        v2_gen, i2_gen = generate_transient_signature(ev2.event_class, getattr(ev2, "equipment_type", ev2.event_type), getattr(ev2, "fault_type", ""), t_s)
-
-        v1_sig = remove_low_frequency_components(sig1["v_sig"]) if (sig1 and np.std(sig1["v_sig"]) > 1e-6) else v1_gen
-        i1_sig = remove_low_frequency_components(sig1["i_sig"]) if (sig1 and np.std(sig1["i_sig"]) > 1e-6) else i1_gen
-
-        v2_sig = remove_low_frequency_components(sig2["v_sig"]) if (sig2 and np.std(sig2["v_sig"]) > 1e-6) else v2_gen
-        i2_sig = remove_low_frequency_components(sig2["i_sig"]) if (sig2 and np.std(sig2["i_sig"]) > 1e-6) else i2_gen
-
-        if time_offset > 0:
-            shift_samples = int(time_offset * 10000.0)
-            v2_sig = np.roll(v2_sig, shift_samples, axis=0)
-            i2_sig = np.roll(i2_sig, shift_samples, axis=0)
-
-        v_comp = remove_low_frequency_components(v1_sig + v2_sig)
-        i_comp = remove_low_frequency_components(i1_sig + i2_sig)
-
-        # Actual co-event observed waveform with non-linear interaction noise
-        v_co = remove_low_frequency_components(v_comp + 0.025 * np.sin(2 * np.pi * 500 * t_s)[:, None])
-        i_co = remove_low_frequency_components(i_comp + 0.035 * np.cos(2 * np.pi * 500 * t_s)[:, None])
-
-        res_v = remove_low_frequency_components(v_co - v_comp)
-        res_i = remove_low_frequency_components(i_co - i_comp)
-
-        v_mag = round(float(np.sqrt(np.mean(res_v**2))), 6)
-        i_mag = round(float(np.sqrt(np.mean(res_i**2))), 6)
-
-        return t_s, v_co, i_co, v1_sig, i1_sig, v2_sig, i2_sig, v_comp, i_comp, res_v, res_i, v_mag, i_mag
-
+    
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events) ---
     # =========================================================================
