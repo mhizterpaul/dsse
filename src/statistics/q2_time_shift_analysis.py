@@ -56,10 +56,7 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
                     val, _ = stats.pearsonr(arr1, arr2)
                     raw_val = 0.0 if np.isnan(val) else abs(val)
                     val = max(0.0, raw_val - discount_factor)
-                else:
-                    val = 0.0
-            else:
-                val = 0.0
+                
             col_correlations[p_idx].append(val)
 
     col_corr_vector = [float(np.mean(c_list)) if c_list else 0.0 for c_list in col_correlations]
