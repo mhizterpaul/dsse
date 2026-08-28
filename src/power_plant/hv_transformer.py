@@ -25,13 +25,14 @@ HV_TRANSFORMER_SPEC = {
 }
 
 
-def build_hv_transformer(dss, spec: dict = None) -> dict:
+def build_hv_transformer(dss, spec: dict = None, verbose: bool = False) -> dict:
     """
     Builds and configures the 33/11 kV upstream distribution substation transformer in OpenDSS.
 
     Args:
         dss: The single OpenDSS direct instance passed from runner.
         spec: Optional custom specification dict; defaults to HV_TRANSFORMER_SPEC.
+        verbose: Controls whether progress log statement is printed (default: False).
     """
     if spec is None:
         spec = HV_TRANSFORMER_SPEC
@@ -49,5 +50,6 @@ def build_hv_transformer(dss, spec: dict = None) -> dict:
         f"%imag={spec['imag_pct']}"
     )
     dss.run_command(cmd)
-    print(f"INFO: Built HV Substation Transformer '{spec['name']}' (33/11 kV, 7.5 MVA)")
+    if verbose:
+        print(f"INFO: Built HV Substation Transformer '{spec['name']}' (33/11 kV, 7.5 MVA)")
     return spec

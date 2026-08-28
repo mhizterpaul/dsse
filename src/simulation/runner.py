@@ -2,6 +2,7 @@ from opendssdirect import dss
 import numpy as np
 import traceback
 import json
+import os
 from typing import Dict, Any, List, Optional
 
 import src.power_plant.plant as plant
@@ -335,7 +336,8 @@ class CoSimulationRunner:
         generator_p_kw: float = 1500.0,
         generator_q_kvar: float = 0.0,
         loads: Optional[dict] = None,
-        seed: int = 42
+        seed: int = 42,
+        verbose: bool = False
     ) -> dict:
         """
         Initializes a single constant OpenDSS DSS instance for a dataset generation loop.
@@ -349,7 +351,8 @@ class CoSimulationRunner:
                     generator_q_kvar=generator_q_kvar,
                     use_baseline_transformers=use_baseline_transformers,
                     loads_dict=loads,
-                    seed=seed
+                    seed=seed,
+                    verbose=verbose
                 )
             else:
                 self.plant_data = plant.build_three_lv_networks_composition(
@@ -358,9 +361,11 @@ class CoSimulationRunner:
                     generator_q_kvar=generator_q_kvar,
                     use_baseline_transformers=use_baseline_transformers,
                     loads_dict=loads,
-                    seed=seed
+                    seed=seed,
+                    verbose=verbose
                 )
-            print("INFO: Plant session initialized successfully.")
+            if verbose:
+                print("INFO: Plant session initialized successfully.")
             return self.plant_data
         except Exception as e:
             print(f"ERROR: Failed to initialize plant session: {e}\n{traceback.format_exc()}")
@@ -376,6 +381,7 @@ class CoSimulationRunner:
         """
         Exclusively executes ATP transient simulation cases and parses EMT waveforms for consumer load
         and transformer transients using derived network parameters.
+        Appends unique scenario and PID identifiers to the case file path to guarantee process safety.
         """
         if event is None:
             t_vec = np.linspace(0.0, 0.1, 1000)
@@ -389,7 +395,8 @@ class CoSimulationRunner:
         else:
             ev_key = "dist_fault_steady"
 
-        atp_case_path = f"src/simulation/atp_cases/case_{ev_key}.ATP"
+        # Unique ATP case file path per process and scenario to prevent race conditions
+        atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
         class NetworkContainer:
             def __init__(self, sid):
@@ -430,7 +437,8 @@ class CoSimulationRunner:
         is_steady_state_run: bool = False,
         scenario_id: str = "scenario_0",
         seed: int = 42,
-        reinitialize_plant: bool = True
+        reinitialize_plant: bool = True,
+        verbose: bool = False
     ) -> SimulationResult:
         # 1. Energize and initialize power plant & LV networks (Case 1: 1 LV network, Case 2: 3 LV networks)
         if reinitialize_plant or self.plant_data is None:
@@ -440,7 +448,8 @@ class CoSimulationRunner:
                 generator_p_kw=generator_p_kw,
                 generator_q_kvar=generator_q_kvar,
                 loads=loads,
-                seed=seed
+                seed=seed,
+                verbose=verbose
             )
         else:
             plant_data = self.plant_data
@@ -450,7 +459,9 @@ class CoSimulationRunner:
 
         registry = plant_data["registry"]
 
-        # 2. Apply fault conditions using OpenDSS API when necessary
+        # 2. Always disable existing OpenDSS Fault elements to avoid fault state leakage across sequential runs
+        self.dss.run_command("disable Fault.*")
+
         fault_key_parts = []
         if events and include_fault_event:
             events_to_check = []
@@ -459,9 +470,6 @@ class CoSimulationRunner:
                     events_to_check.extend([ev.event_1, ev.event_2])
                 else:
                     events_to_check.append(ev)
-
-            # Disable previous fault elements to prevent duplicate element definition warnings
-            self.dss.run_command("disable Fault.*")
 
             fault_count = 0
             for ev in events_to_check:

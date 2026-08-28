@@ -124,12 +124,13 @@ class OperatingPoint:
         self.transient_waveforms = atp_waveforms
 
 
-def initialize_known_plant(dss, use_baseline_transformers: bool = False, topology: dict = None, seed: int = 42) -> ConsumerRegistry:
+def initialize_known_plant(dss, use_baseline_transformers: bool = False, topology: dict = None, seed: int = 42, verbose: bool = False) -> ConsumerRegistry:
     """
     Initializes the fixed upstream distribution station (including 33/11 kV HV transformer)
     and registers downstream consumers on each LV network.
     """
-    print("INFO: Initializing OpenDSS Physics-Based Known Plant Model (33/11/0.415 kV)...")
+    if verbose:
+        print("INFO: Initializing OpenDSS Physics-Based Known Plant Model (33/11/0.415 kV)...")
 
     try:
         # Clear previous circuit definition and create new circuit
@@ -140,7 +141,7 @@ def initialize_known_plant(dss, use_baseline_transformers: bool = False, topolog
         dss.run_command("set defaultfrequency=50.0")
 
         # Build Upstream Substation Transformer (33/11-kV, 7.5 MVA)
-        build_hv_transformer(dss)
+        build_hv_transformer(dss, verbose=verbose)
 
         # Configure Excitation Source / Generator at 11 kV bus (main_bus)
         configure_generator(dss, p_kw=1500.0, q_kvar=0.0)
@@ -176,7 +177,8 @@ def initialize_known_plant(dss, use_baseline_transformers: bool = False, topolog
         if 3 in topologies:
             register_lv3_consumers(topology=topologies.get(3), seed=seed + 3, registry=registry)
 
-        print("INFO: OpenDSS Known Plant Model and Consumer Registry successfully initialized.")
+        if verbose:
+            print("INFO: OpenDSS Known Plant Model and Consumer Registry successfully initialized.")
         return registry
     except Exception as e:
         print(f"ERROR: Error initializing OpenDSS plant model: {e}\n{traceback.format_exc()}")
@@ -190,7 +192,8 @@ def build_single_lv_network_composition(
     generator_q_kvar: float = 0.0,
     use_baseline_transformers: bool = True,
     loads_dict: dict = None,
-    seed: int = 42
+    seed: int = 42,
+    verbose: bool = False
 ) -> dict:
     """
     Composes Case 1: Single LV network configuration (1 LV feeder network).
@@ -198,7 +201,7 @@ def build_single_lv_network_composition(
     top = generate_known_radial_topology(feeder_idx, seed=seed)
     single_topology = {"topologies": {feeder_idx: top}}
 
-    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=single_topology, seed=seed)
+    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=single_topology, seed=seed, verbose=verbose)
 
     if generator_p_kw > 0:
         configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
@@ -226,7 +229,8 @@ def build_three_lv_networks_composition(
     generator_q_kvar: float = 0.0,
     use_baseline_transformers: bool = True,
     loads_dict: dict = None,
-    seed: int = 42
+    seed: int = 42,
+    verbose: bool = False
 ) -> dict:
     """
     Composes Case 2: Three LV networks configuration (LV1, LV2, LV3 networks).
@@ -243,7 +247,7 @@ def build_three_lv_networks_composition(
         }
     }
 
-    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=combined_topology, seed=seed)
+    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=combined_topology, seed=seed, verbose=verbose)
 
     if generator_p_kw > 0:
         configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
