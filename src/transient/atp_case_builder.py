@@ -81,8 +81,35 @@ class ATPCaseBuilder:
             if ev_class == "equipment_switch":
                 eq_type = getattr(ev, "equipment_type", "ac_motor")
                 eq_model = get_equipment_model(eq_type)
-                r_stator = eq_model.atp_params.get("r_stator", eq_model.atp_params.get("r_armature", eq_model.atp_params.get("r_coil", eq_model.atp_params.get("r_internal", eq_model.atp_params.get("r_magnetron")))))
-                x_stator = eq_model.atp_params.get("x_stator", eq_model.atp_params.get("l_armature", eq_model.atp_params.get("l_coil", eq_model.atp_params.get("l_ac_filter", eq_model.atp_params.get("l_filter", 0.1)))))
+                r_stator = eq_model.atp_params.get(
+                    "r_stator",
+                    eq_model.atp_params.get(
+                        "r_armature",
+                        eq_model.atp_params.get(
+                            "r_coil",
+                            eq_model.atp_params.get(
+                                "r_internal",
+                                eq_model.atp_params.get(
+                                    "r_magnetron",
+                                    eq_model.atp_params.get("r_speaker")
+                                )
+                            )
+                        )
+                    )
+                )
+                x_stator = eq_model.atp_params.get(
+                    "x_stator",
+                    eq_model.atp_params.get(
+                        "l_armature",
+                        eq_model.atp_params.get(
+                            "l_coil",
+                            eq_model.atp_params.get(
+                                "l_ac_filter",
+                                eq_model.atp_params.get("l_filter", 0.1)
+                            )
+                        )
+                    )
+                )
                 if r_stator is None:
                     print(f"ERROR: Equipment model {eq_type} missing resistance in atp_params")
                     raise ValueError(f"Equipment model {eq_type} missing required R atp_params")
