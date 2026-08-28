@@ -218,10 +218,11 @@ def _process_coevent_worker(task_args):
     return row_data
 
 
-def process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers: bool, is_dataset_3: bool = False, batch_size: int = 6, max_workers: int = 4):
+def process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers: bool, is_dataset_3: bool = False, dataset_name: str = "Dataset", batch_size: int = 6, max_workers: int = 4):
     """
     Processes 108 co-events in batches of 6 operations using ProcessPoolExecutor.
     108 co-events / 6 per batch = 18 batch operations per dataset.
+    Logs statements when each batch completes and when dataset generation starts and completes.
     """
     tasks = []
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
@@ -229,15 +230,16 @@ def process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers
         tasks.append((p_idx, pair_cat, co_ev, use_baseline_transformers, time_offset))
 
     num_batches = int(np.ceil(len(tasks) / float(batch_size)))
-    print(f"INFO: Processing {len(tasks)} co-events across {num_batches} batches ({batch_size} co-events per batch)...")
+    print(f"INFO: Starting {dataset_name} generation ({len(tasks)} co-events across {num_batches} batches, {batch_size} operations per batch)...")
 
     results = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for b_idx in range(num_batches):
             batch_tasks = tasks[b_idx * batch_size : (b_idx + 1) * batch_size]
-            print(f"INFO: Submitting Batch {b_idx + 1}/{num_batches} ({len(batch_tasks)} co-events)...")
+            print(f"INFO: Submitting Batch {b_idx + 1}/{num_batches} for {dataset_name} ({len(batch_tasks)} co-events)...")
             batch_results = list(executor.map(_process_coevent_worker, batch_tasks))
             results.extend(batch_results)
+            print(f"INFO: Completed Batch {b_idx + 1}/{num_batches} for {dataset_name}.")
 
     # Sort results to maintain original co-event order
     results.sort(key=lambda r: r["p_idx"])
@@ -246,6 +248,7 @@ def process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers
         r.pop("p_idx", None)
         r.pop("f_id", None)
 
+    print(f"INFO: Completed {dataset_name} generation ({len(results)} total co-events).")
     return results
 
 
@@ -255,7 +258,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     Dataset 2 (108 unique co-events observability), Dataset 3 (108 unique co-events time shift),
     and Dataset 4 (108 unique co-events transformer spec effect) using CoSimulationRunner functions ONLY.
     """
-    print("INFO: Generating Datasets 1, 2, 3, and 4...")
+    print("INFO: Starting Datasets 1, 2, 3, and 4 generation pipeline...")
     runner = CoSimulationRunner()
     cla_estimator = ClusterLoadAllocationEstimator()
     time_cla_estimator = TimeAdjustedCLAEstimator()
@@ -265,6 +268,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     # --- A. DATASET 1 GENERATION (Single 5-minute steady-state experiment) ---
     # =========================================================================
+    print("INFO: Starting Dataset 1 generation...")
     print("INFO: Initializing OpenDSS instance for Dataset 1 generation...")
     runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
 
@@ -428,25 +432,24 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                     "time_adjusted_cla_estimates": ""
                 })
 
+    print("INFO: Completed Dataset 1 generation.")
+
     all_108_pairs = get_all_108_coevents(target_line="feeder1_head")
 
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events Parallel Batches) ---
     # =========================================================================
-    print("INFO: Generating Dataset 2 (108 co-events in 18 batches of 6 operations)...")
-    rows_2 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=False, batch_size=6)
+    rows_2 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=False, dataset_name="Dataset 2", batch_size=6)
 
     # =========================================================================
     # --- C. DATASET 3 GENERATION (108 Unique Co-Events Time Shift Parallel) ---
     # =========================================================================
-    print("INFO: Generating Dataset 3 (108 co-events in 18 batches of 6 operations)...")
-    rows_3 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=True, batch_size=6)
+    rows_3 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=True, dataset_name="Dataset 3", batch_size=6)
 
     # =========================================================================
     # --- D. DATASET 4 GENERATION (108 Unique Co-Events Transformer Spec Parallel) ---
     # =========================================================================
-    print("INFO: Generating Dataset 4 (108 co-events in 18 batches of 6 operations)...")
-    rows_4 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=False, is_dataset_3=False, batch_size=6)
+    rows_4 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=False, is_dataset_3=False, dataset_name="Dataset 4", batch_size=6)
 
     df_1 = pd.DataFrame(rows_1)
     df_2 = pd.DataFrame(rows_2)
