@@ -120,14 +120,14 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
     bus_map = {}
     for c in all_registered + all_latent:
         for ld in c.loads:
-            dss.Circuit.SetActiveElement(f"load.{ld.load_id}")
-            buses = dss.CktElement.BusNames()
-            if buses:
-                b_name = buses[0].split('.')[0]
-                if b_name not in bus_map:
-                    bus_map[b_name] = []
-                if c not in bus_map[b_name]:
-                    bus_map[b_name].append(c)
+            if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
+                buses = dss.CktElement.BusNames()
+                if buses:
+                    b_name = buses[0].split('.')[0]
+                    if b_name not in bus_map:
+                        bus_map[b_name] = []
+                    if c not in bus_map[b_name]:
+                        bus_map[b_name].append(c)
 
     for mtr in selected_consumer_units:
         if isinstance(mtr, dict):
@@ -162,11 +162,11 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
 
         for c_unit in matched_units:
             for ld in c_unit.loads:
-                dss.Circuit.SetActiveElement(f"load.{ld.load_id}")
-                powers = dss.CktElement.Powers()
-                if len(powers) >= 2:
-                    p_kw += sum(powers[0::2])
-                    q_kvar += sum(powers[1::2])
+                if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
+                    powers = dss.CktElement.Powers()
+                    if len(powers) >= 2:
+                        p_kw += sum(powers[0::2])
+                        q_kvar += sum(powers[1::2])
 
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
@@ -256,11 +256,11 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
         p_kw = 0.0
         q_kvar = 0.0
         for ld in c_unit.loads:
-            dss.Circuit.SetActiveElement(f"load.{ld.load_id}")
-            powers = dss.CktElement.Powers()
-            if len(powers) >= 2:
-                p_kw += sum(powers[0::2])
-                q_kvar += sum(powers[1::2])
+            if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
+                powers = dss.CktElement.Powers()
+                if len(powers) >= 2:
+                    p_kw += sum(powers[0::2])
+                    q_kvar += sum(powers[1::2])
 
         s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
         energy_kwh = float(p_kw * duration_hours)
@@ -460,6 +460,9 @@ class CoSimulationRunner:
                 else:
                     events_to_check.append(ev)
 
+            # Disable previous fault elements to prevent duplicate element definition warnings
+            self.dss.run_command("disable Fault.*")
+
             fault_count = 0
             for ev in events_to_check:
                 ev_class = getattr(ev, "event_class", "")
@@ -474,15 +477,20 @@ class CoSimulationRunner:
                     target_bus = f"feeder{target.replace('trans', '')}_sec" if target.startswith("trans") else "feeder1_sec"
                     fault_name = f"dist_fault_{fault_count}"
 
+                    ph_num = phases[0] + 1 if phases else 1
                     if f_type == "LG":
-                        ph_num = phases[0] + 1 if phases else 1
-                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph_num} phases=1 r={f_res}")
+                        bus_spec = f"bus1={target_bus}.{ph_num} phases=1 r={f_res}"
                     elif f_type == "LL":
                         ph1 = phases[0] + 1 
-                        ph2 = phases[1] + 1 
-                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.{ph1} bus2={target_bus}.{ph2} phases=1 r={f_res}")
+                        ph2 = phases[1] + 1 if len(phases) > 1 else 2
+                        bus_spec = f"bus1={target_bus}.{ph1} bus2={target_bus}.{ph2} phases=1 r={f_res}"
                     else:
-                        self.dss.run_command(f"new Fault.{fault_name} bus1={target_bus}.1 phases=1 r={f_res}")
+                        bus_spec = f"bus1={target_bus}.1 phases=1 r={f_res}"
+
+                    if self.dss.Circuit.SetActiveElement(f"Fault.{fault_name}"):
+                        self.dss.run_command(f"edit Fault.{fault_name} {bus_spec} enabled=yes")
+                    else:
+                        self.dss.run_command(f"new Fault.{fault_name} {bus_spec}")
 
         # 3. For Dataset 1 steady state run, power loads for 5 minutes (300s) to measure energy
         if is_steady_state_run or not events:
