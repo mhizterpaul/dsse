@@ -295,18 +295,38 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
     return measurements
 
 
+def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
+    """
+    Checks if an event targets Feeder 1 (the baseline feeder trans1 / feeder1).
+    """
+    if not events:
+        return True
+    for ev in events:
+        target = str(getattr(ev, "target", ""))
+        if "trans1" in target or "feeder1" in target or "f1" in target:
+            return True
+        if hasattr(ev, "event_1"):
+            t1 = str(getattr(ev.event_1, "target", ""))
+            t2 = str(getattr(ev.event_2, "target", ""))
+            if "trans1" in t1 or "feeder1" in t1 or "trans1" in t2 or "feeder1" in t2:
+                return True
+    return False
+
+
 class CoSimulationRunner:
     """
     Co-Simulation Orchestrator that energizes the imported plant from src.power_plant,
     handles 2 network cases (single LV network composition vs 3 LV networks composition),
     handles steady state operation (5-minute experiment run for Dataset 1) and event/fault operation
     (steady operational parameters for Datasets 2, 3, 4 without mixing steady/fault states),
+    caches resolved OperatingPoint objects for evaluated network conditions,
     and uses ATPRunner strictly inside measure_transients.
     """
     def __init__(self):
         self.dss = dss
         self.atp_builder = ATPCaseBuilder()
         self.plant_data = None
+        self._op_cache = {}
 
     def initialize_plant_session(
         self,
@@ -430,7 +450,8 @@ class CoSimulationRunner:
 
         registry = plant_data["registry"]
 
-        # 2. Apply fault conditions using OpenDSS API when necessary (kept separate from steady state)
+        # 2. Apply fault conditions using OpenDSS API when necessary
+        fault_key_parts = []
         if events and include_fault_event:
             events_to_check = []
             for ev in events:
@@ -448,6 +469,7 @@ class CoSimulationRunner:
                     target = getattr(ev, "target", "trans1")
                     f_res = getattr(ev, "fault_resistance", 0.05)
                     phases = getattr(ev, "faulted_phases", (0,))
+                    fault_key_parts.append(f"{f_type}_{target}_{f_res}_{phases}")
 
                     target_bus = f"feeder{target.replace('trans', '')}_sec" if target.startswith("trans") else "feeder1_sec"
                     fault_name = f"dist_fault_{fault_count}"
@@ -468,7 +490,31 @@ class CoSimulationRunner:
             self.dss.run_command("set number=300")
             self.dss.run_command("set mode=daily")
 
-        op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
+        # Caching logic: In Dataset 4 (3 LV networks, use_baseline_transformers=False),
+        # only rows targeting/using the baseline feeder (feeder 1 / trans1) reuse the baseline cached operating point.
+        baseline_cache_key = ("baseline", generator_p_kw, generator_q_kvar, use_single_lv_network, tuple(fault_key_parts))
+        non_baseline_cache_key = ("non_baseline", generator_p_kw, generator_q_kvar, use_single_lv_network, use_baseline_transformers, tuple(fault_key_parts))
+
+        if use_baseline_transformers:
+            if baseline_cache_key in self._op_cache:
+                op = self._op_cache[baseline_cache_key]
+            else:
+                op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
+                self._op_cache[baseline_cache_key] = op
+        else:
+            # Dataset 4: Check if row targets the baseline feeder (feeder 1 / trans1)
+            if is_baseline_feeder_event(events):
+                if baseline_cache_key in self._op_cache:
+                    op = self._op_cache[baseline_cache_key]
+                else:
+                    op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
+                    self._op_cache[baseline_cache_key] = op
+            else:
+                if non_baseline_cache_key in self._op_cache:
+                    op = self._op_cache[non_baseline_cache_key]
+                else:
+                    op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
+                    self._op_cache[non_baseline_cache_key] = op
 
         # 4. Measure steady state operational parameters via ConsumerRegistry interface
         candidate_units = plant.identify_candidate_consumer_units(topology)

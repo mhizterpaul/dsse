@@ -16,7 +16,7 @@ class ATPRunner:
     """
     Thin process adapter around the actual ATP-EMTP executable (tpbig/tpbigm).
     Executes the real Windows binary via Wine on Linux runtime.
-    Throws a RuntimeError if Wine or tpbigm.exe is not available or if execution fails.
+    Supports process isolation for parallel ProcessPoolExecutor tasks by generating unique temporary case names.
     """
     def __init__(self, atp_executable: str | Path = None, timeout_s: float = 300.0):
         self.timeout_s = timeout_s
@@ -40,7 +40,8 @@ class ATPRunner:
         if tpbigm is None or not tpbigm.exists():
             raise RuntimeError(f"ATP-EMTP executable 'tpbigm.exe' not found at {atp_dir}")
 
-        temp_case_name = "TEMP_CASE.ATP"
+        temp_stem = f"TEMP_CASE_{os.getpid()}"
+        temp_case_name = f"{temp_stem}.ATP"
         temp_case_path = atp_dir / temp_case_name
         shutil.copy(case_path, temp_case_path)
 
@@ -62,7 +63,7 @@ class ATPRunner:
 
         # Copy generated output files back (.lis, .dbg, .pl4)
         for suffix in [".lis", ".dbg", ".pl4"]:
-            generated_file = atp_dir / f"TEMP_CASE{suffix}"
+            generated_file = atp_dir / f"{temp_stem}{suffix}"
             if generated_file.exists():
                 dest_file = case_path.with_suffix(suffix)
                 shutil.copy(generated_file, dest_file)
