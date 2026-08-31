@@ -15,12 +15,12 @@ class ConsumerUnit:
     consumer_id: str
     bus_id: str
     feeder_id: str
+    service_line_resistance_ohm: float
+    service_line_reactance_ohm: float
     assigned_load_class: Optional[str] = None  # None for latent/unmetered hidden consumers
     loads: List[LoadDefinition] = field(default_factory=list)
     is_metered: bool = False
     is_latent_unmetered: bool = False
-    service_line_resistance_ohm: float = 0.05
-    service_line_reactance_ohm: float = 0.02
 
     @property
     def load_circuit_ids(self) -> List[str]:
@@ -52,19 +52,17 @@ class ConsumerRegistry:
         consumer_id: str,
         bus_id: str,
         feeder_id: str,
+        service_line_resistance_ohm: Optional[float] = None,
+        service_line_reactance_ohm: Optional[float] = None,
         assigned_load_class: Optional[str] = None,
         is_metered: bool = False,
-        extra_load_probability: float = 0.4,
-        service_line_resistance_ohm: Optional[float] = None,
-        service_line_reactance_ohm: Optional[float] = None
+        extra_load_probability: float = 0.4
     ) -> ConsumerUnit:
         if assigned_load_class is None:
             assigned_load_class = str(self.rng.choice(self.LOAD_CLASSES, p=[0.60, 0.25, 0.10, 0.05]))
 
-        if service_line_resistance_ohm is None:
-            service_line_resistance_ohm = round(float(self.rng.uniform(0.03, 0.08)), 4)
-        if service_line_reactance_ohm is None:
-            service_line_reactance_ohm = round(float(self.rng.uniform(0.01, 0.03)), 4)
+        if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
+            raise ValueError(f"Service line resistance and reactance must be provided for consumer {consumer_id}")
 
         base_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
         base_load = LoadDefinition(
@@ -104,18 +102,16 @@ class ConsumerRegistry:
         consumer_id: str,
         bus_id: str,
         feeder_id: str,
-        load_type: str = "ac_motor",
         service_line_resistance_ohm: Optional[float] = None,
-        service_line_reactance_ohm: Optional[float] = None
+        service_line_reactance_ohm: Optional[float] = None,
+        load_type: str = "ac_motor"
     ) -> ConsumerUnit:
         """
         Registers a hidden/latent consumer unit without an assigned class in the LV network.
         Used for evaluating non-technical losses (NTL) and theft estimation error.
         """
-        if service_line_resistance_ohm is None:
-            service_line_resistance_ohm = round(float(self.rng.uniform(0.03, 0.08)), 4)
-        if service_line_reactance_ohm is None:
-            service_line_reactance_ohm = round(float(self.rng.uniform(0.01, 0.03)), 4)
+        if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
+            raise ValueError(f"Service line resistance and reactance must be provided for latent consumer {consumer_id}")
 
         load = LoadDefinition(
             load_id=f"{consumer_id}_latent_load",
@@ -175,13 +171,23 @@ class ConsumerRegistry:
         if topologies:
             for feeder_idx, sub_topo in topologies.items():
                 feeder_id = f"feeder_{feeder_idx}"
+                bus_line_map = {ln["bus2"]: ln for ln in sub_topo.get("lines", [])}
                 for bus in sub_topo.get("buses", []):
                     if not bus.endswith("_sec"):
+                        ln_info = bus_line_map.get(bus, {})
+                        length = float(ln_info.get("length", 0.05))
+                        r1 = float(ln_info.get("r1", 0.21))
+                        x1 = float(ln_info.get("x1", 0.08))
+                        r_drop = round(r1 * length, 6)
+                        x_drop = round(x1 * length, 6)
+
                         cid = f"consumer_{feeder_id}_{bus}"
                         self.register_consumer(
                             consumer_id=cid,
                             bus_id=bus,
                             feeder_id=feeder_id,
+                            service_line_resistance_ohm=r_drop,
+                            service_line_reactance_ohm=x_drop,
                             extra_load_probability=0.45
                         )
                         if self.rng.random() < 0.20:
@@ -191,16 +197,28 @@ class ConsumerRegistry:
                                 consumer_id=latent_cid,
                                 bus_id=bus,
                                 feeder_id=feeder_id,
+                                service_line_resistance_ohm=r_drop,
+                                service_line_reactance_ohm=x_drop,
                                 load_type=latent_type
                             )
         else:
+            bus_line_map = {ln["bus2"]: ln for ln in topology.get("lines", [])}
             for bus in topology.get("buses", []):
                 if not bus.endswith("_sec"):
+                    ln_info = bus_line_map.get(bus, {})
+                    length = float(ln_info.get("length", 0.05))
+                    r1 = float(ln_info.get("r1", 0.21))
+                    x1 = float(ln_info.get("x1", 0.08))
+                    r_drop = round(r1 * length, 6)
+                    x_drop = round(x1 * length, 6)
+
                     cid = f"consumer_{bus}"
                     self.register_consumer(
                         consumer_id=cid,
                         bus_id=bus,
                         feeder_id="feeder_1",
+                        service_line_resistance_ohm=r_drop,
+                        service_line_reactance_ohm=x_drop,
                         extra_load_probability=0.45
                     )
 
