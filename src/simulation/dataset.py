@@ -400,13 +400,14 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             unit_weight = round(float(weights_map.get(u.consumer_id, np.nan)), 6) if not is_metered else np.nan
 
             assigned_class = u.assigned_load_class if u.assigned_load_class else "residential"
+            consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
             c_line_loss = round(float(unit_meas.get("line_losses", 0.0)), 4)
 
-            # Registered consumer unit (consumer_type set to assigned load class)
+            # Registered consumer unit (consumer_type includes assigned class and status type)
             rows_1.append({
                 "gt_consumer_unit_id": u.consumer_id,
-                "consumer_type": assigned_class,
+                "consumer_type": consumer_type_label,
                 "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
                 "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
                 "assigned_weight": unit_weight,
