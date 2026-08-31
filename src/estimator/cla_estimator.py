@@ -40,7 +40,7 @@ class ConsumerLoadClassModel:
 class ClusterLoadAllocationEstimate:
     feeder_supply_energy_kwh: float
     sampled_consumer_energy_kwh: float
-    estimated_technical_loss_kwh: float
+    technical_loss_kwh: float
     unsampled_energy_pool_kwh: float
     estimated_unsampled_energy_kwh: float
     allocated_unsampled_consumer_energy: Dict[str, float]
@@ -95,22 +95,22 @@ class ClusterLoadAllocationEstimator:
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
-        estimated_technical_loss_kwh: float
+        technical_loss_kwh: float
     ) -> bool:
         """
         Validates energy balance conservation equation E_F >= E_M + E_L.
         """
         if feeder_supply_energy_kwh <= 0:
             return False
-        if sampled_consumer_energy_kwh < 0 or estimated_technical_loss_kwh < 0:
+        if sampled_consumer_energy_kwh < 0 or technical_loss_kwh < 0:
             return False
-        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + estimated_technical_loss_kwh))
+        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + technical_loss_kwh))
 
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
-        estimated_technical_loss_kwh: float,
+        technical_loss_kwh: float,
         unsampled_premises: List[ConsumerLoadPremises]
     ) -> ClusterLoadAllocationEstimate:
         """
@@ -121,16 +121,16 @@ class ClusterLoadAllocationEstimator:
         self.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-            estimated_technical_loss_kwh=estimated_technical_loss_kwh
+            technical_loss_kwh=technical_loss_kwh
         )
 
-        e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - estimated_technical_loss_kwh))
+        e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 
         if not unsampled_premises:
             return ClusterLoadAllocationEstimate(
                 feeder_supply_energy_kwh=feeder_supply_energy_kwh,
                 sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-                estimated_technical_loss_kwh=estimated_technical_loss_kwh,
+                technical_loss_kwh=technical_loss_kwh,
                 unsampled_energy_pool_kwh=e_u,
                 estimated_unsampled_energy_kwh=0.0,
                 allocated_unsampled_consumer_energy={},
@@ -149,7 +149,7 @@ class ClusterLoadAllocationEstimator:
         return ClusterLoadAllocationEstimate(
             feeder_supply_energy_kwh=round(float(feeder_supply_energy_kwh), 4),
             sampled_consumer_energy_kwh=round(float(sampled_consumer_energy_kwh), 4),
-            estimated_technical_loss_kwh=round(float(estimated_technical_loss_kwh), 4),
+            technical_loss_kwh=round(float(technical_loss_kwh), 4),
             unsampled_energy_pool_kwh=round(e_u, 4),
             estimated_unsampled_energy_kwh=round(total_allocated, 4),
             allocated_unsampled_consumer_energy=allocations,

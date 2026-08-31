@@ -366,13 +366,13 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         is_valid_cla = cla_estimator.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh
+            technical_loss_kwh=gt_tech_loss_kwh
         )
 
         cla_res = cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh,
+            technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
 
@@ -382,7 +382,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh,
+            technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises,
             time_points=time_points_24h,
             observed_time_adjustment_factors=obs_time_factors,

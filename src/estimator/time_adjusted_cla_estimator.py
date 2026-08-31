@@ -8,7 +8,7 @@ from src.estimator.cla_estimator import ConsumerLoadPremises, ConsumerLoadClassM
 class TimeAdjustedCLAEstimate:
     feeder_supply_energy_kwh: float
     sampled_consumer_energy_kwh: float
-    estimated_technical_loss_kwh: float
+    technical_loss_kwh: float
     time_adjusted_unsampled_energy_pool_kwh: float
     estimated_unsampled_energy_kwh: float
     allocated_unsampled_consumer_energy: Dict[str, float]
@@ -28,14 +28,29 @@ class TimeAdjustedCLAEstimator:
     where sum(w_i) across unmetered population = 1.
     """
 
-    def averaging_function(self, values: Union[List[float], np.ndarray]) -> float:
+    def averaging_function(
+        self,
+        metered_premises: List[ConsumerLoadPremises],
+        metered_consumer_energies: Dict[str, float]
+    ) -> Dict[str, float]:
         """
-        Computes time-averaged energy profile allocation across time windows.
+        Computes the class-level average energy consumed for each load class among metered consumer units.
+        Returns a dictionary mapping class_id -> average metered energy consumed.
         """
-        vals = np.asarray(values, dtype=float)
-        if len(vals) == 0:
-            return 0.0
-        return float(np.mean(vals))
+        if not metered_premises or not metered_consumer_energies:
+            raise ValueError("metered_premises and metered_consumer_energies must be provided to compute class averages.")
+
+        class_metered_energies: Dict[str, List[float]] = {}
+        for mp in metered_premises:
+            if mp.consumer_id not in metered_consumer_energies:
+                raise ValueError(f"Missing metered energy observation for consumer unit {mp.consumer_id}")
+            e_val = float(metered_consumer_energies[mp.consumer_id])
+            class_metered_energies.setdefault(mp.class_id, []).append(e_val)
+
+        class_averages = {
+            c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
+        }
+        return class_averages
 
     def weighting_function(
         self,
@@ -62,29 +77,10 @@ class TimeAdjustedCLAEstimator:
         if observed_time_adjustment_factors is None:
             raise ValueError("observed_time_adjustment_factors dictionary must be provided for Time-Adjusted CLA estimation.")
 
-        if not metered_premises or not metered_consumer_energies:
-            raise ValueError("metered_premises and metered_consumer_energies must be provided for Time-Adjusted CLA estimation.")
-
-        class_metered_energies: Dict[str, List[float]] = {}
-        all_metered_energies: List[float] = []
-
-        for mp in metered_premises:
-            if mp.consumer_id not in metered_consumer_energies:
-                raise ValueError(f"Missing metered energy observation for consumer {mp.consumer_id}")
-            e_val = float(metered_consumer_energies[mp.consumer_id])
-            class_metered_energies.setdefault(mp.class_id, []).append(e_val)
-            all_metered_energies.append(e_val)
-
-        if not all_metered_energies:
-            raise ValueError("No metered consumer energy values found.")
-
-        overall_metered_avg = float(np.mean(all_metered_energies))
-        if overall_metered_avg <= 0:
-            raise ValueError(f"Invalid overall metered average energy: {overall_metered_avg}")
-
-        class_metered_avg = {
-            c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
-        }
+        class_metered_avg = self.averaging_function(
+            metered_premises=metered_premises,
+            metered_consumer_energies=metered_consumer_energies
+        )
 
         raw_time_integrals = {}
         for p in premises_list:
@@ -114,22 +110,22 @@ class TimeAdjustedCLAEstimator:
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
-        estimated_technical_loss_kwh: float
+        technical_loss_kwh: float
     ) -> bool:
         """
         Validates energy balance conservation equation E_F >= E_M + E_L for time-adjusted allocation.
         """
         if feeder_supply_energy_kwh <= 0:
             return False
-        if sampled_consumer_energy_kwh < 0 or estimated_technical_loss_kwh < 0:
+        if sampled_consumer_energy_kwh < 0 or technical_loss_kwh < 0:
             return False
-        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + estimated_technical_loss_kwh))
+        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + technical_loss_kwh))
 
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
-        estimated_technical_loss_kwh: float,
+        technical_loss_kwh: float,
         unsampled_premises: List[ConsumerLoadPremises],
         time_points: np.ndarray,
         observed_time_adjustment_factors: Dict[str, float],
@@ -144,16 +140,16 @@ class TimeAdjustedCLAEstimator:
         self.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-            estimated_technical_loss_kwh=estimated_technical_loss_kwh
+            technical_loss_kwh=technical_loss_kwh
         )
 
-        e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - estimated_technical_loss_kwh))
+        e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 
         if not unsampled_premises:
             return TimeAdjustedCLAEstimate(
                 feeder_supply_energy_kwh=feeder_supply_energy_kwh,
                 sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-                estimated_technical_loss_kwh=estimated_technical_loss_kwh,
+                technical_loss_kwh=technical_loss_kwh,
                 time_adjusted_unsampled_energy_pool_kwh=e_u,
                 estimated_unsampled_energy_kwh=0.0,
                 allocated_unsampled_consumer_energy={},
@@ -178,7 +174,7 @@ class TimeAdjustedCLAEstimator:
         return TimeAdjustedCLAEstimate(
             feeder_supply_energy_kwh=round(float(feeder_supply_energy_kwh), 4),
             sampled_consumer_energy_kwh=round(float(sampled_consumer_energy_kwh), 4),
-            estimated_technical_loss_kwh=round(float(estimated_technical_loss_kwh), 4),
+            technical_loss_kwh=round(float(technical_loss_kwh), 4),
             time_adjusted_unsampled_energy_pool_kwh=round(e_u, 4),
             estimated_unsampled_energy_kwh=round(total_allocated, 4),
             allocated_unsampled_consumer_energy=allocations,
