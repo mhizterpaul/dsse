@@ -4,6 +4,20 @@ import numpy as np
 from src.estimator.cla_estimator import ConsumerLoadPremises, ConsumerLoadClassModel
 
 
+def get_sampled_class_profile(class_id: str, time_points: np.ndarray) -> np.ndarray:
+    """
+    Returns normalized time-dependent load profile mu_c(t) for a given class over time_points.
+    """
+    t = np.asarray(time_points, dtype=float)
+    if "commercial" in class_id:
+        profile = 0.5 + 0.5 * np.sin(np.pi * t / 12.0)
+    elif "industrial" in class_id:
+        profile = 0.8 + 0.2 * np.cos(2.0 * np.pi * t / 24.0)
+    else:
+        profile = 0.3 + 0.7 * (np.sin(np.pi * (t - 6.0) / 12.0) ** 2)
+    return profile / (np.mean(profile) if np.mean(profile) > 0 else 1.0)
+
+
 @dataclass
 class TimeAdjustedCLAEstimate:
     feeder_supply_energy_kwh: float
@@ -12,6 +26,7 @@ class TimeAdjustedCLAEstimate:
     time_adjusted_unsampled_energy_pool_kwh: float
     estimated_unsampled_energy_kwh: float
     allocated_unsampled_consumer_energy: Dict[str, float]
+    weights: Dict[str, float]
 
     @property
     def estimated_unsampled_known_energy_kwh(self) -> float:
@@ -23,7 +38,8 @@ class TimeAdjustedCLAEstimator:
     Time-Adjusted Cluster Load Allocation Estimator:
     Estimates unsampled consumer energy allocations using time adjustment factors alpha_i(t)
     and sampled-class profiles mu_c(t):
-        E_i_hat = integral(alpha_i(t) * mu_c_i(t) dt)
+        E_i_hat = E_U * w_i
+    where sum(w_i) across unmetered population = 1.
     """
 
     def averaging_function(self, values: Union[List[float], np.ndarray]) -> float:
@@ -44,11 +60,15 @@ class TimeAdjustedCLAEstimator:
         metered_consumer_energies: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
-        Computes time-adjusted integration weights for unsampled consumer units,
+        Computes normalized time-adjusted weights w_i for unsampled consumer units,
         adjusting unit weights based on the average energy consumed by metered consumer units of the same class.
+        Sum of returned weights across unsampled population equals 1.
         """
         if isinstance(premises_list, ConsumerLoadPremises):
             premises_list = [premises_list]
+
+        if not premises_list:
+            return {}
 
         if time_points is None:
             time_points = np.linspace(0.0, 24.0, 100)
@@ -79,11 +99,17 @@ class TimeAdjustedCLAEstimator:
 
             adjusted_weight = base_w * class_factor
             alpha_i = observed_time_adjustment_factors.get(p.consumer_id, 1.05) if observed_time_adjustment_factors else 1.05
-            mu_c = ConsumerLoadClassModel.get_sampled_class_profile(p.class_id, time_points)
+            mu_c = get_sampled_class_profile(p.class_id, time_points)
             raw_integral = float(np.sum(alpha_i * mu_c * dt))
             raw_time_integrals[p.consumer_id] = max(0.01, float(adjusted_weight * raw_integral))
 
-        return raw_time_integrals
+        sum_integrals = sum(raw_time_integrals.values())
+        if sum_integrals <= 0:
+            n_units = len(premises_list)
+            return {p.consumer_id: 1.0 / n_units for p in premises_list}
+
+        normalized_weights = {cid: float(val / sum_integrals) for cid, val in raw_time_integrals.items()}
+        return normalized_weights
 
     def validation_function(
         self,
@@ -113,6 +139,8 @@ class TimeAdjustedCLAEstimator:
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
+        Ensures exact feeder energy balance:
+            feeder_supply_energy_kwh - technical_losses_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
         """
         self.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
@@ -129,10 +157,11 @@ class TimeAdjustedCLAEstimator:
                 estimated_technical_loss_kwh=estimated_technical_loss_kwh,
                 time_adjusted_unsampled_energy_pool_kwh=e_u,
                 estimated_unsampled_energy_kwh=0.0,
-                allocated_unsampled_consumer_energy={}
+                allocated_unsampled_consumer_energy={},
+                weights={}
             )
 
-        raw_time_integrals = self.weighting_function(
+        weights = self.weighting_function(
             premises_list=unsampled_premises,
             time_points=time_points,
             observed_time_adjustment_factors=observed_time_adjustment_factors,
@@ -140,11 +169,9 @@ class TimeAdjustedCLAEstimator:
             metered_consumer_energies=metered_consumer_energies
         )
 
-        sum_integrals = sum(raw_time_integrals.values())
         allocations = {}
-
-        for cid, raw_val in raw_time_integrals.items():
-            e_hat_i = e_u * (raw_val / sum_integrals)
+        for cid, w_i in weights.items():
+            e_hat_i = e_u * w_i
             allocations[cid] = round(float(e_hat_i), 4)
 
         total_allocated = float(sum(allocations.values()))
@@ -155,5 +182,6 @@ class TimeAdjustedCLAEstimator:
             estimated_technical_loss_kwh=round(float(estimated_technical_loss_kwh), 4),
             time_adjusted_unsampled_energy_pool_kwh=round(e_u, 4),
             estimated_unsampled_energy_kwh=round(total_allocated, 4),
-            allocated_unsampled_consumer_energy=allocations
+            allocated_unsampled_consumer_energy=allocations,
+            weights={cid: round(float(w), 6) for cid, w in weights.items()}
         )

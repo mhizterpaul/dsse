@@ -1,6 +1,7 @@
 import os
 import subprocess
 import shutil
+import uuid
 import numpy as np
 from pathlib import Path
 
@@ -40,43 +41,54 @@ class ATPRunner:
         if tpbigm is None or not tpbigm.exists():
             raise RuntimeError(f"ATP-EMTP executable 'tpbigm.exe' not found at {atp_dir}")
 
-        temp_stem = f"TEMP_CASE_{os.getpid()}"
-        temp_case_name = f"{temp_stem}.ATP"
-        temp_case_path = atp_dir / temp_case_name
-        shutil.copy(case_path, temp_case_path)
+        work_dir = atp_dir / f"work_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = ["wine", "tpbigm.exe", "both", temp_case_name, ".", "-R"]
-        env = os.environ.copy()
-        wine32_prefix = Path.home() / ".wine32"
-        if wine32_prefix.exists():
-            env["WINEPREFIX"] = str(wine32_prefix)
+        try:
+            # Symlink or copy support files and binaries from atp_dir into isolated work_dir
+            for item in atp_dir.iterdir():
+                if item.is_file():
+                    target_symlink = work_dir / item.name
+                    try:
+                        os.symlink(item, target_symlink)
+                    except Exception:
+                        shutil.copy(item, target_symlink)
 
-        process = subprocess.run(
-            cmd,
-            cwd=atp_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_s,
-            check=False
-        )
+            temp_stem = f"TEMP_CASE_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+            temp_case_name = f"{temp_stem}.ATP"
+            temp_case_path = work_dir / temp_case_name
+            shutil.copy(case_path, temp_case_path)
 
-        # Copy generated output files back (.lis, .dbg, .pl4)
-        for suffix in [".lis", ".dbg", ".pl4"]:
-            generated_file = atp_dir / f"{temp_stem}{suffix}"
-            if generated_file.exists():
-                dest_file = case_path.with_suffix(suffix)
-                shutil.copy(generated_file, dest_file)
+            cmd = ["wine", "tpbigm.exe", "both", temp_case_name, ".", "-R"]
+            env = os.environ.copy()
+            wine32_prefix = Path.home() / ".wine32"
+            if wine32_prefix.exists():
+                env["WINEPREFIX"] = str(wine32_prefix)
+
+            process = subprocess.run(
+                cmd,
+                cwd=work_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                check=False
+            )
+
+            # Copy generated output files back (.lis, .dbg, .pl4)
+            for suffix in [".lis", ".dbg", ".pl4"]:
+                generated_file = work_dir / f"{temp_stem}{suffix}"
+                if generated_file.exists():
+                    dest_file = case_path.with_suffix(suffix)
+                    shutil.copy(generated_file, dest_file)
+
+        finally:
+            # Clean up isolated scratch directory
+            if work_dir.exists():
                 try:
-                    generated_file.unlink()
+                    shutil.rmtree(work_dir)
                 except Exception:
                     pass
-
-        if temp_case_path.exists():
-            try:
-                temp_case_path.unlink()
-            except Exception:
-                pass
 
         if process.returncode != 0:
             raise RuntimeError(f"ATP-EMTP execution failed with return code {process.returncode}:\n{process.stderr}\n{process.stdout}")

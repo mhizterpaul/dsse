@@ -34,8 +34,6 @@ class ConsumerLoadClassModel:
         base_w = cls.CLASS_WEIGHTS.get(premises.class_id, 1.0)
         return float(base_w * (premises.connected_load_kw / 10.0) * premises.supply_availability)
 
-    
-       
 
 
 @dataclass
@@ -46,6 +44,7 @@ class ClusterLoadAllocationEstimate:
     unsampled_energy_pool_kwh: float
     estimated_unsampled_energy_kwh: float
     allocated_unsampled_consumer_energy: Dict[str, float]
+    weights: Dict[str, float]
 
     @property
     def estimated_unsampled_known_energy_kwh(self) -> float:
@@ -56,7 +55,8 @@ class ClusterLoadAllocationEstimator:
     """
     Baseline Cluster Load Allocation (CLA) Estimator:
     Formulates E_U = E_F - E_M - E_L and allocates unsampled customer energy:
-        E_i_hat = E_U * (w_i / sum(w_j))
+        E_i_hat = E_U * w_i
+    where sum(w_i) across unmetered population = 1.
     """
 
     def averaging_function(self, values: Union[List[float], np.ndarray]) -> float:
@@ -70,16 +70,26 @@ class ClusterLoadAllocationEstimator:
 
     def weighting_function(self, premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]]) -> Dict[str, float]:
         """
-        Computes expected consumption weights w_i = E[E_i | C_i, X_i] for unsampled consumer units.
+        Computes normalized weights w_i for unsampled consumer units such that sum(w_i) = 1.
         """
         if isinstance(premises_list, ConsumerLoadPremises):
             premises_list = [premises_list]
 
-        weights = {}
+        if not premises_list:
+            return {}
+
+        raw_weights = {}
         for p in premises_list:
-            w_i = ConsumerLoadClassModel.compute_expected_weight(p)
-            weights[p.consumer_id] = w_i
-        return weights
+            raw_w = ConsumerLoadClassModel.compute_expected_weight(p)
+            raw_weights[p.consumer_id] = raw_w
+
+        sum_raw = sum(raw_weights.values())
+        if sum_raw <= 0:
+            n_units = len(premises_list)
+            return {p.consumer_id: 1.0 / n_units for p in premises_list}
+
+        normalized_weights = {cid: float(w / sum_raw) for cid, w in raw_weights.items()}
+        return normalized_weights
 
     def validation_function(
         self,
@@ -105,6 +115,8 @@ class ClusterLoadAllocationEstimator:
     ) -> ClusterLoadAllocationEstimate:
         """
         Estimates unsampled customer energy allocations using baseline CLA.
+        Ensures exact feeder energy balance:
+            feeder_supply_energy_kwh - technical_losses_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
         """
         self.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
@@ -121,18 +133,15 @@ class ClusterLoadAllocationEstimator:
                 estimated_technical_loss_kwh=estimated_technical_loss_kwh,
                 unsampled_energy_pool_kwh=e_u,
                 estimated_unsampled_energy_kwh=0.0,
-                allocated_unsampled_consumer_energy={}
+                allocated_unsampled_consumer_energy={},
+                weights={}
             )
 
         weights = self.weighting_function(unsampled_premises)
-        sum_w = sum(weights.values())
-        if sum_w <= 0:
-            sum_w = float(len(unsampled_premises))
-            weights = {p.consumer_id: 1.0 for p in unsampled_premises}
 
         allocations = {}
         for cid, w_i in weights.items():
-            e_hat_i = e_u * (w_i / sum_w)
+            e_hat_i = e_u * w_i
             allocations[cid] = round(float(e_hat_i), 4)
 
         total_allocated = float(sum(allocations.values()))
@@ -143,5 +152,6 @@ class ClusterLoadAllocationEstimator:
             estimated_technical_loss_kwh=round(float(estimated_technical_loss_kwh), 4),
             unsampled_energy_pool_kwh=round(e_u, 4),
             estimated_unsampled_energy_kwh=round(total_allocated, 4),
-            allocated_unsampled_consumer_energy=allocations
+            allocated_unsampled_consumer_energy=allocations,
+            weights={cid: round(float(w), 6) for cid, w in weights.items()}
         )

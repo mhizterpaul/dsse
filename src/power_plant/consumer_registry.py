@@ -140,6 +140,14 @@ class ConsumerRegistry:
     def get_registered_consumers(self) -> List[ConsumerUnit]:
         return list(self._registered_consumers.values())
 
+    def get_metered_consumers(self, sampling_fraction: float = 0.36) -> List[ConsumerUnit]:
+        """
+        Returns the subset of registered consumer units that are metered/sampled based on sampling fraction.
+        """
+        registered = self.get_registered_consumers()
+        num_metered = int(len(registered) * sampling_fraction)
+        return registered[:num_metered]
+
     def get_latent_consumers(self) -> List[ConsumerUnit]:
         return list(self._latent_consumers.values())
 
