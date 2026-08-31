@@ -4,20 +4,6 @@ import numpy as np
 from src.estimator.cla_estimator import ConsumerLoadPremises, ConsumerLoadClassModel
 
 
-def get_sampled_class_profile(class_id: str, time_points: np.ndarray) -> np.ndarray:
-    """
-    Returns normalized time-dependent load profile mu_c(t) for a given class over time_points.
-    """
-    t = np.asarray(time_points, dtype=float)
-    if "commercial" in class_id:
-        profile = 0.5 + 0.5 * np.sin(np.pi * t / 12.0)
-    elif "industrial" in class_id:
-        profile = 0.8 + 0.2 * np.cos(2.0 * np.pi * t / 24.0)
-    else:
-        profile = 0.3 + 0.7 * (np.sin(np.pi * (t - 6.0) / 12.0) ** 2)
-    return profile / (np.mean(profile) if np.mean(profile) > 0 else 1.0)
-
-
 @dataclass
 class TimeAdjustedCLAEstimate:
     feeder_supply_energy_kwh: float
@@ -99,9 +85,7 @@ class TimeAdjustedCLAEstimator:
 
             adjusted_weight = base_w * class_factor
             alpha_i = observed_time_adjustment_factors.get(p.consumer_id, 1.05) if observed_time_adjustment_factors else 1.05
-            mu_c = get_sampled_class_profile(p.class_id, time_points)
-            raw_integral = float(np.sum(alpha_i * mu_c * dt))
-            raw_time_integrals[p.consumer_id] = max(0.01, float(adjusted_weight * raw_integral))
+            raw_time_integrals[p.consumer_id] = max(0.01, float(adjusted_weight * alpha_i))
 
         sum_integrals = sum(raw_time_integrals.values())
         if sum_integrals <= 0:
