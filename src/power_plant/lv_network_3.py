@@ -83,22 +83,37 @@ def register_lv3_consumers(topology: dict = None, seed: int = 1003, registry: Co
     consumer_buses = [b for b in topology.get("buses", []) if not b.endswith("_sec")]
     num_metered = int(len(consumer_buses) * sampling_fraction)
 
+    # Build bus-to-line mapping from topology to calculate exact service line impedance
+    bus_line_map = {ln["bus2"]: ln for ln in topology.get("lines", [])}
+
     for idx, bus in enumerate(consumer_buses):
         cid = f"consumer_{feeder_id}_{bus}"
         is_metered = (idx < num_metered)
+        ln_info = bus_line_map.get(bus, {})
+        length = float(ln_info.get("length", 0.05))
+        r1 = float(ln_info.get("r1", 0.21))
+        x1 = float(ln_info.get("x1", 0.08))
+
+        r_drop = round(r1 * length, 6)
+        x_drop = round(x1 * length, 6)
+
         registry.register_consumer(
             consumer_id=cid,
             bus_id=bus,
             feeder_id=feeder_id,
             is_metered=is_metered,
-            extra_load_probability=0.45
+            extra_load_probability=0.45,
+            service_line_resistance_ohm=r_drop,
+            service_line_reactance_ohm=x_drop
         )
         if rng.random() < 0.20:
             latent_cid = f"latent_{feeder_id}_{bus}"
             registry.register_latent_consumer(
                 consumer_id=latent_cid,
                 bus_id=bus,
-                feeder_id=feeder_id
+                feeder_id=feeder_id,
+                service_line_resistance_ohm=r_drop,
+                service_line_reactance_ohm=x_drop
             )
 
     return registry

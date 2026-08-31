@@ -401,6 +401,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
             assigned_class = u.assigned_load_class if u.assigned_load_class else "residential"
 
+            c_line_loss = round(float(unit_meas.get("line_losses", 0.0)), 4)
+
             # Registered consumer unit (consumer_type set to assigned load class)
             rows_1.append({
                 "gt_consumer_unit_id": u.consumer_id,
@@ -409,7 +411,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
                 "assigned_weight": unit_weight,
                 "gt_consumed_energy_kwh": round(unit_dss_energy, 4),
-                "consumer_line_losses": round(float(unit_meas.get("line_losses", 0.15)), 4),
+                "consumer_line_losses": c_line_loss,
                 "measured_energy_kwh": meas_energy,
                 "cla_estimates": cla_est,
                 "time_adjusted_cla_estimates": time_cla_est
@@ -418,6 +420,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             # Latent / unknown consumer unit at same bus if present
             latent_u = latent_map.get(u.bus_id)
             if latent_u:
+                latent_meas = sim_res_d1.steady_state_measurements.get(latent_u.consumer_id, {})
+                latent_line_loss = round(float(latent_meas.get("line_losses", 0.0)), 4)
                 rows_1.append({
                     "gt_consumer_unit_id": latent_u.consumer_id,
                     "consumer_type": "latent",
@@ -425,7 +429,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                     "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
                     "assigned_weight": np.nan,
                     "gt_consumed_energy_kwh": np.nan,
-                    "consumer_line_losses": 0.10,
+                    "consumer_line_losses": latent_line_loss,
                     "measured_energy_kwh": np.nan,
                     "cla_estimates": np.nan,
                     "time_adjusted_cla_estimates": np.nan
