@@ -21,6 +21,7 @@ class ConsumerUnit:
     feeder_id: str
     assigned_load_class: Optional[str] = None  # None for latent/unmetered hidden consumers
     loads: List[LoadDefinition] = field(default_factory=list)
+    is_metered: bool = False
     is_latent_unmetered: bool = False
     service_line_resistance_ohm: float = DEFAULT_SERVICE_LINE_RESISTANCE_OHM
 
@@ -58,6 +59,7 @@ class ConsumerRegistry:
         bus_id: str,
         feeder_id: str,
         assigned_load_class: Optional[str] = None,
+        is_metered: bool = False,
         extra_load_probability: float = 0.4,
         service_line_resistance_ohm: Optional[float] = None
     ) -> ConsumerUnit:
@@ -92,6 +94,7 @@ class ConsumerRegistry:
             feeder_id=feeder_id,
             assigned_load_class=assigned_load_class,
             loads=loads,
+            is_metered=is_metered,
             is_latent_unmetered=False,
             service_line_resistance_ohm=service_line_resistance_ohm
         )
@@ -140,13 +143,17 @@ class ConsumerRegistry:
     def get_registered_consumers(self) -> List[ConsumerUnit]:
         return list(self._registered_consumers.values())
 
-    def get_metered_consumers(self, sampling_fraction: float = 0.36) -> List[ConsumerUnit]:
+    def get_metered_consumers(self) -> List[ConsumerUnit]:
         """
-        Returns the subset of registered consumer units that are metered/sampled based on sampling fraction.
+        Returns the subset of registered consumer units that are designated as metered/sampled.
         """
-        registered = self.get_registered_consumers()
-        num_metered = int(len(registered) * sampling_fraction)
-        return registered[:num_metered]
+        return [c for c in self._registered_consumers.values() if c.is_metered]
+
+    def get_unmetered_consumers(self) -> List[ConsumerUnit]:
+        """
+        Returns the subset of registered consumer units that are unmetered.
+        """
+        return [c for c in self._registered_consumers.values() if not c.is_metered]
 
     def get_latent_consumers(self) -> List[ConsumerUnit]:
         return list(self._latent_consumers.values())

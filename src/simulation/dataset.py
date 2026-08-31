@@ -292,9 +292,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         m_key = f"trans{f_id}_lv_boundary_consumer_unit"
         meas = sim_res_d1.steady_state_measurements.get(m_key, {})
 
-        num_sampled = int(len(feeder_units) * 0.36)
-        sampled_units = feeder_units[:num_sampled]
-        unsampled_units = feeder_units[num_sampled:]
+        sampled_units = [u for u in feeder_units if u.is_metered]
+        unsampled_units = [u for u in feeder_units if not u.is_metered]
 
         gt_sampled_energy_kwh = round(
             sum(
@@ -388,10 +387,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
 
-        num_sampled = int(len(feeder_units) * 0.36)
-
-        for u_idx, u in enumerate(feeder_units):
-            is_metered = u_idx < num_sampled
+        for u in feeder_units:
+            is_metered = u.is_metered
 
             unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
             unit_dss_energy = float(unit_meas.get("energy_kwh", 0.0))
