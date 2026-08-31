@@ -40,8 +40,8 @@ class TimeAdjustedCLAEstimator:
     def weighting_function(
         self,
         premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]],
-        time_points: Optional[np.ndarray] = None,
-        observed_time_adjustment_factors: Optional[Dict[str, float]] = None,
+        time_points: np.ndarray,
+        observed_time_adjustment_factors: Dict[str, float],
         metered_premises: Optional[List[ConsumerLoadPremises]] = None,
         metered_consumer_energies: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
@@ -56,8 +56,12 @@ class TimeAdjustedCLAEstimator:
         if not premises_list:
             return {}
 
-        if time_points is None:
-            time_points = np.linspace(0.0, 24.0, 100)
+        if time_points is None or len(time_points) == 0:
+            raise ValueError("time_points array must be provided for Time-Adjusted CLA estimation.")
+
+        if observed_time_adjustment_factors is None:
+            raise ValueError("observed_time_adjustment_factors dictionary must be provided for Time-Adjusted CLA estimation.")
+
         dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 1.0
 
         # Compute average metered energy per load class
@@ -84,8 +88,11 @@ class TimeAdjustedCLAEstimator:
                 class_factor = 1.0
 
             adjusted_weight = base_w * class_factor
-            alpha_i = observed_time_adjustment_factors.get(p.consumer_id, 1.05) if observed_time_adjustment_factors else 1.05
-            raw_time_integrals[p.consumer_id] = max(0.01, float(adjusted_weight * alpha_i))
+            if p.consumer_id not in observed_time_adjustment_factors:
+                raise ValueError(f"Missing time adjustment factor alpha_i for consumer premises {p.consumer_id}")
+
+            alpha_i = float(observed_time_adjustment_factors[p.consumer_id])
+            raw_time_integrals[p.consumer_id] = float(adjusted_weight * alpha_i)
 
         sum_integrals = sum(raw_time_integrals.values())
         if sum_integrals <= 0:
@@ -116,8 +123,8 @@ class TimeAdjustedCLAEstimator:
         sampled_consumer_energy_kwh: float,
         estimated_technical_loss_kwh: float,
         unsampled_premises: List[ConsumerLoadPremises],
-        time_points: Optional[np.ndarray] = None,
-        observed_time_adjustment_factors: Optional[Dict[str, float]] = None,
+        time_points: np.ndarray,
+        observed_time_adjustment_factors: Dict[str, float],
         metered_premises: Optional[List[ConsumerLoadPremises]] = None,
         metered_consumer_energies: Optional[Dict[str, float]] = None
     ) -> TimeAdjustedCLAEstimate:
