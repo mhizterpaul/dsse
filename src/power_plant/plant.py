@@ -135,16 +135,31 @@ def initialize_known_plant(dss, use_baseline_transformers: bool = False, topolog
     try:
         # Clear previous circuit definition and create new circuit
         dss.run_command("clear")
-        dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus frequency=50.0")
+        dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
 
-        # Set default frequency in OpenDSS solution parameters
-        dss.run_command("set defaultfrequency=50.0")
+        # Set default base frequency in OpenDSS solution parameters
+        dss.run_command("set defaultbasefreq=50.0")
+        dss.Solution.Frequency(50.0)
 
         # Build Upstream Substation Transformer (33/11-kV, 7.5 MVA)
         build_hv_transformer(dss, verbose=verbose)
 
         # Configure Excitation Source / Generator at 11 kV bus (main_bus)
         configure_generator(dss, p_kw=1500.0, q_kvar=0.0)
+
+        # 11 kV Medium-Voltage Feeder Overhead Linecode definition
+        # Conductor: r1=0.25 ohm/km, x1=0.35 ohm/km, r0=0.75 ohm/km, x0=1.12 ohm/km, b1=12 uS/km -> c1 ~ 0.03819 uF/km
+        dss.run_command(
+            "new linecode.mv_feeder_linecode nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=0.03819 c0=0.012 units=km normamps=400.0"
+        )
+
+        # Build 11 kV MV Feeder Lines connecting main_bus to feeder heads per specs
+        mv_feeder_lengths = {1: 4.5, 2: 6.2, 3: 8.5}
+        for f_id, length in mv_feeder_lengths.items():
+            dss.run_command(
+                f"new line.mv_feeder_{f_id} bus1=main_bus bus2=feeder{f_id}_head phases=3 "
+                f"linecode=mv_feeder_linecode length={length} units=km"
+            )
 
         # Build Distribution Transformers (11/0.415 kV)
         for f_id in [1, 2, 3]:

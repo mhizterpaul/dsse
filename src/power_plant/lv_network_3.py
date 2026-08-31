@@ -67,9 +67,10 @@ def generate_lv3_topology(seed: int = 1003) -> dict:
         "lines": lines
     }
 
-def register_lv3_consumers(topology: dict = None, seed: int = 1003, registry: ConsumerRegistry = None) -> ConsumerRegistry:
+def register_lv3_consumers(topology: dict = None, seed: int = 1003, registry: ConsumerRegistry = None, sampling_fraction: float = 0.36) -> ConsumerRegistry:
     """
-    Registers consumer units and their load circuits directly to LV Network 3.
+    Registers consumer units and their load circuits directly to LV Network 3,
+    designating a sampling fraction (default 36%) of registered units as metered.
     """
     if topology is None:
         topology = generate_lv3_topology(seed=seed)
@@ -79,22 +80,41 @@ def register_lv3_consumers(topology: dict = None, seed: int = 1003, registry: Co
 
     rng = np.random.default_rng(seed)
     feeder_id = "feeder_3"
-    for bus in topology.get("buses", []):
-        if not bus.endswith("_sec"):
-            cid = f"consumer_{feeder_id}_{bus}"
-            registry.register_consumer(
-                consumer_id=cid,
+    consumer_buses = [b for b in topology.get("buses", []) if not b.endswith("_sec")]
+    num_metered = int(len(consumer_buses) * sampling_fraction)
+
+    # Build bus-to-line mapping from topology to calculate exact service line impedance
+    bus_line_map = {ln["bus2"]: ln for ln in topology.get("lines", [])}
+
+    for idx, bus in enumerate(consumer_buses):
+        cid = f"consumer_{feeder_id}_{bus}"
+        is_metered = (idx < num_metered)
+        ln_info = bus_line_map.get(bus, {})
+        length = float(ln_info.get("length", 0.05))
+        r1 = float(ln_info.get("r1", 0.21))
+        x1 = float(ln_info.get("x1", 0.08))
+
+        r_drop = round(r1 * length, 6)
+        x_drop = round(x1 * length, 6)
+
+        registry.register_consumer(
+            consumer_id=cid,
+            bus_id=bus,
+            feeder_id=feeder_id,
+            is_metered=is_metered,
+            extra_load_probability=0.45,
+            service_line_resistance_ohm=r_drop,
+            service_line_reactance_ohm=x_drop
+        )
+        if rng.random() < 0.20:
+            latent_cid = f"latent_{feeder_id}_{bus}"
+            registry.register_latent_consumer(
+                consumer_id=latent_cid,
                 bus_id=bus,
                 feeder_id=feeder_id,
-                extra_load_probability=0.45
+                service_line_resistance_ohm=r_drop,
+                service_line_reactance_ohm=x_drop
             )
-            if rng.random() < 0.20:
-                latent_cid = f"latent_{feeder_id}_{bus}"
-                registry.register_latent_consumer(
-                    consumer_id=latent_cid,
-                    bus_id=bus,
-                    feeder_id=feeder_id
-                )
 
     return registry
 

@@ -220,15 +220,18 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
 
             # Retrieve service line resistance directly from matched ConsumerUnit or OpenDSS line property
-            r_line = getattr(matched_units[0], "service_line_resistance_ohm", getattr(registry, "service_line_resistance_ohm", None)) if matched_units else None
+            r_line = matched_units[0].service_line_resistance_ohm if matched_units else None
             if r_line is None and branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
                 try:
                     r_line = float(dss.Properties.Value("r1"))
                 except Exception:
                     r_line = None
 
+            if r_line is None and ("trans" in str(m_id) or "boundary" in str(m_id)):
+                r_line = 0.001  # Boundary transformer LV secondary terminal impedance baseline
+
             if r_line is None:
-                r_line = getattr(registry, "service_line_resistance_ohm", 0.05)
+                raise ValueError(f"Service line resistance R_line missing for boundary/consumer unit {m_id}")
 
             p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
             line_losses = round(float(p_loss_kw), 4)
@@ -277,7 +280,7 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
             v_ln = float(np.mean(v_mags))
             v_ll = v_ln * np.sqrt(3.0)
             i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-            r_line = getattr(c_unit, "service_line_resistance_ohm", getattr(registry, "service_line_resistance_ohm", 0.05))
+            r_line = c_unit.service_line_resistance_ohm
             p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
             line_losses = round(float(p_loss_kw), 4)
 

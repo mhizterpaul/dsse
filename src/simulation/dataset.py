@@ -292,9 +292,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         m_key = f"trans{f_id}_lv_boundary_consumer_unit"
         meas = sim_res_d1.steady_state_measurements.get(m_key, {})
 
-        num_sampled = int(len(feeder_units) * 0.36)
-        sampled_units = feeder_units[:num_sampled]
-        unsampled_units = feeder_units[num_sampled:]
+        sampled_units = [u for u in feeder_units if u.is_metered]
+        unsampled_units = [u for u in feeder_units if not u.is_metered]
 
         gt_sampled_energy_kwh = round(
             sum(
@@ -367,50 +366,56 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         is_valid_cla = cla_estimator.validation_function(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh
+            technical_loss_kwh=gt_tech_loss_kwh
         )
 
         cla_res = cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh,
+            technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
+
+        obs_time_factors = {p.consumer_id: 1.0 for p in unsampled_premises}
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            estimated_technical_loss_kwh=gt_tech_loss_kwh,
+            technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises,
+            observed_time_adjustment_factors=obs_time_factors,
             metered_premises=metered_premises,
             metered_consumer_energies=metered_consumer_energies
         ) if (is_valid_cla and unsampled_premises) else None
 
         weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
 
-        num_sampled = int(len(feeder_units) * 0.36)
-
-        for u_idx, u in enumerate(feeder_units):
-            is_metered = u_idx < num_sampled
+        for u in feeder_units:
+            is_metered = u.is_metered
 
             unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
             unit_dss_energy = float(unit_meas.get("energy_kwh", 0.0))
 
-            meas_energy = round(unit_dss_energy, 4) if is_metered else ""
-            cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises))), 4) if (not is_metered and cla_res and unsampled_premises) else ""
-            time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, time_cla_res.estimated_unsampled_energy_kwh / len(unsampled_premises))), 4) if (not is_metered and time_cla_res and unsampled_premises) else ""
+            meas_energy = round(unit_dss_energy, 4) if is_metered else np.nan
+            cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and cla_res and u.consumer_id in cla_res.allocated_unsampled_consumer_energy) else np.nan
+            time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and time_cla_res and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy) else np.nan
 
-            unit_weight = round(float(weights_map.get(u.consumer_id, 1.0)), 4) if not is_metered else ""
+            unit_weight = round(float(weights_map.get(u.consumer_id, np.nan)), 6) if not is_metered else np.nan
 
-            # Known / registered consumer unit
+            assigned_class = u.assigned_load_class if u.assigned_load_class else "residential"
+            consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
+
+            c_line_loss = round(float(unit_meas.get("line_losses", 0.0)), 4)
+
+            # Registered consumer unit (consumer_type includes assigned class and status type)
             rows_1.append({
                 "gt_consumer_unit_id": u.consumer_id,
-                "consumer_type": "known",
+                "consumer_type": consumer_type_label,
                 "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
                 "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
                 "assigned_weight": unit_weight,
                 "gt_consumed_energy_kwh": round(unit_dss_energy, 4),
-                "consumer_line_losses": unit_meas.get("line_losses", 0.15),
+                "consumer_line_losses": c_line_loss,
                 "measured_energy_kwh": meas_energy,
                 "cla_estimates": cla_est,
                 "time_adjusted_cla_estimates": time_cla_est
@@ -419,17 +424,19 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             # Latent / unknown consumer unit at same bus if present
             latent_u = latent_map.get(u.bus_id)
             if latent_u:
+                latent_meas = sim_res_d1.steady_state_measurements.get(latent_u.consumer_id, {})
+                latent_line_loss = round(float(latent_meas.get("line_losses", 0.0)), 4)
                 rows_1.append({
                     "gt_consumer_unit_id": latent_u.consumer_id,
-                    "consumer_type": "unknown",
+                    "consumer_type": "latent",
                     "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
                     "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
-                    "assigned_weight": "",
-                    "gt_consumed_energy_kwh": "",
-                    "consumer_line_losses": 0.10,
-                    "measured_energy_kwh": "",
-                    "cla_estimates": "",
-                    "time_adjusted_cla_estimates": ""
+                    "assigned_weight": np.nan,
+                    "gt_consumed_energy_kwh": np.nan,
+                    "consumer_line_losses": latent_line_loss,
+                    "measured_energy_kwh": np.nan,
+                    "cla_estimates": np.nan,
+                    "time_adjusted_cla_estimates": np.nan
                 })
 
     print("INFO: Completed Dataset 1 generation.")
