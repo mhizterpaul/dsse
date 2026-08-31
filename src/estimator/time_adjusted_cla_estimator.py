@@ -55,7 +55,6 @@ class TimeAdjustedCLAEstimator:
     def weighting_function(
         self,
         premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]],
-        time_points: np.ndarray,
         observed_time_adjustment_factors: Dict[str, float],
         metered_premises: Optional[List[ConsumerLoadPremises]] = None,
         metered_consumer_energies: Optional[Dict[str, float]] = None
@@ -70,9 +69,6 @@ class TimeAdjustedCLAEstimator:
 
         if not premises_list:
             return {}
-
-        if time_points is None or len(time_points) == 0:
-            raise ValueError("time_points array must be provided for Time-Adjusted CLA estimation.")
 
         if observed_time_adjustment_factors is None:
             raise ValueError("observed_time_adjustment_factors dictionary must be provided for Time-Adjusted CLA estimation.")
@@ -127,7 +123,6 @@ class TimeAdjustedCLAEstimator:
         sampled_consumer_energy_kwh: float,
         technical_loss_kwh: float,
         unsampled_premises: List[ConsumerLoadPremises],
-        time_points: np.ndarray,
         observed_time_adjustment_factors: Dict[str, float],
         metered_premises: Optional[List[ConsumerLoadPremises]] = None,
         metered_consumer_energies: Optional[Dict[str, float]] = None
@@ -158,7 +153,6 @@ class TimeAdjustedCLAEstimator:
 
         weights = self.weighting_function(
             premises_list=unsampled_premises,
-            time_points=time_points,
             observed_time_adjustment_factors=observed_time_adjustment_factors,
             metered_premises=metered_premises,
             metered_consumer_energies=metered_consumer_energies

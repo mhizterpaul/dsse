@@ -376,7 +376,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             unsampled_premises=unsampled_premises
         ) if (is_valid_cla and unsampled_premises) else None
 
-        time_points_24h = np.linspace(0.0, 24.0, 100)
         obs_time_factors = {p.consumer_id: 1.0 for p in unsampled_premises}
 
         time_cla_res = time_cla_estimator.estimate(
@@ -384,7 +383,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             unsampled_premises=unsampled_premises,
-            time_points=time_points_24h,
             observed_time_adjustment_factors=obs_time_factors,
             metered_premises=metered_premises,
             metered_consumer_energies=metered_consumer_energies
