@@ -62,19 +62,26 @@ class TimeAdjustedCLAEstimator:
         if observed_time_adjustment_factors is None:
             raise ValueError("observed_time_adjustment_factors dictionary must be provided for Time-Adjusted CLA estimation.")
 
-        dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 1.0
+        if not metered_premises or not metered_consumer_energies:
+            raise ValueError("metered_premises and metered_consumer_energies must be provided for Time-Adjusted CLA estimation.")
 
-        # Compute average metered energy per load class
         class_metered_energies: Dict[str, List[float]] = {}
         all_metered_energies: List[float] = []
 
-        if metered_premises and metered_consumer_energies:
-            for mp in metered_premises:
-                e_val = float(metered_consumer_energies.get(mp.consumer_id, 0.0))
-                class_metered_energies.setdefault(mp.class_id, []).append(e_val)
-                all_metered_energies.append(e_val)
+        for mp in metered_premises:
+            if mp.consumer_id not in metered_consumer_energies:
+                raise ValueError(f"Missing metered energy observation for consumer {mp.consumer_id}")
+            e_val = float(metered_consumer_energies[mp.consumer_id])
+            class_metered_energies.setdefault(mp.class_id, []).append(e_val)
+            all_metered_energies.append(e_val)
 
-        overall_metered_avg = float(np.mean(all_metered_energies)) if all_metered_energies else 0.0
+        if not all_metered_energies:
+            raise ValueError("No metered consumer energy values found.")
+
+        overall_metered_avg = float(np.mean(all_metered_energies))
+        if overall_metered_avg <= 0:
+            raise ValueError(f"Invalid overall metered average energy: {overall_metered_avg}")
+
         class_metered_avg = {
             c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
         }
@@ -82,17 +89,18 @@ class TimeAdjustedCLAEstimator:
         raw_time_integrals = {}
         for p in premises_list:
             base_w = ConsumerLoadClassModel.compute_expected_weight(p)
-            if p.class_id in class_metered_avg and overall_metered_avg > 0:
-                class_factor = class_metered_avg[p.class_id] / overall_metered_avg
-            else:
-                class_factor = 1.0
+            if p.class_id not in class_metered_avg or class_metered_avg[p.class_id] <= 0:
+                raise ValueError(f"No valid positive metered energy observed for load class '{p.class_id}' to compute class average metered energy.")
 
-            adjusted_weight = base_w * class_factor
+            avg_metered_e = class_metered_avg[p.class_id]
+            class_energy_ratio = base_w / avg_metered_e
+
             if p.consumer_id not in observed_time_adjustment_factors:
                 raise ValueError(f"Missing time adjustment factor alpha_i for consumer premises {p.consumer_id}")
 
             alpha_i = float(observed_time_adjustment_factors[p.consumer_id])
-            raw_time_integrals[p.consumer_id] = float(adjusted_weight * alpha_i)
+            adjusted_w = base_w * class_energy_ratio * alpha_i
+            raw_time_integrals[p.consumer_id] = float(adjusted_w)
 
         sum_integrals = sum(raw_time_integrals.values())
         if sum_integrals <= 0:
