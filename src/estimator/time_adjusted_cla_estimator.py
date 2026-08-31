@@ -78,7 +78,7 @@ class TimeAdjustedCLAEstimator:
             metered_consumer_energies=metered_consumer_energies
         )
 
-        raw_time_integrals = {}
+        raw_weights = {}
         for p in premises_list:
             base_w = ConsumerLoadClassModel.compute_expected_weight(p)
             if p.class_id not in class_metered_avg or class_metered_avg[p.class_id] <= 0:
@@ -92,14 +92,14 @@ class TimeAdjustedCLAEstimator:
 
             alpha_i = float(observed_time_adjustment_factors[p.consumer_id])
             adjusted_w = base_w * class_energy_ratio * alpha_i
-            raw_time_integrals[p.consumer_id] = float(adjusted_w)
+            raw_weights[p.consumer_id] = float(adjusted_w)
 
-        sum_integrals = sum(raw_time_integrals.values())
+        sum_integrals = sum(raw_weights.values())
         if sum_integrals <= 0:
             n_units = len(premises_list)
             return {p.consumer_id: 1.0 / n_units for p in premises_list}
 
-        normalized_weights = {cid: float(val / sum_integrals) for cid, val in raw_time_integrals.items()}
+        normalized_weights = {cid: float(val / sum_integrals) for cid, val in raw_weights.items()}
         return normalized_weights
 
     def validation_function(
