@@ -53,7 +53,7 @@ class CoSimulationRunner:
     handles 2 network cases (single LV network composition vs 3 LV networks composition),
     handles steady state operation (5-minute experiment run for Dataset 1) and event/fault operation
     (steady operational parameters for Datasets 2, 3, 4 without mixing steady/fault states),
-    caches resolved OperatingPoint objects for evaluated network conditions,
+    caches resolved OperatingPoint objects and ATP transient responses for evaluated network conditions,
     and uses ATPRunner strictly inside measure_transients.
     """
     def __init__(self):
@@ -61,6 +61,7 @@ class CoSimulationRunner:
         self.atp_builder = ATPCaseBuilder()
         self.plant_data = None
         self._op_cache = {}
+        self._atp_response_cache = {}
 
     def initialize_plant_session(
         self,
@@ -102,24 +103,36 @@ class CoSimulationRunner:
         """
         Exclusively executes ATP transient simulation cases and parses EMT waveforms for consumer load
         and transformer transients using derived network parameters.
+        Caches ATP responses for specific load or fault events under identical operating points.
         Appends unique scenario and PID identifiers to the case file path to guarantee process safety.
         """
         if event is None:
             t_vec = np.linspace(0.0, 0.1, 1000)
             return t_vec, {}, {}, {}
 
+        # Construct deterministic ATP response cache key
+        target_tx = getattr(event, "target", "trans1")
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
-            t_off = getattr(event, "time_offset_s")
-            ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.2f}s"
-        elif getattr(event, "event_class") == "equipment_switch":
-            ev_key = f"{event.event_type}_switch"
+            t_off = getattr(event, "time_offset_s", 0.0)
+            ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.4f}s"
+        elif getattr(event, "event_class", "") == "equipment_switch":
+            ev_key = f"{getattr(event, 'equipment_type')}_switch"
+        elif getattr(event, "event_class", "") == "line_fault":
+            f_phases = getattr(event, "faulted_phases", (0,))
+            ev_key = f"{getattr(event, 'fault_type')}_{'-'.join(map(str, f_phases))}_{getattr(event, 'fault_resistance', 0.001)}"
         else:
-            ev_key = "dist_fault_steady"
+            ev_key = f"event_{getattr(event, 'event_type', 'steady')}"
+
+        v_tuple = op.phase_voltages_v.get(str(target_tx)) if hasattr(op, "phase_voltages_v") and op.phase_voltages_v else ()
+        a_tuple = op.phase_angles_deg.get(str(target_tx)) if hasattr(op, "phase_angles_deg") and op.phase_angles_deg else ()
+        freq = getattr(op, "frequency_hz", 50.0)
+
+        atp_cache_key = (ev_key, target_tx, v_tuple, a_tuple, freq)
+        if atp_cache_key in self._atp_response_cache:
+            return self._atp_response_cache[atp_cache_key]
 
         # Unique ATP case file path per process and scenario to prevent race conditions
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
-
-       
 
         try:
             class DummyRealization:
@@ -131,7 +144,9 @@ class CoSimulationRunner:
             atp_result = ATPRunner().run(atp_case_path)
             emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
 
-            return emt_waveforms.time_s, emt_waveforms.pcc_voltages, emt_waveforms.pcc_currents, emt_waveforms.event_metadata
+            res_tuple = (emt_waveforms.time_s, emt_waveforms.pcc_voltages, emt_waveforms.pcc_currents, emt_waveforms.event_metadata)
+            self._atp_response_cache[atp_cache_key] = res_tuple
+            return res_tuple
         except Exception as e:
             print(f"WARNING: Transient evaluation warning for scenario {scenario_id}: {e}\n{traceback.format_exc()}")
             t_vec = np.linspace(0.0, 0.1, 1000)
