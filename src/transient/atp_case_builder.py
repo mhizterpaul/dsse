@@ -8,7 +8,8 @@ class ATPCaseBuilder:
 
     def build(self, realization, operating_point, event, output_path: str) -> str:
         """
-        Generates a valid ATP-EMTP card file for single equipment switching, and co-events in ATP-EMTP syntax.
+        Generates a valid ATP-EMTP card file for single equipment switching,
+        explicit line faults (LG, LL, LLG, LLL), and co-events in ATP-EMTP syntax.
         """
         if realization is None or not hasattr(realization, "scenario_id"):
             raise ValueError("Realization must be provided with scenario_id attribute")
@@ -40,10 +41,13 @@ class ATPCaseBuilder:
         if not operating_point:
             raise ValueError("Operating point must be provided to ATPCaseBuilder")
 
-        if hasattr(operating_point, "phase_voltages_v") or target_tx in operating_point.phase_voltages_v:
-            # Check baseline 240.0 V / phase angles from OperatingPoint or compute from OpenDSS solution
-            phase_v = operating_point.phase_voltages_v[target_tx]
-            phase_ang = operating_point.phase_angles_deg[target_tx]
+        if not hasattr(operating_point, "phase_voltages_v") or target_tx not in operating_point.phase_voltages_v:
+            raise ValueError(f"Operating point missing phase_voltages_v for target transformer '{target_tx}'")
+        if not hasattr(operating_point, "phase_angles_deg") or target_tx not in operating_point.phase_angles_deg:
+            raise ValueError(f"Operating point missing phase_angles_deg for target transformer '{target_tx}'")
+
+        phase_v = operating_point.phase_voltages_v[target_tx]
+        phase_ang = operating_point.phase_angles_deg[target_tx]
 
         # Convert RMS voltage to peak amplitude in Volts
         import numpy as np

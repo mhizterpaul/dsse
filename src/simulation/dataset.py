@@ -99,7 +99,6 @@ def _process_coevent_worker(task_args):
         co_ev_effective = co_ev
 
     f_id = (p_idx % 3) + 1
-    m_id = f"trans{f_id}_lv_boundary_consumer_unit"
 
     # 1. Combined co-event simulation (OpenDSS solves network parameters; ATP simulates load transients)
     sim_co = runner.run_simulation(
@@ -111,9 +110,13 @@ def _process_coevent_worker(task_args):
         seed=42 + p_idx,
         reinitialize_plant=False
     )
-    unit_co = sim_co.processed_consumer_units.get(m_id, {})
-    v_co = np.array(unit_co.get("raw_voltage"))
-    i_co = np.array(unit_co.get("raw_current"))
+    if not sim_co.processed_consumer_units:
+        raise ValueError(f"No processed consumer units in co-event simulation (scenario coev_{p_idx}_{f_id})")
+    unit_co = list(sim_co.processed_consumer_units.values())[0]
+    if unit_co.get("raw_voltage") is None or unit_co.get("raw_current") is None:
+        raise ValueError(f"Missing raw_voltage or raw_current in co-event simulation (scenario coev_{p_idx}_{f_id})")
+    v_co = np.array(unit_co["raw_voltage"])
+    i_co = np.array(unit_co["raw_current"])
 
     # 2. Constituent event 1 simulation
     sim_1 = runner.run_simulation(
@@ -125,10 +128,11 @@ def _process_coevent_worker(task_args):
         seed=42 + p_idx,
         reinitialize_plant=False
     )
-    unit_1 = sim_1.processed_consumer_units.get(m_id)
-    if not unit_1 or unit_1.get("raw_voltage") is None or unit_1.get("raw_current") is None:
-        raise ValueError(f"Missing transient simulation signals for unit '{m_id}' in event 1 (scenario ev1_{p_idx}_{f_id})")
-
+    if not sim_1.processed_consumer_units:
+        raise ValueError(f"No processed consumer units in event 1 simulation (scenario ev1_{p_idx}_{f_id})")
+    unit_1 = list(sim_1.processed_consumer_units.values())[0]
+    if unit_1.get("raw_voltage") is None or unit_1.get("raw_current") is None:
+        raise ValueError(f"Missing raw_voltage or raw_current in event 1 simulation (scenario ev1_{p_idx}_{f_id})")
     v1_sig = np.array(unit_1["raw_voltage"])
     i1_sig = np.array(unit_1["raw_current"])
 
@@ -142,17 +146,18 @@ def _process_coevent_worker(task_args):
         seed=42 + p_idx,
         reinitialize_plant=False
     )
-    unit_2 = sim_2.processed_consumer_units.get(m_id)
-    if not unit_2 or unit_2.get("raw_voltage") is None or unit_2.get("raw_current") is None:
-        raise ValueError(f"Missing transient simulation signals for unit '{m_id}' in event 2 (scenario ev2_{p_idx}_{f_id})")
-
+    if not sim_2.processed_consumer_units:
+        raise ValueError(f"No processed consumer units in event 2 simulation (scenario ev2_{p_idx}_{f_id})")
+    unit_2 = list(sim_2.processed_consumer_units.values())[0]
+    if unit_2.get("raw_voltage") is None or unit_2.get("raw_current") is None:
+        raise ValueError(f"Missing raw_voltage or raw_current in event 2 simulation (scenario ev2_{p_idx}_{f_id})")
     v2_sig = np.array(unit_2["raw_voltage"])
     i2_sig = np.array(unit_2["raw_current"])
 
     if v_co is None or v_co.size == 0 or v_co.ndim < 2:
-        raise ValueError(f"Missing or invalid co-event voltage signal for unit '{m_id}'")
+        raise ValueError(f"Missing or invalid co-event voltage signal for scenario coev_{p_idx}_{f_id}")
     if i_co is None or i_co.size == 0 or i_co.ndim < 2:
-        raise ValueError(f"Missing or invalid co-event current signal for unit '{m_id}'")
+        raise ValueError(f"Missing or invalid co-event current signal for scenario coev_{p_idx}_{f_id}")
 
     if sim_co.time_s is None or len(sim_co.time_s) == 0:
         raise ValueError(f"Missing co-event time vector time_s for scenario coev_{p_idx}_{f_id}")
@@ -285,9 +290,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     print("INFO: Initializing OpenDSS instance for Dataset 1 generation...")
     runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
 
-    sim_res_d1 = runner.run_simulation(
+    sim_res_d1 = runner.run_steady_state_simulation(
         use_baseline_transformers=True,
-        is_steady_state_run=True,
         scenario_id="steady_5min_run",
         seed=42,
         reinitialize_plant=False

@@ -286,6 +286,16 @@ def solve_operating_point(dss, p_kw: float, q_kvar: float, time_s: float = 0.0) 
                 feeder_q[idx] = round(float(abs(powers[1])), 4)
             loading[idx] = round(float(np.sqrt(feeder_p.get(idx, 0.0)**2 + feeder_q.get(idx, 0.0)**2) / 1500.0), 4)
 
+        # Retrieve LV terminal phase voltages and angles
+        sec_bus = f"feeder{idx}_sec"
+        if dss.Circuit.SetActiveBus(sec_bus):
+            v_mag_angle = dss.Bus.VMagAngle()
+            if len(v_mag_angle) >= 6:
+                phase_voltages_v[f"trans{idx}"] = (float(v_mag_angle[0]), float(v_mag_angle[2]), float(v_mag_angle[4]))
+                phase_angles_deg[f"trans{idx}"] = (float(v_mag_angle[1]), float(v_mag_angle[3]), float(v_mag_angle[5]))
+                phase_voltages_v[f"feeder{idx}_head"] = (float(v_mag_angle[0]), float(v_mag_angle[2]), float(v_mag_angle[4]))
+                phase_angles_deg[f"feeder{idx}_head"] = (float(v_mag_angle[1]), float(v_mag_angle[3]), float(v_mag_angle[5]))
+
     return OperatingPoint(
         time_s=time_s,
         generator_p_kw=p_kw,
