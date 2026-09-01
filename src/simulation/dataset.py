@@ -87,34 +87,14 @@ def get_all_108_coevents(target_line: str = "feeder1_head"):
     return coevents
 
 
-def process_dataset_coevents(runner: CoSimulationRunner, coevents: list, use_baseline_transformers: bool, is_dataset_3: bool, dataset_name: str) -> list[dict]:
+def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list[dict]:
     """
-    Processes co-events for Datasets 2, 3, or 4 using CoSimulationRunner.run_transient_simulation.
+    Processes simulation results returned by CoSimulationRunner.run_transient_simulation.
     Applies Butterworth high-pass filter (remove_low_frequency_components) to waveforms,
     computes 3-phase scalar voltage_magnitude and current_magnitude as well as residual magnitudes,
     and returns list of row dictionaries.
     """
-    print(f"INFO: Processing {len(coevents)} co-events for {dataset_name}...")
-
-    # For Dataset 3, apply time shift offset (e.g. 0.015 s)
-    if is_dataset_3:
-        coevents_to_run = [co.with_time_shift(0.015) for co in coevents]
-    else:
-        coevents_to_run = coevents
-
-    # For Dataset 4, iterate feeder distribution across feeders 1, 2, 3
-    if not use_baseline_transformers:
-        for idx, co in enumerate(coevents_to_run):
-            f_id = (idx % 3) + 1
-            setattr(co, "gt_feeder_id", f_id)
-
-    # Delegate execution to runner.run_transient_simulation
-    sim_results = runner.run_transient_simulation(
-        events=coevents_to_run,
-        use_baseline_feeder=use_baseline_transformers,
-        seed=42,
-        reinitialize_plant=False
-    )
+    print(f"INFO: Processing {len(sim_results)} simulation results for {dataset_name}...")
 
     rows = []
     for item in sim_results:
@@ -470,17 +450,44 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     # --- B. DATASET 2 GENERATION (108 Unique Co-Events Parallel) ---
     # =========================================================================
-    rows_2 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=True, is_dataset_3=False, dataset_name="Dataset 2")
+    print("INFO: Running transient simulations for Dataset 2...")
+    sim_res_d2 = runner.run_transient_simulation(
+        events=all_108_pairs,
+        use_baseline_feeder=True,
+        seed=42,
+        reinitialize_plant=False
+    )
+    rows_2 = process_dataset_coevents(sim_res_d2, dataset_name="Dataset 2")
 
     # =========================================================================
     # --- C. DATASET 3 GENERATION (108 Unique Co-Events Time Shift Parallel) ---
     # =========================================================================
-    rows_3 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=True, is_dataset_3=True, dataset_name="Dataset 3")
+    print("INFO: Running transient simulations for Dataset 3 (time-shifted)...")
+    d3_coevents = [co.with_time_shift(0.015) for co in all_108_pairs]
+    sim_res_d3 = runner.run_transient_simulation(
+        events=d3_coevents,
+        use_baseline_feeder=True,
+        seed=42,
+        reinitialize_plant=False
+    )
+    rows_3 = process_dataset_coevents(sim_res_d3, dataset_name="Dataset 3")
 
     # =========================================================================
     # --- D. DATASET 4 GENERATION (108 Unique Co-Events Transformer Spec Parallel) ---
     # =========================================================================
-    rows_4 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=False, is_dataset_3=False, dataset_name="Dataset 4")
+    print("INFO: Running transient simulations for Dataset 4 (varying transformer specs)...")
+    d4_coevents = [co.with_time_shift(0.0) for co in all_108_pairs]
+    for idx, co in enumerate(d4_coevents):
+        f_id = (idx % 3) + 1
+        setattr(co, "gt_feeder_id", f_id)
+
+    sim_res_d4 = runner.run_transient_simulation(
+        events=d4_coevents,
+        use_baseline_feeder=False,
+        seed=42,
+        reinitialize_plant=False
+    )
+    rows_4 = process_dataset_coevents(sim_res_d4, dataset_name="Dataset 4")
 
     df_1 = pd.DataFrame(rows_1)
     df_2 = pd.DataFrame(rows_2)
