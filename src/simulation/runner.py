@@ -110,8 +110,9 @@ class CoSimulationRunner:
             t_vec = np.linspace(0.0, 0.1, 1000)
             return t_vec, {}, {}, {}
 
-        # Construct deterministic ATP response cache key
+        # Construct deterministic feeder-aware ATP response cache key
         target_tx = getattr(event, "target", "trans1")
+        feeder_id = getattr(event, "gt_feeder_id", getattr(event, "feeder_id", "feeder_1"))
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
             t_off = getattr(event, "time_offset_s", 0.0)
             ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.4f}s"
@@ -127,7 +128,7 @@ class CoSimulationRunner:
         a_tuple = op.phase_angles_deg.get(str(target_tx)) if hasattr(op, "phase_angles_deg") and op.phase_angles_deg else ()
         freq = getattr(op, "frequency_hz", 50.0)
 
-        atp_cache_key = (ev_key, target_tx, v_tuple, a_tuple, freq)
+        atp_cache_key = (ev_key, feeder_id, target_tx, v_tuple, a_tuple, freq)
         if atp_cache_key in self._atp_response_cache:
             return self._atp_response_cache[atp_cache_key]
 
@@ -270,11 +271,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
 
     def get_event_key(ev, prefix: str):
         if getattr(ev, "event_class", "") == "equipment_switch":
-            return f"eq_{prefix}_{getattr(ev, 'equipment_type')}"
+            return f"f{feeder_idx}_b{use_baseline_feeder}_eq_{prefix}_{getattr(ev, 'equipment_type')}"
         elif getattr(ev, "event_class", "") == "line_fault":
             f_phases = getattr(ev, "faulted_phases", (0,))
-            return f"flt_{prefix}_{getattr(ev, 'fault_type')}_{'-'.join(map(str, f_phases))}_{getattr(ev, 'fault_resistance', 0.001)}"
-        return f"ev_{prefix}"
+            return f"f{feeder_idx}_b{use_baseline_feeder}_flt_{prefix}_{getattr(ev, 'fault_type')}_{'-'.join(map(str, f_phases))}_{getattr(ev, 'fault_resistance', 0.001)}"
+        return f"f{feeder_idx}_b{use_baseline_feeder}_ev_{prefix}"
 
     key1 = get_event_key(ev1, "ev1")
     key2 = get_event_key(ev2, "ev2")
