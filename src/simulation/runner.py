@@ -31,18 +31,19 @@ def extract_fault_info(co_ev: Any) -> str:
             }
             break
 
-    # If not found in event dataclass, query active OpenDSS Fault element
-    if not fault_info and dss.Circuit.SetActiveElement("Fault.dist_fault_1"):
+    # If not found in event dataclass, try querying active OpenDSS Fault element if a circuit is active
+    if not fault_info:
         try:
-            r_val = float(dss.Properties.Value("r"))
-            phases_val = int(dss.Properties.Value("phases"))
-            bus_names = dss.CktElement.BusNames()
-            fault_info = {
-                "fault_type": "LG" if phases_val == 1 else "LL",
-                "fault_resistance_ohm": r_val,
-                "faulted_phases": [0] if phases_val == 1 else [0, 1],
-                "bus": bus_names[0] if bus_names else ""
-            }
+            if dss.Circuit.SetActiveElement("Fault.dist_fault_1"):
+                r_val = float(dss.Properties.Value("r"))
+                phases_val = int(dss.Properties.Value("phases"))
+                bus_names = dss.CktElement.BusNames()
+                fault_info = {
+                    "fault_type": "LG" if phases_val == 1 else "LL",
+                    "fault_resistance_ohm": r_val,
+                    "faulted_phases": [0] if phases_val == 1 else [0, 1],
+                    "bus": bus_names[0] if bus_names else ""
+                }
         except Exception:
             pass
 
