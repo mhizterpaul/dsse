@@ -228,9 +228,6 @@ def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[d
                 except Exception:
                     r_line = None
 
-            if r_line is None and ("trans" in str(m_id) or "boundary" in str(m_id)):
-                r_line = 0.001  # Boundary transformer LV secondary terminal impedance baseline
-
             if r_line is None:
                 raise ValueError(f"Service line resistance R_line missing for boundary/consumer unit {m_id}")
 
