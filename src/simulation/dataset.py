@@ -70,10 +70,10 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     print("INFO: Starting Dataset 1 generation...")
     print("INFO: Initializing OpenDSS instance for Dataset 1 generation...")
-    runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
+    runner.initialize_plant_session(use_baseline_feeder=True, seed=42)
 
     sim_res_d1 = runner.run_steady_state_simulation(
-        use_baseline_transformers=True,
+        use_baseline_feeder=True,
         scenario_id="steady_5min_run",
         seed=42,
         reinitialize_plant=False
