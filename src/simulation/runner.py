@@ -104,197 +104,6 @@ class SimulationResult:
         return processed_consumer_units, consumer_transients, transformer_transients
 
 
-def calculate_dss_consumer_energy(registry: Any, selected_consumer_units: List[dict], duration_hours: float = 5 / 60.0) -> dict:
-    """
-    Calculates power flow measurements and active/reactive energy consumed during the experiment
-    using the ConsumerRegistry interface and OpenDSS API directly.
-    """
-    measurements = {}
-
-    all_registered = registry.get_registered_consumers() if hasattr(registry, "get_registered_consumers") else []
-    all_latent = registry.get_latent_consumers() if hasattr(registry, "get_latent_consumers") else []
-
-    # Map consumer unit IDs
-    reg_map = {c.consumer_id: c for c in all_registered}
-    latent_map = {c.consumer_id: c for c in all_latent}
-
-    # Pre-build bus-to-consumer-unit mapping and direct consumer_id mapping
-    bus_map = {}
-    for c in all_registered + all_latent:
-        for ld in c.loads:
-            if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
-                buses = dss.CktElement.BusNames()
-                if buses:
-                    b_name = buses[0].split('.')[0]
-                    if b_name not in bus_map:
-                        bus_map[b_name] = []
-                    if c not in bus_map[b_name]:
-                        bus_map[b_name].append(c)
-
-    for mtr in selected_consumer_units:
-        if isinstance(mtr, dict):
-            m_id = mtr.get("consumer_unit_id", mtr.get("consumer_id", mtr.get("boundary_unit_id")))
-            bus = mtr.get("bus")
-            branch_id = mtr.get("branch_id", "")
-        else:
-            m_id = getattr(mtr, "consumer_id", "consumer")
-            bus = getattr(mtr, "bus", None)
-            branch_id = getattr(mtr, "branch_id", "")
-
-        v_mags = np.array([])
-        v_angs = np.array([])
-        if bus:
-            dss.Circuit.SetActiveBus(bus)
-            v_vec = np.array(dss.Bus.VMagAngle())
-            if len(v_vec) >= 2:
-                v_mags = v_vec[0::2]
-                v_angs = v_vec[1::2]
-
-        p_kw = 0.0
-        q_kvar = 0.0
-
-        # Query matching consumer units by ID or connected bus
-        matched_units = []
-        if m_id in reg_map:
-            matched_units.append(reg_map[m_id])
-        elif m_id in latent_map:
-            matched_units.append(latent_map[m_id])
-        elif bus and bus in bus_map:
-            matched_units.extend(bus_map[bus])
-
-        for c_unit in matched_units:
-            for ld in c_unit.loads:
-                if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
-                    powers = dss.CktElement.Powers()
-                    if len(powers) >= 2:
-                        p_kw += sum(powers[0::2])
-                        q_kvar += sum(powers[1::2])
-
-        s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
-        energy_kwh = float(p_kw * duration_hours)
-
-        # Extract OpenDSS Feeder & Line Loss Parameters
-        if "feeder1" in str(bus) or "f1" in str(bus) or "trans1" in str(m_id):
-            feeder_num = "1"
-        elif "feeder2" in str(bus) or "f2" in str(bus) or "trans2" in str(m_id):
-            feeder_num = "2"
-        elif "feeder3" in str(bus) or "f3" in str(bus) or "trans3" in str(m_id):
-            feeder_num = "3"
-        else:
-            feeder_num = "1"
-
-        feeder_name = f"Line.feeder{feeder_num}"
-        tx_name = f"Transformer.trans{feeder_num}"
-
-        feeder_voltage = 0.0
-        feeder_current = 0.0
-        feeder_line_losses = 0.0
-
-        if dss.Circuit.SetActiveElement(feeder_name):
-            f_currs = dss.CktElement.CurrentsMagAng()
-            f_volts = dss.CktElement.VoltagesMagAng()
-            f_losses = dss.CktElement.Losses()
-            if len(f_volts) >= 2:
-                feeder_voltage = round(float(np.mean(f_volts[0::2])))
-            if len(f_currs) >= 2:
-                feeder_current = round(float(np.mean(f_currs[0::2])))
-            if len(f_losses) >= 1:
-                feeder_line_losses = round(float(abs(f_losses[0]) / 1000.0))
-
-        # Transformer losses queried directly from OpenDSS
-        transformer_losses = 0.0
-        if dss.Circuit.SetActiveElement(tx_name):
-            tx_losses = dss.CktElement.Losses()
-            if len(tx_losses) >= 1:
-                transformer_losses = round(float(abs(tx_losses[0]) / 1000.0))
-
-        # Consumer unit line losses queried directly from OpenDSS or ConsumerRegistry
-        line_losses = 0.0
-        if branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
-            c_losses = dss.CktElement.Losses()
-            if len(c_losses) >= 1:
-                line_losses = round(float(abs(c_losses[0]) / 1000.0), 4)
-
-        if line_losses == 0.0 and len(v_mags) > 0:
-            v_ln = float(np.mean(v_mags))
-            v_ll = v_ln * np.sqrt(3.0)
-            i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-
-            # Retrieve service line resistance directly from matched ConsumerUnit or OpenDSS line property
-            r_line = matched_units[0].service_line_resistance_ohm if matched_units else None
-            if r_line is None and branch_id and dss.Circuit.SetActiveElement(f"Line.{branch_id}"):
-                try:
-                    r_line = float(dss.Properties.Value("r1"))
-                except Exception:
-                    r_line = None
-
-            if r_line is None:
-                raise ValueError(f"Service line resistance R_line missing for boundary/consumer unit {m_id}")
-
-            p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
-            line_losses = round(float(p_loss_kw), 4)
-
-        meas_item = {
-            "consumer_unit_id": m_id,
-            "bus": bus,
-            "v_mags": v_mags,
-            "v_angs": v_angs,
-            "p_kw": round(p_kw, 4),
-            "q_kvar": round(q_kvar, 4),
-            "s_kva": round(s_kva, 4),
-            "energy_kwh": round(energy_kwh, 4),
-            "feeder_voltage": feeder_voltage,
-            "feeder_current": feeder_current,
-            "feeder_line_losses": feeder_line_losses,
-            "transformer_losses": transformer_losses,
-            "line_losses": line_losses
-        }
-        measurements[m_id] = meas_item
-
-    # Measure all registered and latent consumer units directly from OpenDSS loads
-    for c_unit in all_registered + all_latent:
-        if c_unit.consumer_id in measurements:
-            continue
-        p_kw = 0.0
-        q_kvar = 0.0
-        for ld in c_unit.loads:
-            if dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
-                powers = dss.CktElement.Powers()
-                if len(powers) >= 2:
-                    p_kw += sum(powers[0::2])
-                    q_kvar += sum(powers[1::2])
-
-        s_kva = float(np.sqrt(p_kw**2 + q_kvar**2))
-        energy_kwh = float(p_kw * duration_hours)
-
-        v_mags = np.array([])
-        if dss.Circuit.SetActiveBus(c_unit.bus_id):
-            v_vec = np.array(dss.Bus.VMagAngle())
-            if len(v_vec) >= 2:
-                v_mags = v_vec[0::2]
-
-        line_losses = 0.0
-        if len(v_mags) > 0:
-            v_ln = float(np.mean(v_mags))
-            v_ll = v_ln * np.sqrt(3.0)
-            i_line = (s_kva * 1000.0) / (np.sqrt(3.0) * v_ll) if v_ll > 0 else 0.0
-            r_line = c_unit.service_line_resistance_ohm
-            p_loss_kw = 3.0 * (i_line ** 2) * float(r_line) / 1000.0
-            line_losses = round(float(p_loss_kw), 4)
-
-        measurements[c_unit.consumer_id] = {
-            "consumer_unit_id": c_unit.consumer_id,
-            "bus": c_unit.bus_id,
-            "v_mags": v_mags,
-            "v_angs": np.zeros(len(v_mags)),
-            "p_kw": round(p_kw, 4),
-            "q_kvar": round(q_kvar, 4),
-            "s_kva": round(s_kva, 4),
-            "energy_kwh": round(energy_kwh, 4),
-            "line_losses": line_losses
-        }
-
-    return measurements
 
 
 def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
@@ -533,12 +342,10 @@ class CoSimulationRunner:
                     op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
                     self._op_cache[non_baseline_cache_key] = op
 
-        # 4. Measure steady state operational parameters via ConsumerRegistry interface
+        # 4. Select consumer units and measure transients via measure_transients using ATP
         candidate_units = plant.identify_candidate_consumer_units(topology)
         selected_units = plant.select_consumer_units(candidate_units, fraction=consumer_fraction, seed=seed)
-        measurements = calculate_dss_consumer_energy(registry, selected_units, duration_hours=300.0/3600.0)
 
-        # 5. Measure transients via measure_transients using ATP
         event = events[0] if events else None
         time_s, processed_units, consumer_transients, transformer_transients = self.measure_transients(
             op=op,
@@ -550,7 +357,7 @@ class CoSimulationRunner:
         return SimulationResult(
             time_s=time_s,
             selected_consumer_units=selected_units,
-            steady_state_measurements=measurements,
+            steady_state_measurements={},
             processed_consumer_units=processed_units,
             consumer_load_transients=consumer_transients,
             transformer_transients=transformer_transients
