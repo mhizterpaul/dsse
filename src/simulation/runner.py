@@ -72,6 +72,7 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
 
     fault_info = {
         "fault_id": fault_id,
+        "bus": target_line.replace("down_", "f").replace("_", "_node"),
         "target_line": target_line,
         "fault_type": str(ev_fault.fault_type),
         "fault_resistance_ohm": fault_r,
@@ -464,9 +465,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         active_fault_id = f"F_joint_ev1_{co_ev.event_1.fault_type}"
 
     if active_fault_id:
-        fault_info_json = extract_fault_info(runner.dss, active_fault_id, target_line, co_ev)
+        fault_info_dict = json.loads(extract_fault_info(runner.dss, active_fault_id, target_line, co_ev))
+        fault_info_dict["bus"] = target_bus
+        fault_info_json = json.dumps(fault_info_dict)
     else:
-        fault_info_json = json.dumps({})
+        fault_info_json = json.dumps({"bus": target_bus})
 
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
         op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint",
