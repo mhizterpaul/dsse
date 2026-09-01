@@ -88,24 +88,58 @@ class ATPCaseBuilder:
             "  SRCC                      1.E8                                               0",
         ])
 
-        # Equipment switching events (line faults are solved in OpenDSS, passing faulted source parameters)
+        # Explicit Feeder Line Parameters
+        r_line = float(realization.line_parameters.get("r1", 0.21))
+        x_line = float(realization.line_parameters.get("x1", 0.08))
+        l_line_mH = (x_line / (2 * 3.14159 * freq_hz)) * 1000.0
+
+        r_line_str = f"{r_line:.4f}".rjust(10)
+        l_line_str = f"{l_line_mH:.4f}".rjust(10)
+
+        for ph_char in ["A", "B", "C"]:
+            src_node = f"SRC{ph_char}"
+            tx_node = f"TX_{ph_char}"
+            branch_cards.append(f"  {src_node}  {tx_node}             {r_line_str}{l_line_str}                                               0")
+
+        # Explicit BCTRAN Transformer Model Parameters
+        tx_spec = getattr(realization, "transformer_spec", {})
+        r_tx_pct = float(tx_spec.get("r_pct", 0.60))
+        x_tx_pct = float(tx_spec.get("xhl_pct", 8.33))
+        kva = float(tx_spec.get("kvas", [1500.0])[0])
+        kv_lv = float(tx_spec.get("kvs", [11.0, 0.415])[1])
+
+        z_base = (kv_lv ** 2 * 1000.0) / kva
+        r_tx = (r_tx_pct / 100.0) * z_base
+        x_tx = (x_tx_pct / 100.0) * z_base
+        l_tx_mH = (x_tx / (2 * 3.14159 * freq_hz)) * 1000.0
+
+        r_tx_str = f"{r_tx:.4f}".rjust(10)
+        l_tx_str = f"{l_tx_mH:.4f}".rjust(10)
+
+        for ph_char in ["A", "B", "C"]:
+            tx_node = f"TX_{ph_char}"
+            sec_node = f"SEC{ph_char}"
+            branch_cards.append(f"  {tx_node}  {sec_node}             {r_tx_str}{l_tx_str}                                               0")
+
+        # Equipment switching and fault events
         for idx, ev in enumerate(events_to_process):
             if not hasattr(ev, "start_time_s"):
                 raise ValueError(f"Event object '{type(ev).__name__}' missing 'start_time_s' attribute")
             start_s = float(ev.start_time_s)
+            duration_s = float(getattr(ev, "duration_s", 0.5))
+            end_s = start_s + duration_s
+
             start_str = f"{start_s:.4f}".rjust(10)
+            end_str = f"{end_s:.4f}".rjust(10)
 
             if not hasattr(ev, "event_class"):
                 raise ValueError(f"Event object '{type(ev).__name__}' missing 'event_class' attribute")
             ev_class = str(ev.event_class)
 
             if ev_class == "equipment_switch":
-                if not hasattr(ev, "equipment_type"):
-                    raise ValueError(f"Equipment switch event missing 'equipment_type' attribute")
-                eq_type = str(ev.equipment_type)
+                eq_type = str(getattr(ev, "equipment_type"))
                 eq_model = get_equipment_model(eq_type)
 
-                # Search across specific resistance and inductance/reactance/capacitance parameter keys
                 r_stator = None
                 for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
                     if key in eq_model.atp_params:
@@ -118,26 +152,34 @@ class ATPCaseBuilder:
                         x_stator = eq_model.atp_params[key]
                         break
 
-                if r_stator is None:
-                    print(f"ERROR: Equipment model {eq_type} missing resistance in atp_params")
-                    raise ValueError(f"Equipment model {eq_type} missing required R atp_params")
-                if x_stator is None:
-                    print(f"ERROR: Equipment model {eq_type} missing inductance/reactance in atp_params")
-                    raise ValueError(f"Equipment model {eq_type} missing required L/X atp_params")
+                if r_stator is None or x_stator is None:
+                    raise ValueError(f"Equipment model {eq_type} missing R or X atp_params")
 
                 r_eq = float(r_stator)
                 x_eq = float(x_stator)
 
                 r_str = f"{r_eq:.4f}".rjust(10)
                 l_str = f"{x_eq * 1000.0 / (2*3.14159*freq_hz):.4f}".rjust(10)
-                c_str = f"0.8000".rjust(10)
 
                 node_prefix = f"E{idx}"
                 for ph_char in ["A", "B", "C"]:
-                    src_node = f"SRC{ph_char}"
+                    sec_node = f"SEC{ph_char}"
                     load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(f"  {load_node}                       {r_str}{l_str}{c_str}                                     0")
-                    switch_cards.append(f"  {src_node}  {load_node}       {start_str}      1.E3                                             0")
+                    branch_cards.append(f"  {load_node}                       {r_str}{l_str}                                               0")
+                    switch_cards.append(f"  {sec_node}  {load_node}       {start_str}{end_str}                                             0")
+
+            elif ev_class == "line_fault":
+                f_phases = getattr(ev, "faulted_phases", (0,))
+                f_res = float(getattr(ev, "fault_resistance", 0.001))
+                r_fault_str = f"{f_res:.4f}".rjust(10)
+
+                ph_chars = ["A", "B", "C"]
+                for p_idx in f_phases:
+                    ph_char = ph_chars[p_idx]
+                    sec_node = f"SEC{ph_char}"
+                    fault_node = f"FLT{idx}{ph_char}"
+                    branch_cards.append(f"  {fault_node}                       {r_fault_str}                                               0")
+                    switch_cards.append(f"  {sec_node}  {fault_node}       {start_str}{end_str}                                             0")
 
         if not switch_cards:
             start_str = f"0.0200".rjust(10)
