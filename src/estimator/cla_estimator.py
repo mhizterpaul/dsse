@@ -68,7 +68,7 @@ class ClusterLoadAllocationEstimator:
             return 0.0
         return float(np.mean(vals))
 
-    def weighting_function(self, premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]]) -> Dict[str, float]:
+    def weighting_function(self) -> Dict[str, float]:
         """
         Computes normalized weights w_i for unsampled consumer units such that sum(w_i) = 1.
         """

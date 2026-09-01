@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Union, Optional
 import numpy as np
+from power_plant import consumer_registry
 from src.estimator.cla_estimator import ConsumerLoadPremises, ConsumerLoadClassModel
 
 
@@ -30,16 +31,13 @@ class TimeAdjustedCLAEstimator:
 
     def averaging_function(
         self,
-        metered_premises: List[ConsumerLoadPremises],
         metered_consumer_energies: Dict[str, float]
     ) -> Dict[str, float]:
         """
         Computes the class-level average energy consumed for each load class among metered consumer units.
         Returns a dictionary mapping class_id -> average metered energy consumed.
         """
-        if not metered_premises or not metered_consumer_energies:
-            raise ValueError("metered_premises and metered_consumer_energies must be provided to compute class averages.")
-
+        metered_premises = consumer_registry.get_metered_consumer_premises()
         class_metered_energies: Dict[str, List[float]] = {}
         for mp in metered_premises:
             if mp.consumer_id not in metered_consumer_energies:
@@ -53,11 +51,7 @@ class TimeAdjustedCLAEstimator:
         return class_averages
 
     def weighting_function(
-        self,
-        premises_list: Union[ConsumerLoadPremises, List[ConsumerLoadPremises]],
-        observed_time_adjustment_factors: Dict[str, float],
-        metered_premises: Optional[List[ConsumerLoadPremises]] = None,
-        metered_consumer_energies: Optional[Dict[str, float]] = None
+        self 
     ) -> Dict[str, float]:
         """
         Computes normalized time-adjusted weights w_i for unsampled consumer units,
@@ -70,13 +64,10 @@ class TimeAdjustedCLAEstimator:
         if not premises_list:
             return {}
 
-        if observed_time_adjustment_factors is None:
-            raise ValueError("observed_time_adjustment_factors dictionary must be provided for Time-Adjusted CLA estimation.")
+
 
         class_metered_avg = self.averaging_function(
-            metered_premises=metered_premises,
-            metered_consumer_energies=metered_consumer_energies
-        )
+            metered_consumer_energies=metered_consumer_energies)
 
         raw_weights = {}
         for p in premises_list:
@@ -87,10 +78,7 @@ class TimeAdjustedCLAEstimator:
             avg_metered_e = class_metered_avg[p.class_id]
             class_energy_ratio = base_w / avg_metered_e
 
-            if p.consumer_id not in observed_time_adjustment_factors:
-                raise ValueError(f"Missing time adjustment factor alpha_i for consumer premises {p.consumer_id}")
-
-            alpha_i = float(observed_time_adjustment_factors[p.consumer_id])
+            alpha_i = float(avg_metered_e[p.consumer_id])
             adjusted_w = base_w * class_energy_ratio * alpha_i
             raw_weights[p.consumer_id] = float(adjusted_w)
 
