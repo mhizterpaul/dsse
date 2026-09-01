@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Union
 import numpy as np
+from power_plant import consumer_registry
 
 
 @dataclass
@@ -111,7 +112,6 @@ class ClusterLoadAllocationEstimator:
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
         technical_loss_kwh: float,
-        unsampled_premises: List[ConsumerLoadPremises]
     ) -> ClusterLoadAllocationEstimate:
         """
         Estimates unsampled customer energy allocations using baseline CLA.
@@ -126,18 +126,8 @@ class ClusterLoadAllocationEstimator:
 
         e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 
-        if not unsampled_premises:
-            return ClusterLoadAllocationEstimate(
-                feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-                sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-                technical_loss_kwh=technical_loss_kwh,
-                unsampled_energy_pool_kwh=e_u,
-                estimated_unsampled_energy_kwh=0.0,
-                allocated_unsampled_consumer_energy={},
-                weights={}
-            )
 
-        weights = self.weighting_function(unsampled_premises)
+        weights = self.weighting_function(consumer_registry.get_unsampled_premises)
 
         allocations = {}
         for cid, w_i in weights.items():
