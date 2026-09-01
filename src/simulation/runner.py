@@ -22,29 +22,6 @@ class SimulationResult:
     operating_point: Optional[Any] = None
 
 
-def extract_fault_info(co_ev: Any) -> str:
-    """
-    Extracts JSON representation of fault parameters from a co-event using SingleLineFaultEvent
-    or OpenDSS Fault element properties.
-    """
-    fault_info = {}
-     
-    if not fault_info:
-        try:
-            if dss.Circuit.SetActiveElement("Fault.dist_fault_1"):
-                r_val = float(dss.Properties.Value("r"))
-                phases_val = int(dss.Properties.Value("phases"))
-                bus_names = dss.CktElement.BusNames()
-                fault_info = {
-                    "fault_type": "LG" if phases_val == 1 else "LL",
-                    "fault_resistance_ohm": r_val,
-                    "faulted_phases": [0] if phases_val == 1 else [0, 1],
-                    "bus": bus_names[0] 
-                }
-        except Exception:
-            pass
-
-    return json.dumps(fault_info)
 
 
 class CoSimulationRunner:
@@ -140,14 +117,35 @@ class CoSimulationRunner:
                 TransientEvent, SimulationConfig
             )
 
-            kvas = tx_spec.get("kvas", [1500.0, 1500.0])
-            kvs = tx_spec.get("kvs", [11.0, 0.415])
-            r_pct = float(tx_spec.get("r_pct", 0.60))
-            xhl_pct = float(tx_spec.get("xhl_pct", 8.33))
+            target_tx_key = f"trans{feeder_idx}"
+            if "kvas" not in tx_spec or "kvs" not in tx_spec or "r_pct" not in tx_spec or "xhl_pct" not in tx_spec or "name" not in tx_spec:
+                err_msg = f"Missing required transformer specification key in tx_spec: {tx_spec}"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            if not hasattr(op, "phase_voltages_v") or target_tx_key not in op.phase_voltages_v:
+                err_msg = f"Missing phase_voltages_v for target transformer '{target_tx_key}' in operating point"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            if not hasattr(op, "phase_angles_deg") or target_tx_key not in op.phase_angles_deg:
+                err_msg = f"Missing phase_angles_deg for target transformer '{target_tx_key}' in operating point"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            if not hasattr(op, "frequency_hz"):
+                err_msg = f"Missing frequency_hz in operating point"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            kvas = tx_spec["kvas"]
+            kvs = tx_spec["kvs"]
+            r_pct = float(tx_spec["r_pct"])
+            xhl_pct = float(tx_spec["xhl_pct"])
 
             transformer = TransformerSpec(
-                name=str(tx_spec.get("name", f"trans{feeder_idx}")),
-                frequency_hz=float(getattr(op, "frequency_hz", 50.0)),
+                name=str(tx_spec["name"]),
+                frequency_hz=float(op.frequency_hz),
                 windings=[
                     TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y"),
                     TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y")
@@ -157,12 +155,12 @@ class CoSimulationRunner:
                 ]
             )
 
-            phase_v = op.phase_voltages_v.get(f"trans{feeder_idx}", (240.0, 240.0, 240.0)) if hasattr(op, "phase_voltages_v") else (240.0, 240.0, 240.0)
-            phase_ang = op.phase_angles_deg.get(f"trans{feeder_idx}", (0.0, -120.0, 120.0)) if hasattr(op, "phase_angles_deg") else (0.0, -120.0, 120.0)
+            phase_v = op.phase_voltages_v[target_tx_key]
+            phase_ang = op.phase_angles_deg[target_tx_key]
 
             source = SourceModel(
                 name="GRID",
-                frequency_hz=float(getattr(op, "frequency_hz", 50.0)),
+                frequency_hz=float(op.frequency_hz),
                 pre_event=ThreePhaseState(
                     voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
                     voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
@@ -183,13 +181,17 @@ class CoSimulationRunner:
             if hasattr(event, "event_1") and hasattr(event, "event_2"):
                 ev_class = "co_event"
                 ev_type = f"{event.event_1.event_type}_{event.event_2.event_type}"
-                start_s = float(getattr(event.event_1, "start_time_s", 0.02))
-                dur_s = float(getattr(event.event_1, "duration_s", 0.5))
+                if not hasattr(event.event_1, "start_time_s") or not hasattr(event.event_1, "duration_s"):
+                    raise ValueError(f"Event 1 missing start_time_s or duration_s attribute: {event.event_1}")
+                start_s = float(event.event_1.start_time_s)
+                dur_s = float(event.event_1.duration_s)
             else:
-                ev_class = str(getattr(event, "event_class", "equipment_switch"))
-                ev_type = str(getattr(event, "event_type", "switch"))
-                start_s = float(getattr(event, "start_time_s", 0.02))
-                dur_s = float(getattr(event, "duration_s", 0.5))
+                if not hasattr(event, "event_class") or not hasattr(event, "event_type") or not hasattr(event, "start_time_s") or not hasattr(event, "duration_s"):
+                    raise ValueError(f"Event missing required attributes (event_class, event_type, start_time_s, duration_s): {event}")
+                ev_class = str(event.event_class)
+                ev_type = str(event.event_type)
+                start_s = float(event.start_time_s)
+                dur_s = float(event.duration_s)
 
             f_type = getattr(event, "fault_type", None)
             f_phases = getattr(event, "faulted_phases", (0,))
@@ -319,16 +321,17 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     if use_baseline_feeder:
         feeder_idx = 1
     else:
-        feeder_idx = getattr(co_ev, "gt_feeder_id", (task_idx % 3) + 1)
-        if isinstance(feeder_idx, str) and feeder_idx.startswith("feeder_"):
-            feeder_idx = int(feeder_idx[7:])
+        if hasattr(co_ev, "gt_feeder_id"):
+            raw_fid = co_ev.gt_feeder_id
+            feeder_idx = int(raw_fid[7:]) if isinstance(raw_fid, str) and raw_fid.startswith("feeder_") else int(raw_fid)
+        else:
+            feeder_idx = (task_idx % 3) + 1
 
     rng = np.random.default_rng(seed + task_idx)
     bus_node_idx = int(rng.integers(1, 19))
     target_bus = f"f{feeder_idx}_node{bus_node_idx}"
     target_line = f"down_{feeder_idx}_{bus_node_idx}"
 
-    target_tx = f"trans{feeder_idx}"
     target_pcc = [{
         "consumer_unit_id": f"trans{feeder_idx}_lv_boundary_consumer_unit",
         "branch_type": "transformer_boundary",
@@ -337,8 +340,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     }]
 
     def add_event_to_opendss(ev, event_prefix: str):
-        if getattr(ev, "event_class", "") == "equipment_switch":
-            eq_type = getattr(ev, "equipment_type")
+        ev_cls = getattr(ev, "event_class", None)
+        if ev_cls == "equipment_switch":
+            eq_type = ev.equipment_type
             eq_model = get_equipment_model(eq_type)
             p_kw = eq_model.rated_power_kw
             pf = eq_model.power_factor
@@ -346,16 +350,20 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             runner.dss.run_command(
                 f"New Load.{ld_name} bus1={target_bus} phases=3 conn=Wye kV=0.415 kW={p_kw} PF={pf}"
             )
-        elif getattr(ev, "event_class", "") == "line_fault":
-            f_type = getattr(ev, "fault_type")
-            f_phases = getattr(ev, "faulted_phases", (0,))
-            r_val = getattr(ev, "fault_resistance", 0.001)
+        elif ev_cls == "line_fault":
+            f_type = ev.fault_type
+            f_phases = ev.faulted_phases
+            r_val = ev.fault_resistance
             num_phases = len(f_phases)
             ph_suffix = "." + ".".join(str(p + 1) for p in f_phases)
             fault_name = f"F_{event_prefix}_{f_type}"
             runner.dss.run_command(
                 f"New Fault.{fault_name} bus1={target_bus}{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
             )
+        else:
+            err_msg = f"Unknown event class '{ev_cls}' for event: {ev}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg)
 
     # --- STEP 1: Add both events to network, solve for feeder parameters, evaluate transformer response for joint co-event ---
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
@@ -410,7 +418,26 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_dict[tx_unit_id]
     i_joint = i_joint_dict[tx_unit_id]
 
-    fault_info_json = extract_fault_info(co_ev)
+    if hasattr(co_ev, "event_2") and hasattr(co_ev.event_2, "fault_type"):
+        ev2_fault = co_ev.event_2
+        f_phases = getattr(ev2_fault, "faulted_phases", [0])
+        fault_info_json = json.dumps({
+            "fault_type": str(ev2_fault.fault_type),
+            "fault_resistance_ohm": float(getattr(ev2_fault, "fault_resistance", 0.001)),
+            "faulted_phases": list(f_phases),
+            "bus": target_bus
+        })
+    elif hasattr(co_ev, "event_1") and hasattr(co_ev.event_1, "fault_type"):
+        ev1_fault = co_ev.event_1
+        f_phases = getattr(ev1_fault, "faulted_phases", [0])
+        fault_info_json = json.dumps({
+            "fault_type": str(ev1_fault.fault_type),
+            "fault_resistance_ohm": float(getattr(ev1_fault, "fault_resistance", 0.001)),
+            "faulted_phases": list(f_phases),
+            "bus": target_bus
+        })
+    else:
+        fault_info_json = json.dumps({})
 
     return {
         "co_ev": co_ev,

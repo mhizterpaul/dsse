@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.simulation.runner import CoSimulationRunner, extract_fault_info
+from src.simulation.runner import CoSimulationRunner
 from src.simulation.filter import remove_low_frequency_components
 from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
@@ -133,16 +133,21 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         target_bus = getattr(ev1, "target", "feeder1_head")
         load_source_json = json.dumps({"bus": target_bus, "line": target_bus})
 
+        eq1_type = getattr(ev1, "equipment_type", None)
+        flt1_type = getattr(ev1, "fault_type", None)
+        eq2_type = getattr(ev2, "equipment_type", None)
+        flt2_type = getattr(ev2, "fault_type", None)
+
         row = {
             "load_source": load_source_json,
             "fault_info": item["fault_info"],
-            "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ev1.event_type),
-            "gt_event_1_fault_type": getattr(ev1, "fault_type", None),
-            "gt_event_1_start_timestamp_s": getattr(ev1, "start_time_s", 0.02),
-            "gt_event_2_equipment_type": getattr(ev2, "equipment_type", None),
-            "gt_event_2_fault_type": getattr(ev2, "fault_type", None),
-            "gt_event_2_start_timestamp_s": getattr(ev2, "start_time_s", 0.02),
-            "gt_time_offset_s": getattr(co_ev, "time_offset_s", 0.0),
+            "gt_event_1_equipment_type": eq1_type,
+            "gt_event_1_fault_type": flt1_type,
+            "gt_event_1_start_timestamp_s": ev1.start_time_s,
+            "gt_event_2_equipment_type": eq2_type,
+            "gt_event_2_fault_type": flt2_type,
+            "gt_event_2_start_timestamp_s": ev2.start_time_s,
+            "gt_time_offset_s": co_ev.time_offset_s,
             "voltage_magnitude": round(voltage_magnitude, 6),
             "current_magnitude": round(current_magnitude, 6),
             "residual_voltage_magnitude": round(residual_v_mag, 6),
