@@ -350,7 +350,18 @@ class CoSimulationRunner:
 
         # 4. Select consumer units and measure transients via measure_transients using ATP
         candidate_units = plant.identify_candidate_consumer_units(topology)
-        selected_units = plant.select_consumer_units(candidate_units, fraction=consumer_fraction, seed=seed)
+
+        # Select transformer boundary consumer units and fraction of consumer units
+        transformer_units = [m for m in candidate_units if m.get("branch_type") == "transformer_boundary"]
+        consumer_units = [m for m in candidate_units if m.get("branch_type") != "transformer_boundary"]
+        n_consumer_units = max(1, int(np.ceil(consumer_fraction * len(consumer_units)))) if consumer_units else 0
+        rng = np.random.default_rng(seed)
+        if consumer_units:
+            selected_indices = rng.choice(len(consumer_units), size=n_consumer_units, replace=False)
+            selected_consumer_units = [consumer_units[i] for i in selected_indices]
+        else:
+            selected_consumer_units = []
+        selected_units = transformer_units + selected_consumer_units
 
         event = events[0] if events else None
         time_s, processed_units, consumer_transients, transformer_transients = self.measure_transients(
