@@ -113,12 +113,12 @@ def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
     if not events:
         return True
     for ev in events:
-        target = str(getattr(ev, "target"))
+        target = str(getattr(ev, "target", ""))
         if "trans1" in target or "feeder1" in target or "f1" in target:
             return True
         if hasattr(ev, "event_1"):
-            t1 = str(getattr(ev.event_1, "target"))
-            t2 = str(getattr(ev.event_2, "target"))
+            t1 = str(getattr(getattr(ev, "event_1", None), "target", ""))
+            t2 = str(getattr(getattr(ev, "event_2", None), "target", ""))
             if "trans1" in t1 or "feeder1" in t1 or "trans1" in t2 or "feeder1" in t2:
                 return True
     return False

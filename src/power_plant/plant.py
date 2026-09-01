@@ -137,10 +137,6 @@ def initialize_known_plant(dss, use_baseline_transformers: bool = False, topolog
         dss.run_command("clear")
         dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
 
-        # Set default base frequency in OpenDSS solution parameters
-        dss.run_command("set defaultbasefreq=50.0")
-        dss.Solution.Frequency(50.0)
-
         # Build Upstream Substation Transformer (33/11-kV, 7.5 MVA)
         build_hv_transformer(dss, verbose=verbose)
 
@@ -216,16 +212,49 @@ def build_single_lv_network_composition(
     top = generate_known_radial_topology(feeder_idx, seed=seed)
     single_topology = {"topologies": {feeder_idx: top}}
 
-    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=single_topology, seed=seed, verbose=verbose)
+    dss.run_command("clear")
+    dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
+
+    build_hv_transformer(dss, verbose=verbose)
 
     if generator_p_kw > 0:
         configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
 
+    dss.run_command(
+        "new linecode.mv_feeder_linecode nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=0.03819 c0=0.012 units=km normamps=400.0"
+    )
+
+    mv_feeder_lengths = {1: 4.5, 2: 6.2, 3: 8.5}
+    for f_id, length in mv_feeder_lengths.items():
+        dss.run_command(
+            f"new line.mv_feeder_{f_id} bus1=main_bus bus2=feeder{f_id}_head phases=3 "
+            f"linecode=mv_feeder_linecode length={length} units=km"
+        )
+
+    for f_id in [1, 2, 3]:
+        spec = get_distribution_transformer_spec(f_id, use_baseline=use_baseline_transformers)
+        dss.run_command(
+            f"new transformer.{spec['name']} "
+            f"phases={spec['phases']} windings={spec['windings']} "
+            f"buses=[{','.join(spec['buses'])}] "
+            f"conns=[{','.join(spec['conns'])}] "
+            f"kvs=[{','.join(map(str, spec['kvs']))}] "
+            f"kvas=[{','.join(map(str, spec['kvas']))}] "
+            f"%r={spec['r_pct']} "
+            f"xhl={spec['xhl_pct']} "
+            f"%noloadloss={spec.get('noloadloss_pct', 0.1)} "
+            f"%imag={spec.get('imag_pct', 0.8)}"
+        )
+
+    registry = ConsumerRegistry(seed=seed)
     if feeder_idx == 1:
+        register_lv1_consumers(topology=top, seed=seed, registry=registry)
         build_lv1_network(dss, topology=top, loads_dict=loads_dict, registry=registry, seed=seed)
     elif feeder_idx == 2:
+        register_lv2_consumers(topology=top, seed=seed, registry=registry)
         build_lv2_network(dss, topology=top, loads_dict=loads_dict, registry=registry, seed=seed)
     else:
+        register_lv3_consumers(topology=top, seed=seed, registry=registry)
         build_lv3_network(dss, topology=top, loads_dict=loads_dict, registry=registry, seed=seed)
 
     dss.run_command("solve")
@@ -262,10 +291,44 @@ def build_three_lv_networks_composition(
         }
     }
 
-    registry = initialize_known_plant(dss, use_baseline_transformers=use_baseline_transformers, topology=combined_topology, seed=seed, verbose=verbose)
+    dss.run_command("clear")
+    dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
+
+    build_hv_transformer(dss, verbose=verbose)
 
     if generator_p_kw > 0:
         configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
+
+    dss.run_command(
+        "new linecode.mv_feeder_linecode nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=0.03819 c0=0.012 units=km normamps=400.0"
+    )
+
+    mv_feeder_lengths = {1: 4.5, 2: 6.2, 3: 8.5}
+    for f_id, length in mv_feeder_lengths.items():
+        dss.run_command(
+            f"new line.mv_feeder_{f_id} bus1=main_bus bus2=feeder{f_id}_head phases=3 "
+            f"linecode=mv_feeder_linecode length={length} units=km"
+        )
+
+    for f_id in [1, 2, 3]:
+        spec = get_distribution_transformer_spec(f_id, use_baseline=use_baseline_transformers)
+        dss.run_command(
+            f"new transformer.{spec['name']} "
+            f"phases={spec['phases']} windings={spec['windings']} "
+            f"buses=[{','.join(spec['buses'])}] "
+            f"conns=[{','.join(spec['conns'])}] "
+            f"kvs=[{','.join(map(str, spec['kvs']))}] "
+            f"kvas=[{','.join(map(str, spec['kvas']))}] "
+            f"%r={spec['r_pct']} "
+            f"xhl={spec['xhl_pct']} "
+            f"%noloadloss={spec.get('noloadloss_pct', 0.1)} "
+            f"%imag={spec.get('imag_pct', 0.8)}"
+        )
+
+    registry = ConsumerRegistry(seed=seed)
+    register_lv1_consumers(topology=top1, seed=seed + 1, registry=registry)
+    register_lv2_consumers(topology=top2, seed=seed + 2, registry=registry)
+    register_lv3_consumers(topology=top3, seed=seed + 3, registry=registry)
 
     build_lv1_network(dss, topology=top1, loads_dict=loads_dict, registry=registry, seed=seed + 1)
     build_lv2_network(dss, topology=top2, loads_dict=loads_dict, registry=registry, seed=seed + 2)

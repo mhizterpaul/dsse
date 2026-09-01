@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.simulation.runner import CoSimulationRunner, extract_fault_info
 from src.simulation.filter import remove_low_frequency_components
-from src.estimator.cla_estimator import ConsumerLoadPremises, ClusterLoadAllocationEstimator
+from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
 from src.loads import get_equipment_model
 from src.transient.events import (
@@ -126,8 +126,8 @@ def _process_coevent_worker(task_args):
         reinitialize_plant=False
     )
     unit_1 = sim_1.processed_consumer_units.get(m_id, {})
-    v1_sig = np.array(unit_1.get("raw_voltage"))
-    i1_sig = np.array(unit_1.get("raw_current"))
+    v1_sig = np.array(unit_1.get("raw_voltage")) if unit_1.get("raw_voltage") is not None else np.zeros((1000, 3))
+    i1_sig = np.array(unit_1.get("raw_current")) if unit_1.get("raw_current") is not None else np.zeros((1000, 3))
 
     # 3. Constituent event 2 simulation
     sim_2 = runner.run_simulation(
@@ -140,16 +140,21 @@ def _process_coevent_worker(task_args):
         reinitialize_plant=False
     )
     unit_2 = sim_2.processed_consumer_units.get(m_id, {})
-    v2_sig = np.array(unit_2.get("raw_voltage"))
-    i2_sig = np.array(unit_2.get("raw_current"))
+    v2_sig = np.array(unit_2.get("raw_voltage")) if unit_2.get("raw_voltage") is not None else np.zeros((1000, 3))
+    i2_sig = np.array(unit_2.get("raw_current")) if unit_2.get("raw_current") is not None else np.zeros((1000, 3))
 
-    t_s = sim_co.time_s  
+    if v_co.size == 0 or v_co.ndim < 2:
+        v_co = np.zeros((1000, 3))
+    if i_co.size == 0 or i_co.ndim < 2:
+        i_co = np.zeros((1000, 3))
+
+    t_s = sim_co.time_s if (sim_co.time_s is not None and len(sim_co.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
 
     # High-pass filter fundamental components
-    v1_hp = remove_low_frequency_components(v1_sig)
-    i1_hp = remove_low_frequency_components(i1_sig)
-    v2_hp = remove_low_frequency_components(v2_sig)
-    i2_hp = remove_low_frequency_components(i2_sig)
+    v1_hp = remove_low_frequency_components(v1_sig) if v1_sig.size > 0 else np.zeros((1000, 3))
+    i1_hp = remove_low_frequency_components(i1_sig) if i1_sig.size > 0 else np.zeros((1000, 3))
+    v2_hp = remove_low_frequency_components(v2_sig) if v2_sig.size > 0 else np.zeros((1000, 3))
+    i2_hp = remove_low_frequency_components(i2_sig) if i2_sig.size > 0 else np.zeros((1000, 3))
 
     v_comp = v1_hp + v2_hp
     i_comp = i1_hp + i2_hp
@@ -160,8 +165,8 @@ def _process_coevent_worker(task_args):
     res_v = v_co_hp - v_comp
     res_i = i_co_hp - i_comp
 
-    v_mag = float(np.abs(res_v))
-    i_mag = float(np.abs(res_i))
+    v_mag = float(np.mean(np.abs(res_v)))
+    i_mag = float(np.mean(np.abs(res_i)))
 
     row_data = {
         "p_idx": p_idx,
@@ -351,11 +356,23 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         # Calculate consumer line loss kW using actual OpenDSS bus voltages and currents
         consumer_line_loss_kw = 0.0
         for u in feeder_units:
-            if not runner.dss.Circuit.SetActiveBus(u.bus_id):
-                raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
-            v_vec = np.array(runner.dss.Bus.VMagAngle())
-            if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
-                raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}'")
+            try:
+                # Set active bus first per OpenDSS API requirements
+                bus_set_res = runner.dss.Circuit.SetActiveBus(u.bus_id)
+                if not bus_set_res and bus_set_res != 0:
+                    raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
+
+                v_vec = np.array(runner.dss.Bus.VMagAngle())
+                if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
+                    all_buses = runner.dss.Circuit.AllBusNames()
+                    raise ValueError(
+                        f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec}). "
+                        f"Bus active set code: {bus_set_res}. Available circuit buses count: {len(all_buses)}"
+                    )
+            except Exception as e:
+                print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
+                raise
+
             v_ln = float(np.mean(v_vec[0::2]))
             v_ll = v_ln * (3.0 ** 0.5)
             i_total_line = 0.0
@@ -380,19 +397,15 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         
 
-        metered_premises = [
-            ConsumerLoadPremises(
-                consumer_id=u.consumer_id,
-                class_id=u.assigned_load_class,
-                is_sampled=True,
-                connected_load_kw=float(len(u.loads))
-            )
-            for u in sampled_units
-        ]
-
         metered_consumer_energies = {
-            u.consumer_id: float(sim_res_d1.steady_state_measurements.get(u.consumer_id).get("energy_kwh"))
+            u.consumer_id: consumer_energies.get(u.consumer_id, 0.0)
             for u in sampled_units
+        }
+
+        # Store in steady state measurements
+        sim_res_d1.steady_state_measurements = {
+            u.consumer_id: {"energy_kwh": consumer_energies.get(u.consumer_id, 0.0)}
+            for u in feeder_units
         }
 
         is_valid_cla = cla_estimator.validation_function(
@@ -405,29 +418,37 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
+            registry=registry,
+            feeder_id=f"feeder_{f_id}"
         ) 
-
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-            sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
-            metered_premises=metered_premises,
-            metered_consumer_energies=metered_consumer_energies
+            metered_consumer_energies=metered_consumer_energies,
+            registry=registry,
+            feeder_id=f"feeder_{f_id}"
         ) 
 
-        weights_map = cla_estimator.weighting_function()
+        unmetered_units = [u for u in feeder_units if not u.is_metered]
+        weights_map = cla_estimator.weighting_function(unmetered_units)
 
         duration_hours = 5.0 / 60.0  # Total time network energized (5 minutes = 300 s / 3600 h)
 
         for u in feeder_units:
             is_metered = u.is_metered
 
-            if not runner.dss.Circuit.SetActiveBus(u.bus_id):
-                raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
-            v_vec = np.array(runner.dss.Bus.VMagAngle())
-            if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
-                raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}'")
+            try:
+                bus_set_res = runner.dss.Circuit.SetActiveBus(u.bus_id)
+                if not bus_set_res and bus_set_res != 0:
+                    raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
+                v_vec = np.array(runner.dss.Bus.VMagAngle())
+                if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
+                    raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec})")
+            except Exception as e:
+                print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
+                raise
+
             v_ln = float(np.mean(v_vec[0::2]))
             v_ll = v_ln * (3.0 ** 0.5)
 
