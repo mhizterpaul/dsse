@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,16 +14,18 @@ from src.transient.events import SingleEquipmentSwitchEvent
 from src.simulation.filter import remove_low_frequency_components
 
 
-def simulate_and_plot_load_circuit_transients():
+def simulate_and_plot_equipment_group(group_id: int = 1):
     """
-    Simulates and plots 3-phase transient waveforms for 8 consumer load circuit types
-    evaluated from ATP under OpenDSS steady-state parameters.
-    Splits the 8 load circuits into 2 figures (4 load circuits each).
+    Simulates and plots 3-phase transient waveforms for a specific equipment group
+    (group_id=1 for Equipment Group 1, group_id=2 for Equipment Group 2) evaluated from ATP
+    under OpenDSS steady-state parameters. Creates and returns only a single matplotlib figure.
     """
-    equipment_types = [
-        "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
-        "compressor", "audio_amplifier", "ups", "industrial_fan"
-    ]
+    if group_id == 1:
+        equipment_types = ["ac_motor", "dc_motor_inverter", "microwave", "induction_plate"]
+    elif group_id == 2:
+        equipment_types = ["compressor", "audio_amplifier", "ups", "industrial_fan"]
+    else:
+        raise ValueError(f"Invalid equipment group_id: {group_id}. Expected 1 or 2.")
 
     titles = {
         "ac_motor": "AC Motor Switch Transient",
@@ -47,7 +50,7 @@ def simulate_and_plot_load_circuit_transients():
             use_baseline_transformers=True,
             include_load_event=True,
             include_fault_event=False,
-            scenario_id=f"vis_{eq}",
+            scenario_id=f"vis_g{group_id}_{eq}",
             seed=42,
             reinitialize_plant=False
         )
@@ -57,19 +60,19 @@ def simulate_and_plot_load_circuit_transients():
 
         t = sim_res.time_s if (sim_res.time_s is not None and len(sim_res.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
 
-        if cu is not None:
-            v_high = remove_low_frequency_components(cu["raw_voltage"])
-            i_high = remove_low_frequency_components(cu["raw_current"])
-        else:
-            v_high = np.zeros((len(t), 3))
-            i_high = np.zeros((len(t), 3))
+        if cu is None or "raw_voltage" not in cu or "raw_current" not in cu:
+            err_msg = f"ERROR: Missing transient waveform data for consumer unit '{m_id}' in scenario 'vis_g{group_id}_{eq}'."
+            print(f"{err_msg}\n{traceback.format_exc()}")
+            raise RuntimeError(err_msg)
+
+        v_high = remove_low_frequency_components(cu["raw_voltage"])
+        i_high = remove_low_frequency_components(cu["raw_current"])
 
         waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
 
-    # Group 1: First 4 equipment types
-    fig1, axes1 = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
-    for idx, eq in enumerate(equipment_types[:4]):
-        ax = axes1[idx]
+    fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+    for idx, eq in enumerate(equipment_types):
+        ax = axes[idx]
         data = waveforms[eq]
         ax.plot(data["time"] * 1000.0, data["current"][:, 0], 'r-', label='Phase A Current')
         ax.plot(data["time"] * 1000.0, data["current"][:, 1], 'g-', label='Phase B Current')
@@ -79,25 +82,18 @@ def simulate_and_plot_load_circuit_transients():
         ax.grid(True, linestyle='--', alpha=0.6)
         if idx == 0:
             ax.legend(loc="upper right")
-    axes1[-1].set_xlabel("Time (ms)")
-    fig1.tight_layout()
+    axes[-1].set_xlabel("Time (ms)")
+    fig.tight_layout()
 
-    # Group 2: Next 4 equipment types
-    fig2, axes2 = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
-    for idx, eq in enumerate(equipment_types[4:]):
-        ax = axes2[idx]
-        data = waveforms[eq]
-        ax.plot(data["time"] * 1000.0, data["current"][:, 0], 'r-', label='Phase A Current')
-        ax.plot(data["time"] * 1000.0, data["current"][:, 1], 'g-', label='Phase B Current')
-        ax.plot(data["time"] * 1000.0, data["current"][:, 2], 'b-', label='Phase C Current')
-        ax.set_title(titles[eq], fontsize=11, fontweight='bold')
-        ax.set_ylabel("Current (A)")
-        ax.grid(True, linestyle='--', alpha=0.6)
-        if idx == 0:
-            ax.legend(loc="upper right")
-    axes2[-1].set_xlabel("Time (ms)")
-    fig2.tight_layout()
+    return fig
 
+
+def simulate_and_plot_load_circuit_transients():
+    """
+    Convenience wrapper returning figures for both equipment groups.
+    """
+    fig1 = simulate_and_plot_equipment_group(1)
+    fig2 = simulate_and_plot_equipment_group(2)
     return fig1, fig2
 
 
