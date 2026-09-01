@@ -126,7 +126,7 @@ def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
             if "trans1" in t1 or "feeder1" in t1 or "trans1" in t2 or "feeder1" in t2:
                 return True
         else:
-            print(f"WARNING: Event object '{type(ev).__name__}' missing 'target' and 'event_1' attributes.\n{traceback.format_exc()}")
+            print(f"WARNING: Event object '{type(ev).__name__}' missing 'target' and 'event_1' attributes.\n{''.join(traceback.format_stack())}")
     return False
 
 

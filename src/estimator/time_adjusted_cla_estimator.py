@@ -92,21 +92,6 @@ class TimeAdjustedCLAEstimator:
         normalized_weights = {cid: float(val / sum_raw) for cid, val in raw_weights.items()}
         return normalized_weights
 
-    def validation_function(
-        self,
-        feeder_supply_energy_kwh: float,
-        sampled_consumer_energy_kwh: float,
-        technical_loss_kwh: float
-    ) -> bool:
-        """
-        Validates energy balance conservation equation E_F >= E_M + E_L for time-adjusted allocation.
-        """
-        if feeder_supply_energy_kwh <= 0:
-            return False
-        if sampled_consumer_energy_kwh < 0 or technical_loss_kwh < 0:
-            return False
-        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + technical_loss_kwh))
-
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
@@ -120,12 +105,6 @@ class TimeAdjustedCLAEstimator:
             feeder_supply_energy_kwh - technical_loss_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
         """
         sampled_consumer_energy_kwh = float(sum(metered_consumer_energies.values())) if metered_consumer_energies else 0.0
-
-        self.validation_function(
-            feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-            sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-            technical_loss_kwh=technical_loss_kwh
-        )
 
         e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 

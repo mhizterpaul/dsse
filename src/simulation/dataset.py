@@ -405,12 +405,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             for u in feeder_units
         }
 
-        is_valid_cla = cla_estimator.validation_function(
-            feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-            sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
-            technical_loss_kwh=gt_tech_loss_kwh
-        )
-
         cla_res = cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
