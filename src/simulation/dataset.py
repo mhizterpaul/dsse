@@ -480,26 +480,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         df_3.to_csv(dir_path / "dataset_3.csv", index=False)
         df_4.to_csv(dir_path / "dataset_4.csv", index=False)
 
-        dumps_dir = dir_path / "time_series_dumps"
-        dumps_dir.mkdir(parents=True, exist_ok=True)
-        for ds_name, df_ds in [("dataset_2", df_2), ("dataset_3", df_3), ("dataset_4", df_4)]:
-            dumps = []
-            for idx, row in df_ds.iterrows():
-                entry = {}
-                for col in df_ds.columns:
-                    if col.startswith("obs_"):
-                        val = row[col]
-                        if isinstance(val, str):
-                            try:
-                                entry[col] = json.loads(val)
-                            except Exception:
-                                entry[col] = val
-                        else:
-                            entry[col] = val
-                dumps.append(entry)
-            with open(dumps_dir / f"{ds_name}_time_series_dumps.json", "w") as f:
-                json.dump(dumps, f, indent=1)
-
         print(f"INFO: Successfully written datasets to {dir_path / 'dataset_1.csv'}, {dir_path / 'dataset_2.csv'}, {dir_path / 'dataset_3.csv'}, and {dir_path / 'dataset_4.csv'}")
 
     return df_1, df_2, df_3, df_4
