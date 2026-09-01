@@ -258,7 +258,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         "target_line": target_line
     }]
 
-    def inject_single_event(ev, event_prefix: str):
+    def add_event_to_opendss(ev, event_prefix: str):
         if getattr(ev, "event_class", "") == "equipment_switch":
             eq_type = getattr(ev, "equipment_type")
             eq_model = get_equipment_model(eq_type)
@@ -279,56 +279,26 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
                 f"New Fault.{fault_name} bus1={target_bus}{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
             )
 
-    def get_event_key(ev, prefix: str):
-        if getattr(ev, "event_class", "") == "equipment_switch":
-            return f"f{feeder_idx}_b{use_baseline_feeder}_eq_{prefix}_{getattr(ev, 'equipment_type')}"
-        elif getattr(ev, "event_class", "") == "line_fault":
-            f_phases = getattr(ev, "faulted_phases", (0,))
-            return f"f{feeder_idx}_b{use_baseline_feeder}_flt_{prefix}_{getattr(ev, 'fault_type')}_{'-'.join(map(str, f_phases))}_{getattr(ev, 'fault_resistance', 0.001)}"
-        return f"f{feeder_idx}_b{use_baseline_feeder}_ev_{prefix}"
-
-    key1 = get_event_key(ev1, "ev1")
-    key2 = get_event_key(ev2, "ev2")
-    key_joint = f"{key1}_{key2}"
-
-    # --- STEP 1: Joint Co-Event Simulation ---
-    # First add both events to the network, solve for feeder/operating parameters under the two events,
-    # and evaluate transformer response for the event duration.
-    if key_joint in runner._op_cache:
-        op_joint = runner._op_cache[key_joint]
-    else:
-        runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-        runner.dss.run_command("disable Fault.*")
-        inject_single_event(ev1, "joint_ev1")
-        inject_single_event(ev2, "joint_ev2")
-        op_joint = plant.solve_operating_point(runner.dss)
-        runner._op_cache[key_joint] = op_joint
+    # --- STEP 1: Add both events to network, solve for feeder parameters, evaluate transformer response for joint co-event ---
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    add_event_to_opendss(ev1, "joint_ev1")
+    add_event_to_opendss(ev2, "joint_ev2")
+    op_joint = plant.solve_operating_point(runner.dss)
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint")
 
-    # --- STEP 2: Single Event 1 Simulation ---
-    # Add Event 1 to the network, solve for feeder/operating parameters under Event 1,
-    # and evaluate transformer response for the event duration.
-    if key1 in runner._op_cache:
-        op_1 = runner._op_cache[key1]
-    else:
-        runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-        runner.dss.run_command("disable Fault.*")
-        inject_single_event(ev1, "ev1")
-        op_1 = plant.solve_operating_point(runner.dss)
-        runner._op_cache[key1] = op_1
+    # --- STEP 2: Add Event 1 to network, solve for feeder parameters, evaluate transformer response for Event 1 ---
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    add_event_to_opendss(ev1, "ev1")
+    op_1 = plant.solve_operating_point(runner.dss)
     t1, v1_dict, i1_dict, _ = runner.measure_transients(op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1")
 
-    # --- STEP 3: Single Event 2 Simulation ---
-    # Add Event 2 to the network, solve for feeder/operating parameters under Event 2,
-    # and evaluate transformer response for the event duration.
-    if key2 in runner._op_cache:
-        op_2 = runner._op_cache[key2]
-    else:
-        runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-        runner.dss.run_command("disable Fault.*")
-        inject_single_event(ev2, "ev2")
-        op_2 = plant.solve_operating_point(runner.dss)
-        runner._op_cache[key2] = op_2
+    # --- STEP 3: Add Event 2 to network, solve for feeder parameters, evaluate transformer response for Event 2 ---
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    add_event_to_opendss(ev2, "ev2")
+    op_2 = plant.solve_operating_point(runner.dss)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2")
 
     tx_unit_id = f"trans{feeder_idx}_lv_boundary_consumer_unit"
