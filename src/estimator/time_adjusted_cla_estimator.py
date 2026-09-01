@@ -48,9 +48,11 @@ class TimeAdjustedCLAEstimator:
             if class_id is None:
                 raise ValueError(f"Metered consumer unit '{cid}' missing assigned_load_class attribute")
 
-            if cid in metered_consumer_energies:
-                e_val = float(metered_consumer_energies[cid])
-                class_metered_energies.setdefault(class_id, []).append(e_val)
+            if cid not in metered_consumer_energies:
+                raise ValueError(f"Missing metered energy observation for consumer unit '{cid}'")
+
+            e_val = float(metered_consumer_energies[cid])
+            class_metered_energies.setdefault(class_id, []).append(e_val)
 
         class_averages = {
             c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
@@ -89,13 +91,8 @@ class TimeAdjustedCLAEstimator:
 
             base_w = ConsumerLoadClassModel.compute_expected_weight(u)
 
-            if class_id in class_metered_avg and class_metered_avg[class_id] > 0:
-                avg_metered_e = class_metered_avg[class_id]
-                adjusted_w = base_w * (1.0 - (avg_metered_e / base_w))
-            else:
-                overall_avg = float(np.mean(list(metered_consumer_energies.values()))) if metered_consumer_energies else 1.0
-                adjusted_w = base_w * (1.0 - (overall_avg / base_w))
-
+            avg_metered_e = class_metered_avg.get(class_id, 0.0)
+            adjusted_w = base_w * (1.0 - (avg_metered_e / base_w))
             raw_weights[cid] = float(adjusted_w)
 
         sum_adj = sum(raw_weights.values())
@@ -127,7 +124,8 @@ class TimeAdjustedCLAEstimator:
             if hasattr(registry, "get_unmetered_consumers"):
                 unmetered_units = registry.get_unmetered_consumers()
             if hasattr(registry, "get_metered_consumers"):
-                metered_units = registry.get_metered_consumers()
+                all_metered = registry.get_metered_consumers()
+                metered_units = [u for u in all_metered if getattr(u, "consumer_id", None) in metered_consumer_energies]
 
         if not unmetered_units:
             return TimeAdjustedCLAEstimate(

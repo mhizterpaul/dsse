@@ -125,9 +125,12 @@ def _process_coevent_worker(task_args):
         seed=42 + p_idx,
         reinitialize_plant=False
     )
-    unit_1 = sim_1.processed_consumer_units.get(m_id, {})
-    v1_sig = np.array(unit_1.get("raw_voltage")) if unit_1.get("raw_voltage") is not None else np.zeros((1000, 3))
-    i1_sig = np.array(unit_1.get("raw_current")) if unit_1.get("raw_current") is not None else np.zeros((1000, 3))
+    unit_1 = sim_1.processed_consumer_units.get(m_id)
+    if not unit_1 or unit_1.get("raw_voltage") is None or unit_1.get("raw_current") is None:
+        raise ValueError(f"Missing transient simulation signals for unit '{m_id}' in event 1 (scenario ev1_{p_idx}_{f_id})")
+
+    v1_sig = np.array(unit_1["raw_voltage"])
+    i1_sig = np.array(unit_1["raw_current"])
 
     # 3. Constituent event 2 simulation
     sim_2 = runner.run_simulation(
@@ -139,22 +142,28 @@ def _process_coevent_worker(task_args):
         seed=42 + p_idx,
         reinitialize_plant=False
     )
-    unit_2 = sim_2.processed_consumer_units.get(m_id, {})
-    v2_sig = np.array(unit_2.get("raw_voltage")) if unit_2.get("raw_voltage") is not None else np.zeros((1000, 3))
-    i2_sig = np.array(unit_2.get("raw_current")) if unit_2.get("raw_current") is not None else np.zeros((1000, 3))
+    unit_2 = sim_2.processed_consumer_units.get(m_id)
+    if not unit_2 or unit_2.get("raw_voltage") is None or unit_2.get("raw_current") is None:
+        raise ValueError(f"Missing transient simulation signals for unit '{m_id}' in event 2 (scenario ev2_{p_idx}_{f_id})")
 
-    if v_co.size == 0 or v_co.ndim < 2:
-        v_co = np.zeros((1000, 3))
-    if i_co.size == 0 or i_co.ndim < 2:
-        i_co = np.zeros((1000, 3))
+    v2_sig = np.array(unit_2["raw_voltage"])
+    i2_sig = np.array(unit_2["raw_current"])
 
-    t_s = sim_co.time_s if (sim_co.time_s is not None and len(sim_co.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
+    if v_co is None or v_co.size == 0 or v_co.ndim < 2:
+        raise ValueError(f"Missing or invalid co-event voltage signal for unit '{m_id}'")
+    if i_co is None or i_co.size == 0 or i_co.ndim < 2:
+        raise ValueError(f"Missing or invalid co-event current signal for unit '{m_id}'")
+
+    if sim_co.time_s is None or len(sim_co.time_s) == 0:
+        raise ValueError(f"Missing co-event time vector time_s for scenario coev_{p_idx}_{f_id}")
+
+    t_s = sim_co.time_s
 
     # High-pass filter fundamental components
-    v1_hp = remove_low_frequency_components(v1_sig) if v1_sig.size > 0 else np.zeros((1000, 3))
-    i1_hp = remove_low_frequency_components(i1_sig) if i1_sig.size > 0 else np.zeros((1000, 3))
-    v2_hp = remove_low_frequency_components(v2_sig) if v2_sig.size > 0 else np.zeros((1000, 3))
-    i2_hp = remove_low_frequency_components(i2_sig) if i2_sig.size > 0 else np.zeros((1000, 3))
+    v1_hp = remove_low_frequency_components(v1_sig)
+    i1_hp = remove_low_frequency_components(i1_sig)
+    v2_hp = remove_low_frequency_components(v2_sig)
+    i2_hp = remove_low_frequency_components(i2_sig)
 
     v_comp = v1_hp + v2_hp
     i_comp = i1_hp + i2_hp
@@ -395,13 +404,13 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         
 
         metered_consumer_energies = {
-            u.consumer_id: consumer_energies.get(u.consumer_id, 0.0)
+            u.consumer_id: consumer_energies[u.consumer_id]
             for u in sampled_units
         }
 
         # Store in steady state measurements
         sim_res_d1.steady_state_measurements = {
-            u.consumer_id: {"energy_kwh": consumer_energies.get(u.consumer_id, 0.0)}
+            u.consumer_id: {"energy_kwh": consumer_energies[u.consumer_id]}
             for u in feeder_units
         }
 
