@@ -95,7 +95,7 @@ class TimeAdjustedCLAEstimator:
                 avg_metered_e = class_metered_avg[class_id]
                 adjusted_w = base_w * ((avg_metered_e / base_w) - 1.0)
             else:
-                adjusted_w = base_w
+                raise ValueError(f"missing metered energy observation for class '{class_id}'")
 
             raw_weights[cid] = float(adjusted_w)
 
