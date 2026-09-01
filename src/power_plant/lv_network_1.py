@@ -71,6 +71,7 @@ def register_lv1_consumers(topology: dict = None, seed: int = 1001, registry: Co
     """
     Registers consumer units and their load circuits directly to LV Network 1,
     designating a sampling fraction (default 36%) of registered units as metered.
+    Ensures representation across all load classes among metered consumers.
     """
     if topology is None:
         topology = generate_lv1_topology(seed=seed)
@@ -86,9 +87,18 @@ def register_lv1_consumers(topology: dict = None, seed: int = 1001, registry: Co
     # Build bus-to-line mapping from topology to calculate exact service line impedance
     bus_line_map = {ln["bus2"]: ln for ln in topology.get("lines", [])}
 
+    load_classes = ["residential", "commercial", "industrial", "agricultural"]
+
     for idx, bus in enumerate(consumer_buses):
         cid = f"consumer_{feeder_id}_{bus}"
         is_metered = (idx < num_metered)
+
+        # Force metered consumers to cover all 4 load classes
+        if is_metered:
+            assigned_class = load_classes[idx % len(load_classes)]
+        else:
+            assigned_class = None
+
         ln_info = bus_line_map.get(bus, {})
         length = float(ln_info.get("length", 0.05))
         r1 = float(ln_info.get("r1", 0.21))
@@ -101,10 +111,11 @@ def register_lv1_consumers(topology: dict = None, seed: int = 1001, registry: Co
             consumer_id=cid,
             bus_id=bus,
             feeder_id=feeder_id,
-            is_metered=is_metered,
-            extra_load_probability=0.45,
             service_line_resistance_ohm=r_drop,
-            service_line_reactance_ohm=x_drop
+            service_line_reactance_ohm=x_drop,
+            assigned_load_class=assigned_class,
+            is_metered=is_metered,
+            extra_load_probability=0.45
         )
         if rng.random() < 0.20:
             latent_cid = f"latent_{feeder_id}_{bus}"

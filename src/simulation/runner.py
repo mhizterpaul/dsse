@@ -4,8 +4,18 @@ import traceback
 import json
 import os
 from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 
 import src.power_plant.plant as plant
+
+
+@dataclass
+class SimulationResult:
+    scenario_id: str
+    steady_state_measurements: Dict[str, Any] = field(default_factory=dict)
+    processed_consumer_units: Dict[str, Any] = field(default_factory=dict)
+    time_s: Optional[np.ndarray] = None
+    operating_point: Optional[Any] = None
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
@@ -54,7 +64,7 @@ class CoSimulationRunner:
 
     def initialize_plant_session(
         self,
-        use_use_baseline_feeder: bool = True,
+        use_baseline_feeder: bool = True,
         seed: int = 42,
         verbose: bool = False
     ) -> dict:
@@ -62,7 +72,7 @@ class CoSimulationRunner:
         Initializes a single constant OpenDSS DSS instance for a dataset generation loop.
         """
         try:
-            if use_use_baseline_feeder:
+            if use_baseline_feeder:
                 self.plant_data = plant.build_single_lv_network_composition(
                     dss=self.dss,
                     seed=seed,
@@ -71,7 +81,7 @@ class CoSimulationRunner:
             else:
                 self.plant_data = plant.build_three_lv_networks_composition(
                     dss=self.dss,
-                    use_use_baseline_feeder=use_use_baseline_feeder,
+                    use_baseline_transformers=use_baseline_feeder,
                     seed=seed,
                     verbose=verbose
                 )
@@ -112,30 +122,37 @@ class CoSimulationRunner:
        
 
         try:
-            self.atp_builder.build(NetworkContainer(scenario_id), op, event, atp_case_path)
+            class DummyRealization:
+                def __init__(self, sid):
+                    self.scenario_id = sid
+                    self.line_parameters = {"mult": 1.0}
+
+            self.atp_builder.build(DummyRealization(scenario_id), op, event, atp_case_path)
             atp_result = ATPRunner().run(atp_case_path)
             emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
 
-            return emt_waveforms.times
+            return emt_waveforms.time_s, emt_waveforms.pcc_voltages, emt_waveforms.pcc_currents, emt_waveforms.event_metadata
         except Exception as e:
             print(f"WARNING: Transient evaluation warning for scenario {scenario_id}: {e}\n{traceback.format_exc()}")
+            t_vec = np.linspace(0.0, 0.1, 1000)
+            return t_vec, {}, {}, {}
             
 
     def run_steady_state_simulation(
         self,
-        use_use_baseline_feeder: bool = False,
+        use_baseline_feeder: bool = False,
         scenario_id: str = "steady_5min_run",
         seed: int = 42,
         reinitialize_plant: bool = True,
         verbose: bool = False
-    ):
+    ) -> SimulationResult:
         """
         Executes a pure OpenDSS steady-state power flow simulation for Dataset 1 (5-minute daily energization run)
         without invoking ATP transient simulation or measuring transient waveforms.
         """
         if reinitialize_plant or self.plant_data is None:
             plant_data = self.initialize_plant_session(
-                use_use_baseline_feeder=use_use_baseline_feeder,
+                use_baseline_feeder=use_baseline_feeder,
                 seed=seed,
                 verbose=verbose
             )
@@ -148,26 +165,154 @@ class CoSimulationRunner:
         self.dss.run_command("set mode=daily")
         self.dss.run_command("solve")
 
+        op = plant.solve_operating_point(self.dss, p_kw=1500.0, q_kvar=0.0)
+
+        return SimulationResult(
+            scenario_id=scenario_id,
+            operating_point=op
+        )
+
        
 
     def run_transient_simulation(
         self,
         events: List[Any],
-        use_use_baseline_feeder: bool = True,
-   
+        use_baseline_feeder: bool = True,
         seed: int = 42,
         reinitialize_plant: bool = True,
         verbose: bool = False
-    ):
+    ) -> List[Dict[str, Any]]:
         """
-        Executes an ATP transient simulation evaluated directly for a specific co-event (2 equipment events
-        or an equipment and fault event pair) passed in `events`.
+        Executes ATP transient simulations evaluated directly for a list of co-events
+        (equipment-equipment or equipment-fault event pairs) passed in `events`.
+        Uses ProcessPoolExecutor with max_workers=6 to process pairs in parallel.
+        For each pair, evaluates individual single event transients and joint co-event transients
+        for the transformer where the pair is connected.
         """
-        
+        from concurrent.futures import ProcessPoolExecutor
 
-        
+        tasks = [
+            (ev, use_baseline_feeder, seed + idx, idx)
+            for idx, ev in enumerate(events)
+        ]
 
-        # 3. Measure transients via measure_transients using ATP
+        with ProcessPoolExecutor(max_workers=6) as executor:
+            results = list(executor.map(_simulate_single_coevent_worker, tasks))
+
+        return results
+
+
+def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
+    """
+    Worker function executed in parallel across 6 process workers.
+    Initializes a thread/process-local OpenDSS instance and CoSimulationRunner,
+    adds dynamic loads and faults to OpenDSS, solves operating point for the connected transformer,
+    and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event.
+    """
+    co_ev, use_baseline_feeder, seed, task_idx = args_tuple
+
+    from opendssdirect import dss as worker_dss
+    import src.power_plant.plant as plant
+    from src.loads import get_equipment_model
+
+    # Instantiate runner for worker process
+    runner = CoSimulationRunner()
+    runner.dss = worker_dss
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+
+    ev1 = co_ev.event_1
+    ev2 = co_ev.event_2
+
+    # Target transformer interface (e.g., trans1_lv_boundary_consumer_unit)
+    target_bus = getattr(ev1, "target", "feeder1_head")
+    feeder_idx = getattr(co_ev, "gt_feeder_id", 1) if hasattr(co_ev, "gt_feeder_id") else 1
+    target_tx = f"trans{feeder_idx}"
+    target_pcc = [{
+        "consumer_unit_id": f"trans{feeder_idx}_lv_boundary_consumer_unit",
+        "branch_type": "transformer_boundary"
+    }]
+
+    def apply_event_to_opendss(ev, event_prefix: str):
+        if getattr(ev, "event_class", "") == "equipment_switch":
+            eq_type = getattr(ev, "equipment_type")
+            eq_model = get_equipment_model(eq_type)
+            p_kw = eq_model.rated_power_kw
+            pf = eq_model.power_factor
+            ld_name = f"MyNewLoad_{event_prefix}_{eq_type}"
+            worker_dss.run_command(
+                f"New Load.{ld_name} bus1=f{feeder_idx}_node3 phases=3 conn=Wye kV=0.415 kW={p_kw} PF={pf}"
+            )
+        elif getattr(ev, "event_class", "") == "line_fault":
+            f_type = getattr(ev, "fault_type")
+            f_phases = getattr(ev, "faulted_phases", (0,))
+            r_val = getattr(ev, "fault_resistance", 0.001)
+            num_phases = len(f_phases)
+            ph_suffix = "." + ".".join(str(p + 1) for p in f_phases)
+            fault_name = f"F_{event_prefix}_{f_type}"
+            worker_dss.run_command(
+                f"New Fault.{fault_name} bus1=f{feeder_idx}_node3{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
+            )
+
+    # 1. Single Event 1: OpenDSS state -> solve OP -> ATP transient
+    worker_dss.run_command("disable Fault.*")
+    apply_event_to_opendss(ev1, "ev1")
+    worker_dss.run_command("solve")
+    op_1 = plant.solve_operating_point(worker_dss, p_kw=1500.0, q_kvar=0.0)
+    t1, v1_dict, i1_dict, _ = runner.measure_transients(op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1")
+
+    # Re-initialize OpenDSS for Single Event 2
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    worker_dss.run_command("disable Fault.*")
+    apply_event_to_opendss(ev2, "ev2")
+    worker_dss.run_command("solve")
+    op_2 = plant.solve_operating_point(worker_dss, p_kw=1500.0, q_kvar=0.0)
+    t2, v2_dict, i2_dict, _ = runner.measure_transients(op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2")
+
+    # Re-initialize OpenDSS for Joint Co-Event
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    worker_dss.run_command("disable Fault.*")
+    apply_event_to_opendss(ev1, "joint_ev1")
+    apply_event_to_opendss(ev2, "joint_ev2")
+    worker_dss.run_command("solve")
+    op_joint = plant.solve_operating_point(worker_dss, p_kw=1500.0, q_kvar=0.0)
+    t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint")
+
+    tx_unit_id = f"trans{feeder_idx}_lv_boundary_consumer_unit"
+
+    for d_name, d_val in [
+        ("v1_dict", v1_dict),
+        ("i1_dict", i1_dict),
+        ("v2_dict", v2_dict),
+        ("i2_dict", i2_dict),
+        ("v_joint_dict", v_joint_dict),
+        ("i_joint_dict", i_joint_dict),
+    ]:
+        if tx_unit_id not in d_val:
+            err_msg = f"Missing waveform key '{tx_unit_id}' in {d_name} for co-event scenario index {task_idx}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg)
+
+    v1 = v1_dict[tx_unit_id]
+    i1 = i1_dict[tx_unit_id]
+    v2 = v2_dict[tx_unit_id]
+    i2 = i2_dict[tx_unit_id]
+    v_joint = v_joint_dict[tx_unit_id]
+    i_joint = i_joint_dict[tx_unit_id]
+
+    fault_info_json = extract_fault_info(co_ev)
+
+    return {
+        "co_ev": co_ev,
+        "time_s": t_joint if t_joint is not None else np.linspace(0.0, 0.1, 1000),
+        "v1": v1,
+        "i1": i1,
+        "v2": v2,
+        "i2": i2,
+        "v_joint": v_joint,
+        "i_joint": i_joint,
+        "fault_info": fault_info_json,
+        "gt_feeder_id": f"feeder_{feeder_idx}"
+    }
 
     
 

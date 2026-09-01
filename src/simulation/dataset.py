@@ -18,7 +18,12 @@ from src.simulation.filter import remove_low_frequency_components
 from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
 from src.loads import get_equipment_model
-
+from src.transient.events import (
+    SingleEquipmentSwitchEvent,
+    SingleLineFaultEvent,
+    EquipmentEquipmentCoEvent,
+    EquipmentLineFaultCoEvent
+)
 
 
 def get_all_108_coevents(target_line: str = "feeder1_head"):
@@ -49,7 +54,137 @@ def get_all_108_coevents(target_line: str = "feeder1_head"):
         ("LLL", (0, 1, 2), "ABC")
     ]
 
-  
+    coevents = []
+
+    # 1. 28 Load-Load pairs C(8, 2)
+    for eq1, eq2 in itertools.combinations(equipment_types, 2):
+        s1 = SingleEquipmentSwitchEvent(eq1, 0.02, 0.04, target_line, {})
+        s2 = SingleEquipmentSwitchEvent(eq2, 0.02, 0.04, target_line, {})
+        coevents.append(EquipmentEquipmentCoEvent(s1, s2))
+
+    # 2. 80 Load-Fault pairs (8 equipment types * 10 fault configs)
+    for eq in equipment_types:
+        for f_type, f_phases, f_label in fault_configs:
+            s1 = SingleEquipmentSwitchEvent(eq, 0.02, 0.04, target_line, {})
+            f2 = SingleLineFaultEvent(f_type, 0.02, 0.04, target_line, f_phases, 0.001, {"label": f_label})
+            coevents.append(EquipmentLineFaultCoEvent(s1, f2))
+
+    return coevents
+
+
+def process_dataset_coevents(runner: CoSimulationRunner, coevents: list, use_baseline_transformers: bool, is_dataset_3: bool, dataset_name: str) -> list[dict]:
+    """
+    Processes co-events for Datasets 2, 3, or 4 using CoSimulationRunner.run_transient_simulation.
+    Applies Butterworth high-pass filter (remove_low_frequency_components) to waveforms,
+    computes 3-phase scalar voltage_magnitude and current_magnitude as well as residual magnitudes,
+    and returns list of row dictionaries.
+    """
+    print(f"INFO: Processing {len(coevents)} co-events for {dataset_name}...")
+
+    # For Dataset 3, apply time shift offset (e.g. 0.015 s)
+    if is_dataset_3:
+        coevents_to_run = [co.with_time_shift(0.015) for co in coevents]
+    else:
+        coevents_to_run = coevents
+
+    # For Dataset 4, iterate feeder distribution across feeders 1, 2, 3
+    if not use_baseline_transformers:
+        for idx, co in enumerate(coevents_to_run):
+            f_id = (idx % 3) + 1
+            setattr(co, "gt_feeder_id", f_id)
+
+    # Delegate execution to runner.run_transient_simulation
+    sim_results = runner.run_transient_simulation(
+        events=coevents_to_run,
+        use_baseline_feeder=use_baseline_transformers,
+        seed=42,
+        reinitialize_plant=False
+    )
+
+    rows = []
+    for item in sim_results:
+        co_ev = item["co_ev"]
+        ev1 = co_ev.event_1
+        ev2 = co_ev.event_2
+
+        v1 = item["v1"]
+        i1 = item["i1"]
+        v2 = item["v2"]
+        i2 = item["i2"]
+        v_joint = item["v_joint"]
+        i_joint = item["i_joint"]
+
+        # Apply low frequency filter to waveforms
+        v1_filt = remove_low_frequency_components(v1)
+        i1_filt = remove_low_frequency_components(i1)
+        v2_filt = remove_low_frequency_components(v2)
+        i2_filt = remove_low_frequency_components(i2)
+        v_joint_filt = remove_low_frequency_components(v_joint)
+        i_joint_filt = remove_low_frequency_components(i_joint)
+
+        v_comp = v1_filt + v2_filt
+        i_comp = i1_filt + i2_filt
+
+        v_res = v_joint_filt - v_comp
+        i_res = i_joint_filt - i_comp
+
+        # Compute 3-phase joint/composed scalar magnitudes
+        voltage_magnitude = float(np.sqrt(np.mean(v_joint_filt ** 2)))
+        current_magnitude = float(np.sqrt(np.mean(i_joint_filt ** 2)))
+
+        residual_v_mag = float(np.sqrt(np.mean(v_res ** 2)))
+        residual_i_mag = float(np.sqrt(np.mean(i_res ** 2)))
+
+        target_bus = getattr(ev1, "target", "feeder1_head")
+        load_source_json = json.dumps({"bus": target_bus, "line": target_bus})
+
+        row = {
+            "load_source": load_source_json,
+            "fault_info": item["fault_info"],
+            "gt_event_1_equipment_type": getattr(ev1, "equipment_type", ev1.event_type),
+            "gt_event_1_fault_type": getattr(ev1, "fault_type", None),
+            "gt_event_1_start_timestamp_s": getattr(ev1, "start_time_s", 0.02),
+            "gt_event_2_equipment_type": getattr(ev2, "equipment_type", None),
+            "gt_event_2_fault_type": getattr(ev2, "fault_type", None),
+            "gt_event_2_start_timestamp_s": getattr(ev2, "start_time_s", 0.02),
+            "gt_time_offset_s": getattr(co_ev, "time_offset_s", 0.0),
+            "voltage_magnitude": round(voltage_magnitude, 6),
+            "current_magnitude": round(current_magnitude, 6),
+            "residual_voltage_magnitude": round(residual_v_mag, 6),
+            "residual_current_magnitude": round(residual_i_mag, 6),
+            "obs_single_event_1_v_phase_a": json.dumps(v1_filt[:, 0].tolist()),
+            "obs_single_event_1_v_phase_b": json.dumps(v1_filt[:, 1].tolist()),
+            "obs_single_event_1_v_phase_c": json.dumps(v1_filt[:, 2].tolist()),
+            "obs_single_event_1_i_phase_a": json.dumps(i1_filt[:, 0].tolist()),
+            "obs_single_event_1_i_phase_b": json.dumps(i1_filt[:, 1].tolist()),
+            "obs_single_event_1_i_phase_c": json.dumps(i1_filt[:, 2].tolist()),
+            "obs_single_event_2_v_phase_a": json.dumps(v2_filt[:, 0].tolist()),
+            "obs_single_event_2_v_phase_b": json.dumps(v2_filt[:, 1].tolist()),
+            "obs_single_event_2_v_phase_c": json.dumps(v2_filt[:, 2].tolist()),
+            "obs_single_event_2_i_phase_a": json.dumps(i2_filt[:, 0].tolist()),
+            "obs_single_event_2_i_phase_b": json.dumps(i2_filt[:, 1].tolist()),
+            "obs_single_event_2_i_phase_c": json.dumps(i2_filt[:, 2].tolist()),
+            "obs_composed_event_v_phase_a": json.dumps(v_comp[:, 0].tolist()),
+            "obs_composed_event_v_phase_b": json.dumps(v_comp[:, 1].tolist()),
+            "obs_composed_event_v_phase_c": json.dumps(v_comp[:, 2].tolist()),
+            "obs_composed_event_i_phase_a": json.dumps(i_comp[:, 0].tolist()),
+            "obs_composed_event_i_phase_b": json.dumps(i_comp[:, 1].tolist()),
+            "obs_composed_event_i_phase_c": json.dumps(i_comp[:, 2].tolist()),
+            "obs_residual_v_phase_a": json.dumps(v_res[:, 0].tolist()),
+            "obs_residual_v_phase_b": json.dumps(v_res[:, 1].tolist()),
+            "obs_residual_v_phase_c": json.dumps(v_res[:, 2].tolist()),
+            "obs_residual_i_phase_a": json.dumps(i_res[:, 0].tolist()),
+            "obs_residual_i_phase_b": json.dumps(i_res[:, 1].tolist()),
+            "obs_residual_i_phase_c": json.dumps(i_res[:, 2].tolist()),
+        }
+
+        if dataset_name == "Dataset 4":
+            row["gt_feeder_id"] = item.get("gt_feeder_id", "feeder_1")
+
+        rows.append(row)
+
+    print(f"INFO: Completed {dataset_name} generation ({len(rows)} rows).")
+    return rows
 
 
 def generate_experiments_dataset(write_to_disk: bool = True):
@@ -318,19 +453,19 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     all_108_pairs = get_all_108_coevents(target_line="feeder1_head")
 
     # =========================================================================
-    # --- B. DATASET 2 GENERATION (108 Unique Co-Events Parallel Batches) ---
+    # --- B. DATASET 2 GENERATION (108 Unique Co-Events Parallel) ---
     # =========================================================================
-    rows_2 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=False, dataset_name="Dataset 2", batch_size=6)
+    rows_2 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=True, is_dataset_3=False, dataset_name="Dataset 2")
 
     # =========================================================================
     # --- C. DATASET 3 GENERATION (108 Unique Co-Events Time Shift Parallel) ---
     # =========================================================================
-    rows_3 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=True, is_dataset_3=True, dataset_name="Dataset 3", batch_size=6)
+    rows_3 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=True, is_dataset_3=True, dataset_name="Dataset 3")
 
     # =========================================================================
     # --- D. DATASET 4 GENERATION (108 Unique Co-Events Transformer Spec Parallel) ---
     # =========================================================================
-    rows_4 = process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers=False, is_dataset_3=False, dataset_name="Dataset 4", batch_size=6)
+    rows_4 = process_dataset_coevents(runner, all_108_pairs, use_baseline_transformers=False, is_dataset_3=False, dataset_name="Dataset 4")
 
     df_1 = pd.DataFrame(rows_1)
     df_2 = pd.DataFrame(rows_2)
