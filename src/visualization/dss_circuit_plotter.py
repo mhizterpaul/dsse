@@ -7,11 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dss import dss
 from src.simulation.runner import CoSimulationRunner
 
 
 def plot_opendss_circuit(
+    dss=None,
     use_baseline_transformers: bool = True,
     quantity: str = "Power",
     dots: bool = True,
@@ -23,24 +23,33 @@ def plot_opendss_circuit(
 ):
     """
     Initializes OpenDSS plant session and generates native OpenDSS circuit plot
-    using DSS-Extensions plotting subsystem.
+    using DSS-Extensions plotting subsystem. Passed single dss instance from runner.
     """
     runner = CoSimulationRunner()
+    if dss is None:
+        dss = runner.dss
     runner.initialize_plant_session(use_baseline_transformers=use_baseline_transformers, seed=42)
 
-    dss.Plotting.enable()
+    # Set Voltagebases and solve so network solution is valid
+    dss.run_command("Set Voltagebases=[33.0, 11.0, 0.415]")
+    dss.run_command("CalcVoltageBases")
+    dss.run_command("solve")
+
+    dss_py = dss.to_dss_python() if hasattr(dss, "to_dss_python") else dss
+    if hasattr(dss_py, "Plotting"):
+        dss_py.Plotting.enable()
 
     if mark_transformers:
-        dss.Text.Command = "Set MarkTransformers=Y"
+        dss.run_command("Set MarkTransformers=Y")
     if mark_regulators:
-        dss.Text.Command = "Set MarkRegulators=Y"
+        dss.run_command("Set MarkRegulators=Y")
 
     dots_str = "Y" if dots else "N"
     labels_str = "Y" if labels else "N"
     subs_str = "Y" if subs else "N"
 
     cmd = f"Plot Circuit Quantity={quantity} Dots={dots_str} Labels={labels_str} Subs={subs_str}"
-    dss.Text.Command = cmd
+    dss.run_command(cmd)
 
     fignums = plt.get_fignums()
     if fignums:

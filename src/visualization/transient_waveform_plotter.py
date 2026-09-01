@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -57,12 +58,13 @@ def simulate_and_plot_load_circuit_transients():
 
         t = sim_res.time_s if (sim_res.time_s is not None and len(sim_res.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
 
-        if cu is not None:
-            v_high = remove_low_frequency_components(cu["raw_voltage"])
-            i_high = remove_low_frequency_components(cu["raw_current"])
-        else:
-            v_high = np.zeros((len(t), 3))
-            i_high = np.zeros((len(t), 3))
+        if cu is None or "raw_voltage" not in cu or "raw_current" not in cu:
+            err_msg = f"ERROR: Missing transient waveform data for consumer unit '{m_id}' in scenario 'vis_{eq}'."
+            print(f"{err_msg}\n{traceback.format_exc()}")
+            raise RuntimeError(err_msg)
+
+        v_high = remove_low_frequency_components(cu["raw_voltage"])
+        i_high = remove_low_frequency_components(cu["raw_current"])
 
         waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
 
