@@ -238,24 +238,80 @@ class CoSimulationRunner:
             t_vec = np.linspace(0.0, 0.1, 1000)
             return t_vec, {}, {}, {}
 
-    def run_simulation(
+    def run_steady_state_simulation(
         self,
         topology: Optional[dict] = None,
         loads: Optional[dict] = None,
-        events: Optional[List[Any]] = None,
         generator_p_kw: float = 1500.0,
         generator_q_kvar: float = 0.0,
-        consumer_fraction: float = 0.36,
+        use_baseline_transformers: bool = True,
+        use_single_lv_network: bool = False,
+        scenario_id: str = "steady_5min_run",
+        seed: int = 42,
+        reinitialize_plant: bool = True,
+        verbose: bool = False
+    ) -> SimulationResult:
+        """
+        Executes a pure OpenDSS steady-state power flow simulation for Dataset 1 (5-minute daily energization run)
+        without invoking ATP transient simulation or measuring transient waveforms.
+        """
+        if reinitialize_plant or self.plant_data is None:
+            plant_data = self.initialize_plant_session(
+                use_single_lv_network=use_single_lv_network,
+                use_baseline_transformers=use_baseline_transformers,
+                generator_p_kw=generator_p_kw,
+                generator_q_kvar=generator_q_kvar,
+                loads=loads,
+                seed=seed,
+                verbose=verbose
+            )
+        else:
+            plant_data = self.plant_data
+
+        if topology is None:
+            topology = plant_data["topology"]
+
+        self.dss.run_command("disable Fault.*")
+        self.dss.run_command("set stepsize=1s")
+        self.dss.run_command("set number=300")
+        self.dss.run_command("set mode=daily")
+        self.dss.run_command("solve")
+
+        time_s = np.linspace(0.0, 300.0, 300)
+        candidate_units = plant.identify_candidate_consumer_units(topology)
+
+        return SimulationResult(
+            time_s=time_s,
+            selected_consumer_units=candidate_units,
+            steady_state_measurements={},
+            processed_consumer_units={},
+            consumer_load_transients={},
+            transformer_transients={}
+        )
+
+    def run_transient_simulation(
+        self,
+        events: List[Any],
+        topology: Optional[dict] = None,
+        loads: Optional[dict] = None,
+        generator_p_kw: float = 1500.0,
+        generator_q_kvar: float = 0.0,
         use_baseline_transformers: bool = True,
         use_single_lv_network: bool = False,
         include_load_event: bool = True,
         include_fault_event: bool = False,
-        is_steady_state_run: bool = False,
         scenario_id: str = "scenario_0",
         seed: int = 42,
         reinitialize_plant: bool = True,
         verbose: bool = False
     ) -> SimulationResult:
+        """
+        Executes an ATP transient simulation evaluated directly for a specific co-event (2 equipment events
+        or an equipment and fault event pair) passed in `events`.
+        """
+        if not events:
+            raise ValueError("events parameter must contain co-event objects for transient simulation")
+
         # 1. Energize and initialize power plant & LV networks (Case 1: 1 LV network, Case 2: 3 LV networks)
         if reinitialize_plant or self.plant_data is None:
             plant_data = self.initialize_plant_session(
@@ -273,13 +329,11 @@ class CoSimulationRunner:
         if topology is None:
             topology = plant_data["topology"]
 
-        registry = plant_data["registry"]
-
         # 2. Always disable existing OpenDSS Fault elements to avoid fault state leakage across sequential runs
         self.dss.run_command("disable Fault.*")
 
         fault_key_parts = []
-        if events and include_fault_event:
+        if include_fault_event:
             events_to_check = []
             for ev in events:
                 if hasattr(ev, "event_1") and hasattr(ev, "event_2"):
@@ -289,7 +343,7 @@ class CoSimulationRunner:
 
             fault_count = 0
             for ev in events_to_check:
-                ev_class = getattr(ev, "event_class")
+                ev_class = getattr(ev, "event_class", "")
                 if ev_class == "line_fault":
                     fault_count += 1
                     f_type = getattr(ev, "fault_type")
@@ -316,14 +370,7 @@ class CoSimulationRunner:
                     else:
                         self.dss.run_command(f"new Fault.{fault_name} {bus_spec}")
 
-        # 3. For Dataset 1 steady state run, power loads for 5 minutes (300s) to measure energy
-        if is_steady_state_run or not events:
-            self.dss.run_command("set stepsize=1s")
-            self.dss.run_command("set number=300")
-            self.dss.run_command("set mode=daily")
-
-        # Caching logic: In Dataset 4 (3 LV networks, use_baseline_transformers=False),
-        # only rows targeting/using the baseline feeder (feeder 1 / trans1) reuse the baseline cached operating point.
+        # Caching logic for operating point evaluation
         baseline_cache_key = ("baseline", generator_p_kw, generator_q_kvar, use_single_lv_network, tuple(fault_key_parts))
         non_baseline_cache_key = ("non_baseline", generator_p_kw, generator_q_kvar, use_single_lv_network, use_baseline_transformers, tuple(fault_key_parts))
 
@@ -334,7 +381,6 @@ class CoSimulationRunner:
                 op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
                 self._op_cache[baseline_cache_key] = op
         else:
-            # Dataset 4: Check if row targets the baseline feeder (feeder 1 / trans1)
             if is_baseline_feeder_event(events):
                 if baseline_cache_key in self._op_cache:
                     op = self._op_cache[baseline_cache_key]
@@ -348,34 +394,70 @@ class CoSimulationRunner:
                     op = plant.solve_operating_point(self.dss, generator_p_kw, generator_q_kvar)
                     self._op_cache[non_baseline_cache_key] = op
 
-        # 4. Select consumer units and measure transients via measure_transients using ATP
+        # 3. Measure transients via measure_transients using ATP
         candidate_units = plant.identify_candidate_consumer_units(topology)
 
-        # Select transformer boundary consumer units and fraction of consumer units
-        transformer_units = [m for m in candidate_units if m.get("branch_type") == "transformer_boundary"]
-        consumer_units = [m for m in candidate_units if m.get("branch_type") != "transformer_boundary"]
-        n_consumer_units = max(1, int(np.ceil(consumer_fraction * len(consumer_units)))) if consumer_units else 0
-        rng = np.random.default_rng(seed)
-        if consumer_units:
-            selected_indices = rng.choice(len(consumer_units), size=n_consumer_units, replace=False)
-            selected_consumer_units = [consumer_units[i] for i in selected_indices]
-        else:
-            selected_consumer_units = []
-        selected_units = transformer_units + selected_consumer_units
-
-        event = events[0] if events else None
+        event = events[0]
         time_s, processed_units, consumer_transients, transformer_transients = self.measure_transients(
             op=op,
             event=event,
-            selected_consumer_units=selected_units,
+            selected_consumer_units=candidate_units,
             scenario_id=scenario_id
         )
 
         return SimulationResult(
             time_s=time_s,
-            selected_consumer_units=selected_units,
+            selected_consumer_units=candidate_units,
             steady_state_measurements={},
             processed_consumer_units=processed_units,
             consumer_load_transients=consumer_transients,
             transformer_transients=transformer_transients
+        )
+
+    def run_simulation(
+        self,
+        topology: Optional[dict] = None,
+        loads: Optional[dict] = None,
+        events: Optional[List[Any]] = None,
+        generator_p_kw: float = 1500.0,
+        generator_q_kvar: float = 0.0,
+        consumer_fraction: float = 0.36,
+        use_baseline_transformers: bool = True,
+        use_single_lv_network: bool = False,
+        include_load_event: bool = True,
+        include_fault_event: bool = False,
+        is_steady_state_run: bool = False,
+        scenario_id: str = "scenario_0",
+        seed: int = 42,
+        reinitialize_plant: bool = True,
+        verbose: bool = False
+    ) -> SimulationResult:
+        if is_steady_state_run or not events:
+            return self.run_steady_state_simulation(
+                topology=topology,
+                loads=loads,
+                generator_p_kw=generator_p_kw,
+                generator_q_kvar=generator_q_kvar,
+                use_baseline_transformers=use_baseline_transformers,
+                use_single_lv_network=use_single_lv_network,
+                scenario_id=scenario_id,
+                seed=seed,
+                reinitialize_plant=reinitialize_plant,
+                verbose=verbose
+            )
+
+        return self.run_transient_simulation(
+            events=events,
+            topology=topology,
+            loads=loads,
+            generator_p_kw=generator_p_kw,
+            generator_q_kvar=generator_q_kvar,
+            use_baseline_transformers=use_baseline_transformers,
+            use_single_lv_network=use_single_lv_network,
+            include_load_event=include_load_event,
+            include_fault_event=include_fault_event,
+            scenario_id=scenario_id,
+            seed=seed,
+            reinitialize_plant=reinitialize_plant,
+            verbose=verbose
         )
