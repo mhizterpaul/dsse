@@ -17,6 +17,7 @@ from src.simulation.runner import CoSimulationRunner, extract_fault_info
 from src.simulation.filter import remove_low_frequency_components
 from src.estimator.cla_estimator import ConsumerLoadPremises, ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
+from src.loads import get_equipment_model
 from src.transient.events import (
     SingleEquipmentSwitchEvent,
     SingleLineFaultEvent,
@@ -390,13 +391,36 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
 
+        duration_hours = 5.0 / 60.0  # Total time network energized (5 minutes = 300 s / 3600 h)
+
         for u in feeder_units:
             is_metered = u.is_metered
 
             unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
-            unit_dss_energy = float(unit_meas.get("energy_kwh", 0.0))
+            v_mags = unit_meas.get("v_mags", np.array([239.0, 239.0, 239.0]))
+            v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 and np.mean(v_mags) > 0 else 239.0
+            v_ll = v_ln * (3.0 ** 0.5)
 
-            meas_energy = round(unit_dss_energy, 4) if is_metered else np.nan
+            # Compute gt_consumed_energy_kwh = 3 * |Z_circuits| * I_line^2 * pf_eff * t
+            i_total_line = 0.0
+            pf_eff = 0.0
+            num_loads = len(u.loads)
+            for ld in u.loads:
+                eq = get_equipment_model(ld.load_type)
+                p_w = eq.rated_power_kw * 1000.0
+                i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor) if (v_ll > 0 and eq.power_factor > 0) else 0.0
+                i_total_line += i_ld
+                pf_eff += eq.power_factor
+
+            pf_eff = (pf_eff / num_loads) if num_loads > 0 else 0.90
+            z_mag = (v_ln / i_total_line) if i_total_line > 0 else 0.0
+            unit_consumed_energy_kwh = (3.0 * z_mag * (i_total_line ** 2) * pf_eff * duration_hours) / 1000.0
+
+            # Calculate service drop line loss directly from consumer unit service line resistance
+            r_drop = u.service_line_resistance_ohm
+            p_loss_kw = 3.0 * (i_total_line ** 2) * r_drop / 1000.0
+            c_line_loss_kwh = round(float(p_loss_kw * duration_hours), 6)
+
             cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and cla_res and u.consumer_id in cla_res.allocated_unsampled_consumer_energy) else np.nan
             time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and time_cla_res and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy) else np.nan
 
@@ -405,8 +429,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             assigned_class = u.assigned_load_class if u.assigned_load_class else "residential"
             consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
-            c_line_loss = round(float(unit_meas.get("line_losses", 0.0)), 4)
-
             # Registered consumer unit (consumer_type includes assigned class and status type)
             rows_1.append({
                 "gt_consumer_unit_id": u.consumer_id,
@@ -414,9 +436,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
                 "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
                 "assigned_weight": unit_weight,
-                "gt_consumed_energy_kwh": round(unit_dss_energy, 4),
-                "consumer_line_losses": c_line_loss,
-                "measured_energy_kwh": meas_energy,
+                "gt_consumed_energy_kwh": round(unit_consumed_energy_kwh, 4),
+                "consumer_line_losses": c_line_loss_kwh,
                 "cla_estimates": cla_est,
                 "time_adjusted_cla_estimates": time_cla_est
             })
@@ -424,8 +445,17 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             # Latent / unknown consumer unit at same bus if present
             latent_u = latent_map.get(u.bus_id)
             if latent_u:
-                latent_meas = sim_res_d1.steady_state_measurements.get(latent_u.consumer_id, {})
-                latent_line_loss = round(float(latent_meas.get("line_losses", 0.0)), 4)
+                i_latent_total = 0.0
+                for ld in latent_u.loads:
+                    eq = get_equipment_model(ld.load_type)
+                    p_w = eq.rated_power_kw * 1000.0
+                    i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor) if (v_ll > 0 and eq.power_factor > 0) else 0.0
+                    i_latent_total += i_ld
+
+                r_latent_drop = latent_u.service_line_resistance_ohm
+                p_latent_loss_kw = 3.0 * (i_latent_total ** 2) * r_latent_drop / 1000.0
+                latent_line_loss_kwh = round(float(p_latent_loss_kw * duration_hours), 6)
+
                 rows_1.append({
                     "gt_consumer_unit_id": latent_u.consumer_id,
                     "consumer_type": "latent",
@@ -433,8 +463,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                     "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
                     "assigned_weight": np.nan,
                     "gt_consumed_energy_kwh": np.nan,
-                    "consumer_line_losses": latent_line_loss,
-                    "measured_energy_kwh": np.nan,
+                    "consumer_line_losses": latent_line_loss_kwh,
                     "cla_estimates": np.nan,
                     "time_adjusted_cla_estimates": np.nan
                 })
