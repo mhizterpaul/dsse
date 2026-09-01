@@ -134,19 +134,90 @@ class CoSimulationRunner:
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
         try:
-            class RealizationContainer:
-                def __init__(self, sid, tx, f_idx):
-                    self.scenario_id = sid
-                    self.feeder_idx = f_idx
-                    self.transformer_spec = tx
-                    self.line_parameters = {
-                        "r1": 0.21,
-                        "x1": 0.08,
-                        "mult": 1.0
-                    }
+            from src.transient.atp_case_builder import (
+                TransformerSpec, TransformerWinding, ShortCircuitTest,
+                SourceModel, ThreePhaseState, LineModel, LoadModel,
+                TransientEvent, SimulationConfig
+            )
 
-            realization = RealizationContainer(scenario_id, tx_spec, feeder_idx)
-            self.atp_builder.build(realization, op, event, atp_case_path)
+            kvas = tx_spec.get("kvas", [1500.0, 1500.0])
+            kvs = tx_spec.get("kvs", [11.0, 0.415])
+            r_pct = float(tx_spec.get("r_pct", 0.60))
+            xhl_pct = float(tx_spec.get("xhl_pct", 8.33))
+
+            transformer = TransformerSpec(
+                name=str(tx_spec.get("name", f"trans{feeder_idx}")),
+                frequency_hz=float(getattr(op, "frequency_hz", 50.0)),
+                windings=[
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y"),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y")
+                ],
+                short_circuit_tests=[
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]))
+                ]
+            )
+
+            phase_v = op.phase_voltages_v.get(f"trans{feeder_idx}", (240.0, 240.0, 240.0)) if hasattr(op, "phase_voltages_v") else (240.0, 240.0, 240.0)
+            phase_ang = op.phase_angles_deg.get(f"trans{feeder_idx}", (0.0, -120.0, 120.0)) if hasattr(op, "phase_angles_deg") else (0.0, -120.0, 120.0)
+
+            source = SourceModel(
+                name="GRID",
+                frequency_hz=float(getattr(op, "frequency_hz", 50.0)),
+                pre_event=ThreePhaseState(
+                    voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+                    voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
+                )
+            )
+
+            line = LineModel(
+                name=f"line_{feeder_idx}",
+                from_bus="main_bus",
+                to_bus=f"feeder{feeder_idx}_head",
+                length_km=4.5,
+                r1_ohm_per_km=0.21,
+                x1_ohm_per_km=0.08
+            )
+
+            loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0)]
+
+            if hasattr(event, "event_1") and hasattr(event, "event_2"):
+                ev_class = "co_event"
+                ev_type = f"{event.event_1.event_type}_{event.event_2.event_type}"
+                start_s = float(getattr(event.event_1, "start_time_s", 0.02))
+                dur_s = float(getattr(event.event_1, "duration_s", 0.5))
+            else:
+                ev_class = str(getattr(event, "event_class", "equipment_switch"))
+                ev_type = str(getattr(event, "event_type", "switch"))
+                start_s = float(getattr(event, "start_time_s", 0.02))
+                dur_s = float(getattr(event, "duration_s", 0.5))
+
+            f_type = getattr(event, "fault_type", None)
+            f_phases = getattr(event, "faulted_phases", (0,))
+            f_res = float(getattr(event, "fault_resistance", 0.001))
+
+            transient_ev = TransientEvent(
+                event_class=ev_class,
+                start_time_s=start_s,
+                duration_s=dur_s,
+                location=f"trans{feeder_idx}",
+                fault_type=f_type,
+                faulted_phases=tuple(f_phases),
+                fault_resistance_ohm=f_res
+            )
+
+            sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
+
+            self.atp_builder.build_explicit(
+                transformer=transformer,
+                source=source,
+                line=line,
+                loads=loads,
+                event=transient_ev,
+                simulation=sim_config,
+                output_path=atp_case_path,
+                scenario_id=scenario_id
+            )
+
             atp_result = ATPRunner().run(atp_case_path)
             emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
 
