@@ -288,46 +288,88 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         if not feeder_units:
             continue
 
-        m_key = f"trans{f_id}_lv_boundary_consumer_unit"
-        meas = sim_res_d1.steady_state_measurements.get(m_key, {})
+        duration_hours = 5.0 / 60.0  # Total time network energized (5 minutes = 300 s / 3600 h)
+
+        # Query consumer unit energies directly from OpenDSS load powers
+        consumer_energies = {}
+        consumer_loss_kws = {}
+        for u in feeder_units:
+            unit_p_kw = 0.0
+            for ld in u.loads:
+                if runner.dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
+                    powers = runner.dss.CktElement.Powers()
+                    if len(powers) >= 2:
+                        unit_p_kw += sum(powers[0::2])
+            unit_energy_kwh = unit_p_kw * duration_hours
+            consumer_energies[u.consumer_id] = unit_energy_kwh
+
+            if u.bus_id in latent_map:
+                lat_u = latent_map[u.bus_id]
+                lat_p_kw = 0.0
+                for ld in lat_u.loads:
+                    if runner.dss.Circuit.SetActiveElement(f"load.{ld.load_id}"):
+                        powers = runner.dss.CktElement.Powers()
+                        if len(powers) >= 2:
+                            lat_p_kw += sum(powers[0::2])
+                consumer_energies[lat_u.consumer_id] = lat_p_kw * duration_hours
 
         sampled_units = [u for u in feeder_units if u.is_metered]
         unsampled_units = [u for u in feeder_units if not u.is_metered]
 
         gt_sampled_energy_kwh = round(
-            sum(
-                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
-                for u in sampled_units
-            ),
+            sum(consumer_energies.get(u.consumer_id, 0.0) for u in sampled_units),
             4
         )
 
         gt_unsampled_true_kwh = round(
-            sum(
-                float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
-                for u in unsampled_units
-            ),
+            sum(consumer_energies.get(u.consumer_id, 0.0) for u in unsampled_units),
             4
         )
 
         gt_latent_energy_kwh = round(
-            sum(
-                float(sim_res_d1.steady_state_measurements.get(latent_map[u.bus_id].consumer_id, {}).get("energy_kwh", 0.0))
-                for u in feeder_units if u.bus_id in latent_map
-            ),
+            sum(consumer_energies.get(latent_map[u.bus_id].consumer_id, 0.0) for u in feeder_units if u.bus_id in latent_map),
             4
         )
 
-        # Dynamic physics-based transformer losses and line losses (for 5-min run, dt = 5/60 hours)
-        transformer_loss_kw = float(meas.get("transformer_losses", 0.0))
-        transformer_loss_kwh = round(transformer_loss_kw * (5.0 / 60.0), 4)
+        # Dynamic physics-based transformer losses and line losses from OpenDSS
+        tx_name = f"Transformer.trans{f_id}"
+        feeder_name = f"Line.feeder{f_id}"
 
-        feeder_line_loss_kw = float(meas.get("feeder_line_losses", 0.0))
-        consumer_line_loss_kw = sum(
-            float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("line_losses", 0.0))
-            for u in feeder_units
-        )
-        line_loss_kwh = round((feeder_line_loss_kw + consumer_line_loss_kw) * (5.0 / 60.0), 4)
+        transformer_loss_kw = 0.0
+        if runner.dss.Circuit.SetActiveElement(tx_name):
+            tx_losses = runner.dss.CktElement.Losses()
+            if len(tx_losses) >= 1:
+                transformer_loss_kw = abs(tx_losses[0]) / 1000.0
+        transformer_loss_kwh = round(transformer_loss_kw * duration_hours, 4)
+
+        feeder_line_loss_kw = 0.0
+        if runner.dss.Circuit.SetActiveElement(feeder_name):
+            f_losses = runner.dss.CktElement.Losses()
+            if len(f_losses) >= 1:
+                feeder_line_loss_kw = abs(f_losses[0]) / 1000.0
+
+        # Calculate consumer line loss kW using actual OpenDSS bus voltages and currents
+        consumer_line_loss_kw = 0.0
+        for u in feeder_units:
+            if not runner.dss.Circuit.SetActiveBus(u.bus_id):
+                raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
+            v_vec = np.array(runner.dss.Bus.VMagAngle())
+            if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
+                raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}'")
+            v_ln = float(np.mean(v_vec[0::2]))
+            v_ll = v_ln * (3.0 ** 0.5)
+            i_total_line = 0.0
+            for ld in u.loads:
+                eq = get_equipment_model(ld.load_type)
+                p_w = eq.rated_power_kw * 1000.0
+                if eq.power_factor <= 0:
+                    raise ValueError(f"Equipment '{ld.load_type}' has non-positive power factor: {eq.power_factor}")
+                i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
+                i_total_line += i_ld
+            p_loss_kw = 3.0 * (i_total_line ** 2) * u.service_line_resistance_ohm / 1000.0
+            consumer_line_loss_kw += p_loss_kw
+
+        line_loss_kwh = round((feeder_line_loss_kw + consumer_line_loss_kw) * duration_hours, 4)
 
         gt_tech_loss_kwh = round(transformer_loss_kwh + line_loss_kwh, 4)
 
@@ -394,24 +436,34 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         for u in feeder_units:
             is_metered = u.is_metered
 
-            unit_meas = sim_res_d1.steady_state_measurements.get(u.consumer_id, {})
-            v_mags = unit_meas.get("v_mags", np.array([239.0, 239.0, 239.0]))
-            v_ln = float(np.mean(v_mags)) if len(v_mags) > 0 and np.mean(v_mags) > 0 else 239.0
+            if not runner.dss.Circuit.SetActiveBus(u.bus_id):
+                raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
+            v_vec = np.array(runner.dss.Bus.VMagAngle())
+            if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
+                raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}'")
+            v_ln = float(np.mean(v_vec[0::2]))
             v_ll = v_ln * (3.0 ** 0.5)
 
             # Compute gt_consumed_energy_kwh = 3 * |Z_circuits| * I_line^2 * pf_eff * t
             i_total_line = 0.0
             pf_eff = 0.0
             num_loads = len(u.loads)
+            if num_loads == 0:
+                raise ValueError(f"Consumer unit '{u.consumer_id}' has no connected load circuits")
+
             for ld in u.loads:
                 eq = get_equipment_model(ld.load_type)
                 p_w = eq.rated_power_kw * 1000.0
-                i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor) if (v_ll > 0 and eq.power_factor > 0) else 0.0
+                if eq.power_factor <= 0:
+                    raise ValueError(f"Equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}")
+                i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
                 i_total_line += i_ld
                 pf_eff += eq.power_factor
 
-            pf_eff = (pf_eff / num_loads) if num_loads > 0 else 0.90
-            z_mag = (v_ln / i_total_line) if i_total_line > 0 else 0.0
+            pf_eff = pf_eff / num_loads
+            if i_total_line <= 0:
+                raise ValueError(f"Total current for consumer unit '{u.consumer_id}' is non-positive: {i_total_line}")
+            z_mag = v_ln / i_total_line
             unit_consumed_energy_kwh = (3.0 * z_mag * (i_total_line ** 2) * pf_eff * duration_hours) / 1000.0
 
             # Calculate service drop line loss directly from consumer unit service line resistance
@@ -444,10 +496,15 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             latent_u = latent_map.get(u.bus_id)
             if latent_u:
                 i_latent_total = 0.0
+                if len(latent_u.loads) == 0:
+                    raise ValueError(f"Latent consumer unit '{latent_u.consumer_id}' has no connected load circuits")
+
                 for ld in latent_u.loads:
                     eq = get_equipment_model(ld.load_type)
                     p_w = eq.rated_power_kw * 1000.0
-                    i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor) if (v_ll > 0 and eq.power_factor > 0) else 0.0
+                    if eq.power_factor <= 0:
+                        raise ValueError(f"Latent equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}")
+                    i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
                     i_latent_total += i_ld
 
                 r_latent_drop = latent_u.service_line_resistance_ohm
