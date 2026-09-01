@@ -7,6 +7,10 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
 import src.power_plant.plant as plant
+from src.transient.atp_case_builder import ATPCaseBuilder
+from src.transient.atp_runner import ATPRunner
+from src.transient.atp_parser import ATPOutputReader
+from src.transient.events import SingleLineFaultEvent, SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
 
 
 @dataclass
@@ -16,10 +20,6 @@ class SimulationResult:
     processed_consumer_units: Dict[str, Any] = field(default_factory=dict)
     time_s: Optional[np.ndarray] = None
     operating_point: Optional[Any] = None
-from src.transient.atp_case_builder import ATPCaseBuilder
-from src.transient.atp_runner import ATPRunner
-from src.transient.atp_parser import ATPOutputReader
-from src.transient.events import SingleLineFaultEvent, SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
 
 
 def extract_fault_info(co_ev: Any) -> str:
