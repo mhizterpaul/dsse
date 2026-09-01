@@ -462,8 +462,12 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     # --- C. DATASET 3 GENERATION (108 Unique Co-Events Time Shift Parallel) ---
     # =========================================================================
-    print("INFO: Running transient simulations for Dataset 3 (time-shifted)...")
-    d3_coevents = [co.with_time_shift(0.015) for co in all_108_pairs]
+    print("INFO: Running transient simulations for Dataset 3 (time-shifted with varying offsets)...")
+    offsets = np.linspace(0.005, 0.050, len(all_108_pairs))
+    d3_coevents = [
+        co.with_time_shift(round(float(offsets[idx]), 4))
+        for idx, co in enumerate(all_108_pairs)
+    ]
     sim_res_d3 = runner.run_transient_simulation(
         events=d3_coevents,
         use_baseline_feeder=True,
