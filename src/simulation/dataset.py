@@ -358,16 +358,13 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         for u in feeder_units:
             try:
                 # Set active bus first per OpenDSS API requirements
-                bus_set_res = runner.dss.Circuit.SetActiveBus(u.bus_id)
-                if not bus_set_res and bus_set_res != 0:
-                    raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
-
+                bus_idx = runner.dss.Circuit.SetActiveBus(u.bus_id)
                 v_vec = np.array(runner.dss.Bus.VMagAngle())
                 if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
                     all_buses = runner.dss.Circuit.AllBusNames()
                     raise ValueError(
                         f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec}). "
-                        f"Bus active set code: {bus_set_res}. Available circuit buses count: {len(all_buses)}"
+                        f"Bus index: {bus_idx}. Available circuit buses count: {len(all_buses)}"
                     )
             except Exception as e:
                 print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
@@ -418,16 +415,14 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
-            registry=registry,
-            feeder_id=f"feeder_{f_id}"
+            registry=registry
         ) 
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             metered_consumer_energies=metered_consumer_energies,
-            registry=registry,
-            feeder_id=f"feeder_{f_id}"
+            registry=registry
         ) 
 
         unmetered_units = [u for u in feeder_units if not u.is_metered]
@@ -439,12 +434,10 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             is_metered = u.is_metered
 
             try:
-                bus_set_res = runner.dss.Circuit.SetActiveBus(u.bus_id)
-                if not bus_set_res and bus_set_res != 0:
-                    raise ValueError(f"Could not activate OpenDSS bus '{u.bus_id}' for consumer unit '{u.consumer_id}'")
+                bus_idx = runner.dss.Circuit.SetActiveBus(u.bus_id)
                 v_vec = np.array(runner.dss.Bus.VMagAngle())
                 if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
-                    raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec})")
+                    raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec}, bus_idx: {bus_idx})")
             except Exception as e:
                 print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
                 raise

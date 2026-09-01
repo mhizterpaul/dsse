@@ -102,8 +102,7 @@ class ClusterLoadAllocationEstimator:
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
         technical_loss_kwh: float,
-        registry: Optional[object] = None,
-        feeder_id: Optional[str] = None
+        registry: Optional[object] = None
     ) -> ClusterLoadAllocationEstimate:
         """
         Estimates unsampled customer energy allocations using baseline CLA.
@@ -121,8 +120,6 @@ class ClusterLoadAllocationEstimator:
         unmetered_units = []
         if registry is not None and hasattr(registry, "get_unmetered_consumers"):
             unmetered_units = registry.get_unmetered_consumers()
-            if feeder_id:
-                unmetered_units = [u for u in unmetered_units if getattr(u, "feeder_id", None) == feeder_id]
 
         weights = self.weighting_function(unmetered_units)
 

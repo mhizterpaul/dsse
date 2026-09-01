@@ -112,8 +112,7 @@ class TimeAdjustedCLAEstimator:
         feeder_supply_energy_kwh: float,
         technical_loss_kwh: float,
         metered_consumer_energies: Dict[str, float],
-        registry: Optional[object] = None,
-        feeder_id: Optional[str] = None
+        registry: Optional[object] = None
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
@@ -137,10 +136,6 @@ class TimeAdjustedCLAEstimator:
                 unmetered_units = registry.get_unmetered_consumers()
             if hasattr(registry, "get_metered_consumers"):
                 metered_units = registry.get_metered_consumers()
-
-            if feeder_id:
-                unmetered_units = [u for u in unmetered_units if getattr(u, "feeder_id", None) == feeder_id]
-                metered_units = [u for u in metered_units if getattr(u, "feeder_id", None) == feeder_id]
 
         if not unmetered_units:
             return TimeAdjustedCLAEstimate(
