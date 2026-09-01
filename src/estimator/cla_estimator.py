@@ -19,10 +19,21 @@ class ConsumerLoadClassModel:
     def compute_expected_weight(cls, unit) -> float:
         """
         Computes expected consumption weight w_i based on consumer unit characteristics.
+        Raises ValueError if required attributes are missing or invalid.
         """
-        class_id = getattr(unit, "assigned_load_class", "residential") or "residential"
-        base_w = cls.CLASS_WEIGHTS.get(class_id, 1.0)
-        num_loads = len(getattr(unit, "loads", [])) or 1
+        class_id = getattr(unit, "assigned_load_class", None)
+        if class_id is None:
+            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' is missing assigned_load_class")
+
+        if class_id not in cls.CLASS_WEIGHTS:
+            raise ValueError(f"Unknown assigned_load_class '{class_id}' for consumer unit '{getattr(unit, 'consumer_id', unit)}'")
+
+        base_w = cls.CLASS_WEIGHTS[class_id]
+        loads = getattr(unit, "loads", None)
+        if loads is None or len(loads) == 0:
+            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' has no connected load circuits")
+
+        num_loads = len(loads)
         return float(base_w * num_loads)
 
 
@@ -77,7 +88,7 @@ class ClusterLoadAllocationEstimator:
         sum_raw = sum(raw_weights.values())
         if sum_raw <= 0:
             n_units = len(unmetered_units)
-            return {getattr(u, "consumer_id", str(u)): 1.0 / n_units for u in unmetered_units}
+            return {getattr(p, "consumer_id", str(p)): 1.0 / n_units for p in unmetered_units}
 
         normalized_weights = {cid: float(w / sum_raw) for cid, w in raw_weights.items()}
         return normalized_weights

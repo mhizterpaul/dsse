@@ -36,11 +36,18 @@ class TimeAdjustedCLAEstimator:
         """
         Computes the class-level average energy consumed for each load class among metered consumer units.
         Returns a dictionary mapping class_id -> average metered energy consumed.
+        Raises ValueError if metered energy observation is missing.
         """
         class_metered_energies: Dict[str, List[float]] = {}
         for u in metered_units:
-            cid = getattr(u, "consumer_id", str(u))
-            class_id = getattr(u, "assigned_load_class", "residential") or "residential"
+            cid = getattr(u, "consumer_id", None)
+            if cid is None:
+                raise ValueError(f"Metered unit {u} missing consumer_id attribute")
+
+            class_id = getattr(u, "assigned_load_class", None)
+            if class_id is None:
+                raise ValueError(f"Metered consumer unit '{cid}' missing assigned_load_class attribute")
+
             if cid in metered_consumer_energies:
                 e_val = float(metered_consumer_energies[cid])
                 class_metered_energies.setdefault(class_id, []).append(e_val)
@@ -72,24 +79,30 @@ class TimeAdjustedCLAEstimator:
 
         raw_weights = {}
         for u in unmetered_units:
-            cid = getattr(u, "consumer_id", str(u))
-            class_id = getattr(u, "assigned_load_class", "residential") or "residential"
+            cid = getattr(u, "consumer_id", None)
+            if cid is None:
+                raise ValueError(f"Unmetered unit {u} missing consumer_id attribute")
+
+            class_id = getattr(u, "assigned_load_class", None)
+            if class_id is None:
+                raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
+
             base_w = ConsumerLoadClassModel.compute_expected_weight(u)
 
             if class_id in class_metered_avg and class_metered_avg[class_id] > 0:
                 avg_metered_e = class_metered_avg[class_id]
-                adjusted_w = base_w * (base_w / avg_metered_e)
+                adjusted_w = base_w * (1.0 - (avg_metered_e / base_w))
             else:
-                adjusted_w = base_w
+                overall_avg = float(np.mean(list(metered_consumer_energies.values()))) if metered_consumer_energies else 1.0
+                adjusted_w = base_w * (1.0 - (overall_avg / base_w))
 
             raw_weights[cid] = float(adjusted_w)
 
-        sum_raw = sum(raw_weights.values())
-        if sum_raw <= 0:
-            n_units = len(unmetered_units)
-            return {getattr(u, "consumer_id", str(u)): 1.0 / n_units for u in unmetered_units}
+        sum_adj = sum(raw_weights.values())
+        residual = sum_adj - 1.0
+        n_units = len(unmetered_units)
 
-        normalized_weights = {cid: float(val / sum_raw) for cid, val in raw_weights.items()}
+        normalized_weights = {cid: float(w - (residual / n_units)) for cid, w in raw_weights.items()}
         return normalized_weights
 
     def estimate(
