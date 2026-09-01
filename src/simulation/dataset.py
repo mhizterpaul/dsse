@@ -26,6 +26,18 @@ from src.transient.events import (
 )
 
 
+def get_equipment_duration_s(equipment_type: str) -> float:
+    """
+    Returns appropriate transient duration based on load category:
+    - Big/Motor loads (ac_motor, dc_motor_inverter, compressor, industrial_fan): 1.5 s
+    - Small loads (microwave, induction_plate, audio_amplifier, ups): 0.5 s
+    """
+    big_loads = {"ac_motor", "dc_motor_inverter", "compressor", "industrial_fan"}
+    if equipment_type in big_loads:
+        return 1.5
+    return 0.5
+
+
 def get_all_108_coevents(target_line: str = "feeder1_head"):
     """
     Generates the complete 108 unique co-event space for N_L = 8 consumer load models
@@ -58,15 +70,18 @@ def get_all_108_coevents(target_line: str = "feeder1_head"):
 
     # 1. 28 Load-Load pairs C(8, 2)
     for eq1, eq2 in itertools.combinations(equipment_types, 2):
-        s1 = SingleEquipmentSwitchEvent(eq1, 0.02, 0.04, target_line, {})
-        s2 = SingleEquipmentSwitchEvent(eq2, 0.02, 0.04, target_line, {})
+        dur1 = get_equipment_duration_s(eq1)
+        dur2 = get_equipment_duration_s(eq2)
+        s1 = SingleEquipmentSwitchEvent(eq1, 0.02, dur1, target_line, {})
+        s2 = SingleEquipmentSwitchEvent(eq2, 0.02, dur2, target_line, {})
         coevents.append(EquipmentEquipmentCoEvent(s1, s2))
 
     # 2. 80 Load-Fault pairs (8 equipment types * 10 fault configs)
     for eq in equipment_types:
+        dur = get_equipment_duration_s(eq)
         for f_type, f_phases, f_label in fault_configs:
-            s1 = SingleEquipmentSwitchEvent(eq, 0.02, 0.04, target_line, {})
-            f2 = SingleLineFaultEvent(f_type, 0.02, 0.04, target_line, f_phases, 0.001, {"label": f_label})
+            s1 = SingleEquipmentSwitchEvent(eq, 0.02, dur, target_line, {})
+            f2 = SingleLineFaultEvent(f_type, 0.02, 0.5, target_line, f_phases, 0.001, {"label": f_label})
             coevents.append(EquipmentLineFaultCoEvent(s1, f2))
 
     return coevents
