@@ -1,0 +1,35 @@
+=== Test: test_extract_fault_info_load_fault_event | Status: SUCCESSFUL ===
+  fault_info_extracted: {'fault_type': 'LG', 'fault_resistance_ohm': 0.05, 'faulted_phases': [0], 'target': 'feeder1_head', 'config_id': 'AG'}
+  message: Fault info successfully extracted from event and verified.
+
+=== Test: test_extract_fault_info_load_load_event | Status: SUCCESSFUL ===
+  fault_info_extracted: None (pure load-load event)
+  message: Correctly handled non-fault event.
+
+=== Test: test_retrieve_event_and_transient_info | Status: SUCCESSFUL ===
+  fault_info_from_opendss: {'fault_type': 'LLG', 'fault_resistance_ohm': 0.05, 'faulted_phases': [0, 1], 'target': 'feeder1_head', 'config_id': 'ABG'}
+  atp_transient_boundary_unit: trans1_lv_boundary_consumer_unit
+  time_series_points: 1000
+  voltage_shape: None
+  current_shape: None
+  max_voltage_v: 0.0
+  max_current_a: 0.0
+  steady_state_measurements_count: 117
+
+=== Test: test_extract_fault_info_load_fault_event | Status: SUCCESSFUL ===
+  fault_info_extracted: {'fault_type': 'LG', 'fault_resistance_ohm': 0.05, 'faulted_phases': [0], 'target': 'feeder1_head', 'config_id': 'AG'}
+  message: Fault info successfully extracted from event and verified.
+
+=== Test: test_extract_fault_info_load_load_event | Status: SUCCESSFUL ===
+  fault_info_extracted: None (pure load-load event)
+  message: Correctly handled non-fault event.
+
+=== Test: test_retrieve_event_and_transient_info | Status: SUCCESSFUL ===
+  fault_info_from_opendss: {'fault_type': 'LLG', 'fault_resistance_ohm': 0.05, 'faulted_phases': [0, 1], 'target': 'feeder1_head', 'config_id': 'ABG'}
+  atp_transient_boundary_unit: trans1_lv_boundary_consumer_unit
+  time_series_points: 1000
+  voltage_shape: None
+  current_shape: None
+  max_voltage_v: 0.0
+  max_current_a: 0.0
+  steady_state_measurements_count: 117
