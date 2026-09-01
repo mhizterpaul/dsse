@@ -1,40 +1,40 @@
 from dataclasses import dataclass
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 import numpy as np
-from power_plant import consumer_registry
-
-
-@dataclass
-class ConsumerLoadPremises:
-    consumer_id: str
-    class_id: str  # e.g., 'residential_light', 'commercial', 'industrial_motor'
-    is_sampled: bool
-    connected_load_kw: float
-    historical_billing_kwh: float = 100.0
-    supply_availability: float = 1.0
 
 
 class ConsumerLoadClassModel:
     """
     Consumer Premises and Load Class Representation for CLA:
-    Defines consumer classes c and sampled class energy profiles mu_c(t).
+    Defines consumer class weights based on assigned load class.
     """
-    CLASSES = ["residential_light", "commercial", "industrial_motor"]
-
     CLASS_WEIGHTS = {
-        "residential_light": 1.0,
+        "residential": 1.0,
         "commercial": 2.2,
-        "industrial_motor": 3.5
+        "industrial": 3.5,
+        "agricultural": 1.5
     }
 
     @classmethod
-    def compute_expected_weight(cls, premises: ConsumerLoadPremises) -> float:
+    def compute_expected_weight(cls, unit) -> float:
         """
-        Computes expected consumption weight w_i = E[E_i | C_i, X_i] based on premises characteristics.
+        Computes expected consumption weight w_i based on consumer unit characteristics.
+        Raises ValueError if required attributes are missing or invalid.
         """
-        base_w = cls.CLASS_WEIGHTS.get(premises.class_id, 1.0)
-        return float(base_w * (premises.connected_load_kw / 10.0) * premises.supply_availability)
+        class_id = getattr(unit, "assigned_load_class", None)
+        if class_id is None:
+            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' is missing assigned_load_class")
 
+        if class_id not in cls.CLASS_WEIGHTS:
+            raise ValueError(f"Unknown assigned_load_class '{class_id}' for consumer unit '{getattr(unit, 'consumer_id', unit)}'")
+
+        base_w = cls.CLASS_WEIGHTS[class_id]
+        loads = getattr(unit, "loads", None)
+        if loads is None or len(loads) == 0:
+            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' has no connected load circuits")
+
+        num_loads = len(loads)
+        return float(base_w * num_loads)
 
 
 @dataclass
@@ -69,65 +69,49 @@ class ClusterLoadAllocationEstimator:
             return 0.0
         return float(np.mean(vals))
 
-    def weighting_function(self) -> Dict[str, float]:
+    def weighting_function(
+        self,
+        unmetered_units: List[object]
+    ) -> Dict[str, float]:
         """
-        Computes normalized weights w_i for unsampled consumer units such that sum(w_i) = 1.
+        Computes normalized weights w_i for unmetered consumer units such that sum(w_i) = 1.
         """
-        if isinstance(premises_list, ConsumerLoadPremises):
-            premises_list = [premises_list]
-
-        if not premises_list:
+        if not unmetered_units:
             return {}
 
         raw_weights = {}
-        for p in premises_list:
-            raw_w = ConsumerLoadClassModel.compute_expected_weight(p)
-            raw_weights[p.consumer_id] = raw_w
+        for u in unmetered_units:
+            cid = getattr(u, "consumer_id", str(u))
+            raw_w = ConsumerLoadClassModel.compute_expected_weight(u)
+            raw_weights[cid] = raw_w
 
         sum_raw = sum(raw_weights.values())
         if sum_raw <= 0:
-            n_units = len(premises_list)
-            return {p.consumer_id: 1.0 / n_units for p in premises_list}
+            n_units = len(unmetered_units)
+            return {getattr(p, "consumer_id", str(p)): 1.0 / n_units for p in unmetered_units}
 
         normalized_weights = {cid: float(w / sum_raw) for cid, w in raw_weights.items()}
         return normalized_weights
-
-    def validation_function(
-        self,
-        feeder_supply_energy_kwh: float,
-        sampled_consumer_energy_kwh: float,
-        technical_loss_kwh: float
-    ) -> bool:
-        """
-        Validates energy balance conservation equation E_F >= E_M + E_L.
-        """
-        if feeder_supply_energy_kwh <= 0:
-            return False
-        if sampled_consumer_energy_kwh < 0 or technical_loss_kwh < 0:
-            return False
-        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + technical_loss_kwh))
 
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
         sampled_consumer_energy_kwh: float,
         technical_loss_kwh: float,
+        registry: Optional[object] = None
     ) -> ClusterLoadAllocationEstimate:
         """
         Estimates unsampled customer energy allocations using baseline CLA.
         Ensures exact feeder energy balance:
-            feeder_supply_energy_kwh - technical_losses_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
+            feeder_supply_energy_kwh - technical_loss_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
         """
-        self.validation_function(
-            feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-            sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-            technical_loss_kwh=technical_loss_kwh
-        )
-
         e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 
+        unmetered_units = []
+        if registry is not None and hasattr(registry, "get_unmetered_consumers"):
+            unmetered_units = registry.get_unmetered_consumers()
 
-        weights = self.weighting_function(consumer_registry.get_unsampled_premises)
+        weights = self.weighting_function(unmetered_units)
 
         allocations = {}
         for cid, w_i in weights.items():

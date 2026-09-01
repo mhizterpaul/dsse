@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Union, Optional
 import numpy as np
-from power_plant import consumer_registry
-from src.estimator.cla_estimator import ConsumerLoadPremises, ConsumerLoadClassModel
+from src.estimator.cla_estimator import ConsumerLoadClassModel
 
 
 @dataclass
@@ -23,27 +22,37 @@ class TimeAdjustedCLAEstimate:
 class TimeAdjustedCLAEstimator:
     """
     Time-Adjusted Cluster Load Allocation Estimator:
-    Estimates unsampled consumer energy allocations using time adjustment factors alpha_i(t)
-    and sampled-class profiles mu_c(t):
+    Estimates unsampled consumer energy allocations using time adjustment factors
+    and metered consumer unit energies:
         E_i_hat = E_U * w_i
     where sum(w_i) across unmetered population = 1.
     """
 
     def averaging_function(
         self,
-        metered_consumer_energies: Dict[str, float]
+        metered_consumer_energies: Dict[str, float],
+        metered_units: List[object]
     ) -> Dict[str, float]:
         """
         Computes the class-level average energy consumed for each load class among metered consumer units.
         Returns a dictionary mapping class_id -> average metered energy consumed.
+        Raises ValueError if metered energy observation is missing.
         """
-        metered_premises = consumer_registry.get_metered_consumer_premises()
         class_metered_energies: Dict[str, List[float]] = {}
-        for mp in metered_premises:
-            if mp.consumer_id not in metered_consumer_energies:
-                raise ValueError(f"Missing metered energy observation for consumer unit {mp.consumer_id}")
-            e_val = float(metered_consumer_energies[mp.consumer_id])
-            class_metered_energies.setdefault(mp.class_id, []).append(e_val)
+        for u in metered_units:
+            cid = getattr(u, "consumer_id", None)
+            if cid is None:
+                raise ValueError(f"Metered unit {u} missing consumer_id attribute")
+
+            class_id = getattr(u, "assigned_load_class", None)
+            if class_id is None:
+                raise ValueError(f"Metered consumer unit '{cid}' missing assigned_load_class attribute")
+
+            if cid not in metered_consumer_energies:
+                raise ValueError(f"Missing metered energy observation for consumer unit '{cid}'")
+
+            e_val = float(metered_consumer_energies[cid])
+            class_metered_energies.setdefault(class_id, []).append(e_val)
 
         class_averages = {
             c_id: float(np.mean(e_list)) for c_id, e_list in class_metered_energies.items() if e_list
@@ -51,98 +60,87 @@ class TimeAdjustedCLAEstimator:
         return class_averages
 
     def weighting_function(
-        self 
+        self,
+        unmetered_units: List[object],
+        metered_units: List[object],
+        metered_consumer_energies: Dict[str, float]
     ) -> Dict[str, float]:
         """
-        Computes normalized time-adjusted weights w_i for unsampled consumer units,
-        adjusting unit weights based on the average energy consumed by metered consumer units of the same class.
-        Sum of returned weights across unsampled population equals 1.
+        Computes normalized time-adjusted weights w_i for unmetered consumer units,
+        adjusting unit weights proportional to the ratio of unmetered unit expected energy consumption
+        to class-average metered energy consumption.
+        Sum of returned weights across unmetered population equals 1.
         """
-        if isinstance(premises_list, ConsumerLoadPremises):
-            premises_list = [premises_list]
-
-        if not premises_list:
+        if not unmetered_units:
             return {}
 
-
-
         class_metered_avg = self.averaging_function(
-            metered_consumer_energies=metered_consumer_energies)
+            metered_consumer_energies=metered_consumer_energies,
+            metered_units=metered_units
+        )
 
         raw_weights = {}
-        for p in premises_list:
-            base_w = ConsumerLoadClassModel.compute_expected_weight(p)
-            if p.class_id not in class_metered_avg or class_metered_avg[p.class_id] <= 0:
-                raise ValueError(f"No valid positive metered energy observed for load class '{p.class_id}' to compute class average metered energy.")
+        for u in unmetered_units:
+            cid = getattr(u, "consumer_id", None)
+            if cid is None:
+                raise ValueError(f"Unmetered unit {u} missing consumer_id attribute")
 
-            avg_metered_e = class_metered_avg[p.class_id]
-            class_energy_ratio = base_w / avg_metered_e
+            class_id = getattr(u, "assigned_load_class", None)
+            if class_id is None:
+                raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
 
-            alpha_i = float(avg_metered_e[p.consumer_id])
-            adjusted_w = base_w * class_energy_ratio * alpha_i
-            raw_weights[p.consumer_id] = float(adjusted_w)
+            base_w = ConsumerLoadClassModel.compute_expected_weight(u)
 
-        sum_integrals = sum(raw_weights.values())
-        if sum_integrals <= 0:
-            n_units = len(premises_list)
-            return {p.consumer_id: 1.0 / n_units for p in premises_list}
+            avg_metered_e = class_metered_avg.get(class_id, 0.0)
+            adjusted_w = base_w * ((avg_metered_e / base_w) - 1.0)
+            raw_weights[cid] = float(adjusted_w)
 
-        normalized_weights = {cid: float(val / sum_integrals) for cid, val in raw_weights.items()}
+        sum_adj = sum(raw_weights.values())
+        residual = sum_adj - 1.0
+        n_units = len(unmetered_units)
+
+        normalized_weights = {cid: float(w - (residual / n_units)) for cid, w in raw_weights.items()}
         return normalized_weights
-
-    def validation_function(
-        self,
-        feeder_supply_energy_kwh: float,
-        sampled_consumer_energy_kwh: float,
-        technical_loss_kwh: float
-    ) -> bool:
-        """
-        Validates energy balance conservation equation E_F >= E_M + E_L for time-adjusted allocation.
-        """
-        if feeder_supply_energy_kwh <= 0:
-            return False
-        if sampled_consumer_energy_kwh < 0 or technical_loss_kwh < 0:
-            return False
-        return (feeder_supply_energy_kwh >= (sampled_consumer_energy_kwh + technical_loss_kwh))
 
     def estimate(
         self,
         feeder_supply_energy_kwh: float,
-        sampled_consumer_energy_kwh: float,
         technical_loss_kwh: float,
-        unsampled_premises: List[ConsumerLoadPremises],
-        observed_time_adjustment_factors: Dict[str, float],
-        metered_premises: Optional[List[ConsumerLoadPremises]] = None,
-        metered_consumer_energies: Optional[Dict[str, float]] = None
+        metered_consumer_energies: Dict[str, float],
+        registry: Optional[object] = None
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
         Ensures exact feeder energy balance:
-            feeder_supply_energy_kwh - technical_losses_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
+            feeder_supply_energy_kwh - technical_loss_kwh - sampled_consumer_energy_kwh - aggregate_allocated_load = 0
         """
-        self.validation_function(
-            feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-            sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-            technical_loss_kwh=technical_loss_kwh
-        )
+        sampled_consumer_energy_kwh = float(sum(metered_consumer_energies.values())) if metered_consumer_energies else 0.0
 
         e_u = max(0.0, float(feeder_supply_energy_kwh - sampled_consumer_energy_kwh - technical_loss_kwh))
 
-        if not unsampled_premises:
+        unmetered_units = []
+        metered_units = []
+        if registry is not None:
+            if hasattr(registry, "get_unmetered_consumers"):
+                unmetered_units = registry.get_unmetered_consumers()
+            if hasattr(registry, "get_metered_consumers"):
+                all_metered = registry.get_metered_consumers()
+                metered_units = [u for u in all_metered if getattr(u, "consumer_id", None) in metered_consumer_energies]
+
+        if not unmetered_units:
             return TimeAdjustedCLAEstimate(
-                feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-                sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-                technical_loss_kwh=technical_loss_kwh,
-                time_adjusted_unsampled_energy_pool_kwh=e_u,
+                feeder_supply_energy_kwh=round(float(feeder_supply_energy_kwh), 4),
+                sampled_consumer_energy_kwh=round(float(sampled_consumer_energy_kwh), 4),
+                technical_loss_kwh=round(float(technical_loss_kwh), 4),
+                time_adjusted_unsampled_energy_pool_kwh=round(e_u, 4),
                 estimated_unsampled_energy_kwh=0.0,
                 allocated_unsampled_consumer_energy={},
                 weights={}
             )
 
         weights = self.weighting_function(
-            premises_list=unsampled_premises,
-            observed_time_adjustment_factors=observed_time_adjustment_factors,
-            metered_premises=metered_premises,
+            unmetered_units=unmetered_units,
+            metered_units=metered_units,
             metered_consumer_energies=metered_consumer_energies
         )
 

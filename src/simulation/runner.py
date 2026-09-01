@@ -109,18 +109,24 @@ class SimulationResult:
 def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
     """
     Checks if an event targets Feeder 1 (the baseline feeder trans1 / feeder1).
+    Uses explicit hasattr checks and logs warnings with stack traces when expected attributes are missing.
     """
     if not events:
         return True
     for ev in events:
-        target = str(getattr(ev, "target"))
-        if "trans1" in target or "feeder1" in target or "f1" in target:
-            return True
-        if hasattr(ev, "event_1"):
-            t1 = str(getattr(ev.event_1, "target"))
-            t2 = str(getattr(ev.event_2, "target"))
+        if hasattr(ev, "target"):
+            target = str(ev.target)
+            if "trans1" in target or "feeder1" in target or "f1" in target:
+                return True
+        elif hasattr(ev, "event_1") and hasattr(ev, "event_2"):
+            ev1 = ev.event_1
+            ev2 = ev.event_2
+            t1 = str(ev1.target) if hasattr(ev1, "target") else ""
+            t2 = str(ev2.target) if hasattr(ev2, "target") else ""
             if "trans1" in t1 or "feeder1" in t1 or "trans1" in t2 or "feeder1" in t2:
                 return True
+        else:
+            print(f"WARNING: Event object '{type(ev).__name__}' missing 'target' and 'event_1' attributes.\n{''.join(traceback.format_stack())}")
     return False
 
 
@@ -344,7 +350,18 @@ class CoSimulationRunner:
 
         # 4. Select consumer units and measure transients via measure_transients using ATP
         candidate_units = plant.identify_candidate_consumer_units(topology)
-        selected_units = plant.select_consumer_units(candidate_units, fraction=consumer_fraction, seed=seed)
+
+        # Select transformer boundary consumer units and fraction of consumer units
+        transformer_units = [m for m in candidate_units if m.get("branch_type") == "transformer_boundary"]
+        consumer_units = [m for m in candidate_units if m.get("branch_type") != "transformer_boundary"]
+        n_consumer_units = max(1, int(np.ceil(consumer_fraction * len(consumer_units)))) if consumer_units else 0
+        rng = np.random.default_rng(seed)
+        if consumer_units:
+            selected_indices = rng.choice(len(consumer_units), size=n_consumer_units, replace=False)
+            selected_consumer_units = [consumer_units[i] for i in selected_indices]
+        else:
+            selected_consumer_units = []
+        selected_units = transformer_units + selected_consumer_units
 
         event = events[0] if events else None
         time_s, processed_units, consumer_transients, transformer_transients = self.measure_transients(
