@@ -92,7 +92,7 @@ class TimeAdjustedCLAEstimator:
             base_w = ConsumerLoadClassModel.compute_expected_weight(u)
 
             avg_metered_e = class_metered_avg.get(class_id, 0.0)
-            adjusted_w = base_w * (1.0 - (avg_metered_e / base_w))
+            adjusted_w = base_w * ((avg_metered_e / base_w) - 1.0)
             raw_weights[cid] = float(adjusted_w)
 
         sum_adj = sum(raw_weights.values())

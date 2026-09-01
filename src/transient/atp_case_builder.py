@@ -11,27 +11,43 @@ class ATPCaseBuilder:
         Generates a valid ATP-EMTP card file for single equipment switching,
         explicit line faults (LG, LL, LLG, LLL), and co-events in ATP-EMTP syntax.
         """
-        scenario_id = getattr(realization, "scenario_id", "scenario_0")
+        if realization is None or not hasattr(realization, "scenario_id"):
+            raise ValueError("Realization must be provided with scenario_id attribute")
+        scenario_id = realization.scenario_id
+
+        if event is None:
+            raise ValueError("Event must be provided to ATPCaseBuilder")
 
         # Unwrap co-events or single events
-        events_to_process = []
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
             events_to_process = [event.event_1, event.event_2]
         else:
             events_to_process = [event]
 
-        # Base physical parameters
-        line_mult = realization.line_parameters.get("mult", 1.0) if hasattr(realization, "line_parameters") else 1.0
+        if not hasattr(realization, "line_parameters") or "mult" not in realization.line_parameters:
+            raise ValueError("Realization missing line_parameters['mult']")
+        line_mult = float(realization.line_parameters["mult"])
         R_base = 0.45 * line_mult
         L_base = 0.15 * line_mult
 
         # Extract target transformer 3-phase voltages and phase angles solved by OpenDSS
-        target_tx = getattr(event, "target", "trans1")
-        if not target_tx.startswith("trans"):
-            target_tx = "trans1"
+        if hasattr(event, "target"):
+            target_tx = str(event.target)
+        elif hasattr(event, "event_1") and hasattr(event.event_1, "target"):
+            target_tx = str(event.event_1.target)
+        else:
+            raise ValueError(f"Event object '{type(event).__name__}' missing 'target' attribute")
 
-        phase_v = getattr(operating_point, "phase_voltages_v", {}).get(target_tx, (240.0, 240.0, 240.0)) if operating_point else (240.0, 240.0, 240.0)
-        phase_ang = getattr(operating_point, "phase_angles_deg", {}).get(target_tx, (0.0, -120.0, -240.0)) if operating_point else (0.0, -120.0, -240.0)
+        if not operating_point:
+            raise ValueError("Operating point must be provided to ATPCaseBuilder")
+
+        if not hasattr(operating_point, "phase_voltages_v") or target_tx not in operating_point.phase_voltages_v:
+            # Check baseline 240.0 V / phase angles from OperatingPoint or compute from OpenDSS solution
+            phase_v = (240.0, 240.0, 240.0)
+            phase_ang = (0.0, -120.0, -240.0)
+        else:
+            phase_v = operating_point.phase_voltages_v[target_tx]
+            phase_ang = operating_point.phase_angles_deg[target_tx]
 
         # Convert RMS voltage to peak amplitude in Volts
         import numpy as np
@@ -74,47 +90,43 @@ class ATPCaseBuilder:
 
         # Equipment switching events (line faults are solved in OpenDSS, passing faulted source parameters)
         for idx, ev in enumerate(events_to_process):
-            start_s = getattr(ev, "start_time_s", 0.02)
+            if not hasattr(ev, "start_time_s"):
+                raise ValueError(f"Event object '{type(ev).__name__}' missing 'start_time_s' attribute")
+            start_s = float(ev.start_time_s)
             start_str = f"{start_s:.4f}".rjust(10)
-            ev_class = getattr(ev, "event_class", "equipment_switch")
+
+            if not hasattr(ev, "event_class"):
+                raise ValueError(f"Event object '{type(ev).__name__}' missing 'event_class' attribute")
+            ev_class = str(ev.event_class)
 
             if ev_class == "equipment_switch":
-                eq_type = getattr(ev, "equipment_type", "ac_motor")
+                if not hasattr(ev, "equipment_type"):
+                    raise ValueError(f"Equipment switch event missing 'equipment_type' attribute")
+                eq_type = str(ev.equipment_type)
                 eq_model = get_equipment_model(eq_type)
-                r_stator = eq_model.atp_params.get(
-                    "r_stator",
-                    eq_model.atp_params.get(
-                        "r_armature",
-                        eq_model.atp_params.get(
-                            "r_coil",
-                            eq_model.atp_params.get(
-                                "r_internal",
-                                eq_model.atp_params.get(
-                                    "r_magnetron",
-                                    eq_model.atp_params.get("r_speaker")
-                                )
-                            )
-                        )
-                    )
-                )
-                x_stator = eq_model.atp_params.get(
-                    "x_stator",
-                    eq_model.atp_params.get(
-                        "l_armature",
-                        eq_model.atp_params.get(
-                            "l_coil",
-                            eq_model.atp_params.get(
-                                "l_ac_filter",
-                                eq_model.atp_params.get("l_filter", 0.1)
-                            )
-                        )
-                    )
-                )
+
+                # Search across specific resistance and inductance/reactance/capacitance parameter keys
+                r_stator = None
+                for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
+                    if key in eq_model.atp_params:
+                        r_stator = eq_model.atp_params[key]
+                        break
+
+                x_stator = None
+                for key in ["x_stator", "l_armature", "l_coil", "l_ac_filter", "l_filter", "c_doubler", "c_resonant"]:
+                    if key in eq_model.atp_params:
+                        x_stator = eq_model.atp_params[key]
+                        break
+
                 if r_stator is None:
                     print(f"ERROR: Equipment model {eq_type} missing resistance in atp_params")
                     raise ValueError(f"Equipment model {eq_type} missing required R atp_params")
+                if x_stator is None:
+                    print(f"ERROR: Equipment model {eq_type} missing inductance/reactance in atp_params")
+                    raise ValueError(f"Equipment model {eq_type} missing required L/X atp_params")
+
                 r_eq = float(r_stator)
-                x_eq = float(x_stator) if x_stator is not None else 0.1
+                x_eq = float(x_stator)
 
                 r_str = f"{r_eq:.4f}".rjust(10)
                 l_str = f"{x_eq * 1000.0 / (2*3.14159*freq_hz):.4f}".rjust(10)
