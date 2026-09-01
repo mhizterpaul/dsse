@@ -98,21 +98,28 @@ class CoSimulationRunner:
         op: Any,
         event: Any,
         selected_consumer_units: List[dict],
-        scenario_id: str
+        scenario_id: str,
+        feeder_idx: int = 1,
+        use_baseline_feeder: bool = True
     ) -> tuple[np.ndarray, dict, dict, dict]:
         """
         Exclusively executes ATP transient simulation cases and parses EMT waveforms for consumer load
-        and transformer transients using derived network parameters.
-        Caches ATP responses for specific load or fault events under identical operating points.
-        Appends unique scenario and PID identifiers to the case file path to guarantee process safety.
+        and transformer transients using derived line parameters and BCTRAN transformer specs.
+        No default fallbacks are allowed; invalid or un-simulated states raise ValueError with stack trace.
         """
         if event is None:
-            t_vec = np.linspace(0.0, 0.1, 1000)
-            return t_vec, {}, {}, {}
+            err_msg = f"Cannot measure transients for None event in scenario {scenario_id}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg)
 
-        # Construct deterministic feeder-aware ATP response cache key
-        target_tx = getattr(event, "target", "trans1")
-        feeder_id = getattr(event, "gt_feeder_id", getattr(event, "feeder_id", "feeder_1"))
+        if not op:
+            err_msg = f"Operating point must be provided for transient measurement in scenario {scenario_id}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg)
+
+        from src.power_plant.lv_transformers import get_distribution_transformer_spec
+        tx_spec = get_distribution_transformer_spec(feeder_idx, use_baseline=use_baseline_feeder)
+
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
             t_off = getattr(event, "time_offset_s", 0.0)
             ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.4f}s"
@@ -124,34 +131,34 @@ class CoSimulationRunner:
         else:
             ev_key = f"event_{getattr(event, 'event_type', 'steady')}"
 
-        v_tuple = op.phase_voltages_v.get(str(target_tx)) if hasattr(op, "phase_voltages_v") and op.phase_voltages_v else ()
-        a_tuple = op.phase_angles_deg.get(str(target_tx)) if hasattr(op, "phase_angles_deg") and op.phase_angles_deg else ()
-        freq = getattr(op, "frequency_hz", 50.0)
-
-        atp_cache_key = (ev_key, feeder_id, target_tx, v_tuple, a_tuple, freq)
-        if atp_cache_key in self._atp_response_cache:
-            return self._atp_response_cache[atp_cache_key]
-
-        # Unique ATP case file path per process and scenario to prevent race conditions
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
         try:
-            class DummyRealization:
-                def __init__(self, sid):
+            class RealizationContainer:
+                def __init__(self, sid, tx, f_idx):
                     self.scenario_id = sid
-                    self.line_parameters = {"mult": 1.0}
+                    self.feeder_idx = f_idx
+                    self.transformer_spec = tx
+                    self.line_parameters = {
+                        "r1": 0.21,
+                        "x1": 0.08,
+                        "mult": 1.0
+                    }
 
-            self.atp_builder.build(DummyRealization(scenario_id), op, event, atp_case_path)
+            realization = RealizationContainer(scenario_id, tx_spec, feeder_idx)
+            self.atp_builder.build(realization, op, event, atp_case_path)
             atp_result = ATPRunner().run(atp_case_path)
             emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
 
-            res_tuple = (emt_waveforms.time_s, emt_waveforms.pcc_voltages, emt_waveforms.pcc_currents, emt_waveforms.event_metadata)
-            self._atp_response_cache[atp_cache_key] = res_tuple
-            return res_tuple
+            if emt_waveforms is None or emt_waveforms.time_s is None or len(emt_waveforms.time_s) == 0:
+                raise ValueError(f"ATP simulation returned empty waveforms for scenario {scenario_id}")
+
+            return emt_waveforms.time_s, emt_waveforms.pcc_voltages, emt_waveforms.pcc_currents, emt_waveforms.event_metadata
+
         except Exception as e:
-            print(f"WARNING: Transient evaluation warning for scenario {scenario_id}: {e}\n{traceback.format_exc()}")
-            t_vec = np.linspace(0.0, 0.1, 1000)
-            return t_vec, {}, {}, {}
+            err_msg = f"Failed ATP transient measurement for scenario '{scenario_id}': {e}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg) from e
             
 
     def run_steady_state_simulation(
@@ -243,7 +250,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     else:
         feeder_idx = getattr(co_ev, "gt_feeder_id", (task_idx % 3) + 1)
         if isinstance(feeder_idx, str) and feeder_idx.startswith("feeder_"):
-            feeder_idx = int(feeder_id[7:])
+            feeder_idx = int(feeder_idx[7:])
 
     rng = np.random.default_rng(seed + task_idx)
     bus_node_idx = int(rng.integers(1, 19))
@@ -285,21 +292,30 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev1, "joint_ev1")
     add_event_to_opendss(ev2, "joint_ev2")
     op_joint = plant.solve_operating_point(runner.dss)
-    t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint")
+    t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
+        op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint",
+        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+    )
 
     # --- STEP 2: Add Event 1 to network, solve for feeder parameters, evaluate transformer response for Event 1 ---
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     add_event_to_opendss(ev1, "ev1")
     op_1 = plant.solve_operating_point(runner.dss)
-    t1, v1_dict, i1_dict, _ = runner.measure_transients(op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1")
+    t1, v1_dict, i1_dict, _ = runner.measure_transients(
+        op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1",
+        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+    )
 
     # --- STEP 3: Add Event 2 to network, solve for feeder parameters, evaluate transformer response for Event 2 ---
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     add_event_to_opendss(ev2, "ev2")
     op_2 = plant.solve_operating_point(runner.dss)
-    t2, v2_dict, i2_dict, _ = runner.measure_transients(op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2")
+    t2, v2_dict, i2_dict, _ = runner.measure_transients(
+        op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2",
+        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+    )
 
     tx_unit_id = f"trans{feeder_idx}_lv_boundary_consumer_unit"
 
@@ -327,7 +343,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
 
     return {
         "co_ev": co_ev,
-        "time_s": t_joint if t_joint is not None else np.linspace(0.0, 0.1, 1000),
+        "time_s": t_joint,
         "v1": v1,
         "i1": i1,
         "v2": v2,
