@@ -221,31 +221,41 @@ class CoSimulationRunner:
 def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     """
     Worker function executed in parallel across 6 process workers.
-    Initializes a thread/process-local OpenDSS instance and CoSimulationRunner,
+    Reuses process-level CoSimulationRunner and its OpenDSS instance,
+    picks random target buses and lines across feeders in the network,
     adds dynamic loads and faults to OpenDSS, solves operating point for the connected transformer,
     and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event.
     """
     co_ev, use_baseline_feeder, seed, task_idx = args_tuple
 
-    from opendssdirect import dss as worker_dss
-    import src.power_plant.plant as plant
     from src.loads import get_equipment_model
 
-    # Instantiate runner for worker process
+    # Use runner instance initialized per worker process
     runner = CoSimulationRunner()
-    runner.dss = worker_dss
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
 
     ev1 = co_ev.event_1
     ev2 = co_ev.event_2
 
-    # Target transformer interface (e.g., trans1_lv_boundary_consumer_unit)
-    target_bus = getattr(ev1, "target", "feeder1_head")
-    feeder_idx = getattr(co_ev, "gt_feeder_id", 1) if hasattr(co_ev, "gt_feeder_id") else 1
+    # Determine feeder and target bus/line covering all feeders in the network
+    if use_baseline_feeder:
+        feeder_idx = 1
+    else:
+        feeder_idx = getattr(co_ev, "gt_feeder_id", (task_idx % 3) + 1)
+        if isinstance(feeder_idx, str) and feeder_idx.startswith("feeder_"):
+            feeder_idx = int(feeder_id[7:])
+
+    rng = np.random.default_rng(seed + task_idx)
+    bus_node_idx = int(rng.integers(1, 19))
+    target_bus = f"f{feeder_idx}_node{bus_node_idx}"
+    target_line = f"down_{feeder_idx}_{bus_node_idx}"
+
     target_tx = f"trans{feeder_idx}"
     target_pcc = [{
         "consumer_unit_id": f"trans{feeder_idx}_lv_boundary_consumer_unit",
-        "branch_type": "transformer_boundary"
+        "branch_type": "transformer_boundary",
+        "target_bus": target_bus,
+        "target_line": target_line
     }]
 
     def apply_event_to_opendss(ev, event_prefix: str):
@@ -255,8 +265,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             p_kw = eq_model.rated_power_kw
             pf = eq_model.power_factor
             ld_name = f"MyNewLoad_{event_prefix}_{eq_type}"
-            worker_dss.run_command(
-                f"New Load.{ld_name} bus1=f{feeder_idx}_node3 phases=3 conn=Wye kV=0.415 kW={p_kw} PF={pf}"
+            runner.dss.run_command(
+                f"New Load.{ld_name} bus1={target_bus} phases=3 conn=Wye kV=0.415 kW={p_kw} PF={pf}"
             )
         elif getattr(ev, "event_class", "") == "line_fault":
             f_type = getattr(ev, "fault_type")
@@ -265,8 +275,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             num_phases = len(f_phases)
             ph_suffix = "." + ".".join(str(p + 1) for p in f_phases)
             fault_name = f"F_{event_prefix}_{f_type}"
-            worker_dss.run_command(
-                f"New Fault.{fault_name} bus1=f{feeder_idx}_node3{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
+            runner.dss.run_command(
+                f"New Fault.{fault_name} bus1={target_bus}{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
             )
 
     def get_event_key(ev, prefix: str):
@@ -285,9 +295,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     if key1 in runner._op_cache:
         op_1 = runner._op_cache[key1]
     else:
-        worker_dss.run_command("disable Fault.*")
+        runner.dss.run_command("disable Fault.*")
         apply_event_to_opendss(ev1, "ev1")
-        op_1 = plant.solve_operating_point(worker_dss)
+        op_1 = plant.solve_operating_point(runner.dss)
         runner._op_cache[key1] = op_1
     t1, v1_dict, i1_dict, _ = runner.measure_transients(op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1")
 
@@ -296,9 +306,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         op_2 = runner._op_cache[key2]
     else:
         runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-        worker_dss.run_command("disable Fault.*")
+        runner.dss.run_command("disable Fault.*")
         apply_event_to_opendss(ev2, "ev2")
-        op_2 = plant.solve_operating_point(worker_dss)
+        op_2 = plant.solve_operating_point(runner.dss)
         runner._op_cache[key2] = op_2
     t2, v2_dict, i2_dict, _ = runner.measure_transients(op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2")
 
@@ -307,10 +317,10 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         op_joint = runner._op_cache[key_joint]
     else:
         runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-        worker_dss.run_command("disable Fault.*")
+        runner.dss.run_command("disable Fault.*")
         apply_event_to_opendss(ev1, "joint_ev1")
         apply_event_to_opendss(ev2, "joint_ev2")
-        op_joint = plant.solve_operating_point(worker_dss)
+        op_joint = plant.solve_operating_point(runner.dss)
         runner._op_cache[key_joint] = op_joint
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint")
 
