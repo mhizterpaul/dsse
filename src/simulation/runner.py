@@ -283,13 +283,13 @@ class CoSimulationRunner:
 
             fault_count = 0
             for ev in events_to_check:
-                ev_class = getattr(ev, "event_class", "")
+                ev_class = getattr(ev, "event_class")
                 if ev_class == "line_fault":
                     fault_count += 1
                     f_type = getattr(ev, "fault_type", "LG")
                     target = getattr(ev, "target", "trans1")
-                    f_res = getattr(ev, "fault_resistance", 0.05)
-                    phases = getattr(ev, "faulted_phases", (0,))
+                    f_res = getattr(ev, "fault_resistance")
+                    phases = getattr(ev, "faulted_phases")
                     fault_key_parts.append(f"{f_type}_{target}_{f_res}_{phases}")
 
                     target_bus = f"feeder{target.replace('trans', '')}_sec" if target.startswith("trans") else "feeder1_sec"

@@ -112,8 +112,8 @@ def _process_coevent_worker(task_args):
         reinitialize_plant=False
     )
     unit_co = sim_co.processed_consumer_units.get(m_id, {})
-    v_co = np.array(unit_co.get("raw_voltage", np.zeros((1000, 3))))
-    i_co = np.array(unit_co.get("raw_current", np.zeros((1000, 3))))
+    v_co = np.array(unit_co.get("raw_voltage"))
+    i_co = np.array(unit_co.get("raw_current"))
 
     # 2. Constituent event 1 simulation
     sim_1 = runner.run_simulation(
@@ -126,8 +126,8 @@ def _process_coevent_worker(task_args):
         reinitialize_plant=False
     )
     unit_1 = sim_1.processed_consumer_units.get(m_id, {})
-    v1_sig = np.array(unit_1.get("raw_voltage", np.zeros((1000, 3))))
-    i1_sig = np.array(unit_1.get("raw_current", np.zeros((1000, 3))))
+    v1_sig = np.array(unit_1.get("raw_voltage"))
+    i1_sig = np.array(unit_1.get("raw_current"))
 
     # 3. Constituent event 2 simulation
     sim_2 = runner.run_simulation(
@@ -140,8 +140,8 @@ def _process_coevent_worker(task_args):
         reinitialize_plant=False
     )
     unit_2 = sim_2.processed_consumer_units.get(m_id, {})
-    v2_sig = np.array(unit_2.get("raw_voltage", np.zeros((1000, 3))))
-    i2_sig = np.array(unit_2.get("raw_current", np.zeros((1000, 3))))
+    v2_sig = np.array(unit_2.get("raw_voltage"))
+    i2_sig = np.array(unit_2.get("raw_current"))
 
     t_s = sim_co.time_s if len(sim_co.time_s) > 0 else np.linspace(0.0, 0.1, 1000)
 
