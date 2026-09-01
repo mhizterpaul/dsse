@@ -20,14 +20,14 @@ def extract_fault_info(co_ev: Any) -> str:
     fault_info = {}
 
     # First check event objects (SingleLineFaultEvent) inside co_ev
-    for ev in [getattr(co_ev, "event_1", None), getattr(co_ev, "event_2", None)]:
-        if isinstance(ev, SingleLineFaultEvent) or (ev and getattr(ev, "event_class", "") == "line_fault"):
+    for ev in [getattr(co_ev, "event_1"), getattr(co_ev, "event_2")]:
+        if isinstance(ev, SingleLineFaultEvent) or (ev and getattr(ev, "event_class") == "line_fault"):
             fault_info = {
-                "fault_type": getattr(ev, "fault_type", ""),
-                "fault_resistance_ohm": getattr(ev, "fault_resistance", 0.05),
-                "faulted_phases": list(getattr(ev, "faulted_phases", (0,))),
-                "target": getattr(ev, "target", ""),
-                "config_id": getattr(ev, "parameters", {}).get("config_id", "")
+                "fault_type": getattr(ev, "fault_type"),
+                "fault_resistance_ohm": getattr(ev, "fault_resistance"),
+                "faulted_phases": list(getattr(ev, "faulted_phases")),
+                "target": getattr(ev, "target"),
+                "config_id": getattr(ev, "parameters", {}).get("config_id")
             }
             break
 
@@ -42,12 +42,12 @@ def extract_fault_info(co_ev: Any) -> str:
                     "fault_type": "LG" if phases_val == 1 else "LL",
                     "fault_resistance_ohm": r_val,
                     "faulted_phases": [0] if phases_val == 1 else [0, 1],
-                    "bus": bus_names[0] if bus_names else ""
+                    "bus": bus_names[0] 
                 }
         except Exception:
             pass
 
-    return json.dumps(fault_info) if fault_info else ""
+    return json.dumps(fault_info)
 
 
 class SimulationResult:
@@ -82,13 +82,13 @@ class SimulationResult:
         for mtr in selected_consumer_units:
             if isinstance(mtr, dict):
                 m_id = mtr.get("consumer_unit_id", mtr.get("boundary_unit_id"))
-                b_type = mtr.get("branch_type", "")
+                b_type = mtr.get("branch_type")
             else:
-                m_id = getattr(mtr, "consumer_id", "consumer")
+                m_id = getattr(mtr, "consumer_id")
                 b_type = "consumer"
 
-            v_wave = emt_waveforms.pcc_voltages.get(m_id, list(emt_waveforms.pcc_voltages.values())[0] if emt_waveforms.pcc_voltages else None)
-            i_wave = emt_waveforms.pcc_currents.get(m_id, list(emt_waveforms.pcc_currents.values())[0] if emt_waveforms.pcc_currents else None)
+            v_wave = emt_waveforms.pcc_voltages.get(m_id, list(emt_waveforms.pcc_voltages.values())[0])
+            i_wave = emt_waveforms.pcc_currents.get(m_id, list(emt_waveforms.pcc_currents.values())[0])
 
             if v_wave is not None and i_wave is not None:
                 data_entry = {"raw_voltage": v_wave, "raw_current": i_wave}
@@ -113,12 +113,12 @@ def is_baseline_feeder_event(events: Optional[List[Any]]) -> bool:
     if not events:
         return True
     for ev in events:
-        target = str(getattr(ev, "target", ""))
+        target = str(getattr(ev, "target"))
         if "trans1" in target or "feeder1" in target or "f1" in target:
             return True
         if hasattr(ev, "event_1"):
-            t1 = str(getattr(ev.event_1, "target", ""))
-            t2 = str(getattr(ev.event_2, "target", ""))
+            t1 = str(getattr(ev.event_1, "target"))
+            t2 = str(getattr(ev.event_2, "target"))
             if "trans1" in t1 or "feeder1" in t1 or "trans1" in t2 or "feeder1" in t2:
                 return True
     return False
@@ -198,9 +198,9 @@ class CoSimulationRunner:
             return t_vec, {}, {}, {}
 
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
-            t_off = getattr(event, "time_offset_s", 0.0)
+            t_off = getattr(event, "time_offset_s")
             ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.2f}s"
-        elif getattr(event, "event_class", "") == "equipment_switch":
+        elif getattr(event, "event_class") == "equipment_switch":
             ev_key = f"{event.event_type}_switch"
         else:
             ev_key = "dist_fault_steady"
@@ -286,8 +286,8 @@ class CoSimulationRunner:
                 ev_class = getattr(ev, "event_class")
                 if ev_class == "line_fault":
                     fault_count += 1
-                    f_type = getattr(ev, "fault_type", "LG")
-                    target = getattr(ev, "target", "trans1")
+                    f_type = getattr(ev, "fault_type")
+                    target = getattr(ev, "target")
                     f_res = getattr(ev, "fault_resistance")
                     phases = getattr(ev, "faulted_phases")
                     fault_key_parts.append(f"{f_type}_{target}_{f_res}_{phases}")

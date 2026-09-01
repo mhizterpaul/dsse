@@ -143,7 +143,7 @@ def _process_coevent_worker(task_args):
     v2_sig = np.array(unit_2.get("raw_voltage"))
     i2_sig = np.array(unit_2.get("raw_current"))
 
-    t_s = sim_co.time_s if len(sim_co.time_s) > 0 else np.linspace(0.0, 0.1, 1000)
+    t_s = sim_co.time_s  
 
     # High-pass filter fundamental components
     v1_hp = remove_low_frequency_components(v1_sig)
@@ -160,8 +160,8 @@ def _process_coevent_worker(task_args):
     res_v = v_co_hp - v_comp
     res_i = i_co_hp - i_comp
 
-    v_mag = float(np.max(np.abs(res_v)))
-    i_mag = float(np.max(np.abs(res_i)))
+    v_mag = float(np.abs(res_v))
+    i_mag = float(np.abs(res_i))
 
     row_data = {
         "p_idx": p_idx,
@@ -225,7 +225,7 @@ def process_dataset_coevents_in_batches(all_108_pairs, use_baseline_transformers
     """
     tasks = []
     for p_idx, (pair_cat, co_ev) in enumerate(all_108_pairs):
-        time_offset = (0.01 if p_idx % 2 == 1 else 0.0) if is_dataset_3 else 0.0
+        time_offset = (0.01 if p_idx % 2 == 1 else 0.0) 
         tasks.append((p_idx, pair_cat, co_ev, use_baseline_transformers, time_offset))
 
     num_batches = int(np.ceil(len(tasks) / float(batch_size)))
@@ -317,17 +317,17 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         unsampled_units = [u for u in feeder_units if not u.is_metered]
 
         gt_sampled_energy_kwh = round(
-            sum(consumer_energies.get(u.consumer_id, 0.0) for u in sampled_units),
+            sum(consumer_energies.get(u.consumer_id) for u in sampled_units),
             4
         )
 
         gt_unsampled_true_kwh = round(
-            sum(consumer_energies.get(u.consumer_id, 0.0) for u in unsampled_units),
+            sum(consumer_energies.get(u.consumer_id) for u in unsampled_units),
             4
         )
 
         gt_latent_energy_kwh = round(
-            sum(consumer_energies.get(latent_map[u.bus_id].consumer_id, 0.0) for u in feeder_units if u.bus_id in latent_map),
+            sum(consumer_energies.get(latent_map[u.bus_id].consumer_id) for u in feeder_units if u.bus_id in latent_map),
             4
         )
 
@@ -378,29 +378,20 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             4
         )
 
-        # Estimate energy for unsampled units
-        unsampled_premises = [
-            ConsumerLoadPremises(
-                consumer_id=u.consumer_id,
-                class_id=u.assigned_load_class or "residential",
-                is_sampled=False,
-                connected_load_kw=float(len(u.loads) * 5.0)
-            )
-            for u in unsampled_units
-        ]
+        
 
         metered_premises = [
             ConsumerLoadPremises(
                 consumer_id=u.consumer_id,
-                class_id=u.assigned_load_class or "residential",
+                class_id=u.assigned_load_class,
                 is_sampled=True,
-                connected_load_kw=float(len(u.loads) * 5.0)
+                connected_load_kw=float(len(u.loads))
             )
             for u in sampled_units
         ]
 
         metered_consumer_energies = {
-            u.consumer_id: float(sim_res_d1.steady_state_measurements.get(u.consumer_id, {}).get("energy_kwh", 0.0))
+            u.consumer_id: float(sim_res_d1.steady_state_measurements.get(u.consumer_id).get("energy_kwh"))
             for u in sampled_units
         }
 
@@ -414,22 +405,18 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
-            unsampled_premises=unsampled_premises
-        ) if (is_valid_cla and unsampled_premises) else None
+        ) 
 
-        obs_time_factors = {p.consumer_id: 1.0 for p in unsampled_premises}
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
-            unsampled_premises=unsampled_premises,
-            observed_time_adjustment_factors=obs_time_factors,
             metered_premises=metered_premises,
             metered_consumer_energies=metered_consumer_energies
-        ) if (is_valid_cla and unsampled_premises) else None
+        ) 
 
-        weights_map = cla_estimator.weighting_function(unsampled_premises) if unsampled_premises else {}
+        weights_map = cla_estimator.weighting_function()
 
         duration_hours = 5.0 / 60.0  # Total time network energized (5 minutes = 300 s / 3600 h)
 
@@ -471,12 +458,12 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             p_loss_kw = 3.0 * (i_total_line ** 2) * r_drop / 1000.0
             c_line_loss_kwh = round(float(p_loss_kw * duration_hours), 6)
 
-            cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and cla_res and u.consumer_id in cla_res.allocated_unsampled_consumer_energy) else np.nan
-            time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id, 0.0)), 4) if (not is_metered and time_cla_res and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy) else np.nan
+            cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4) if (not is_metered and cla_res and u.consumer_id in cla_res.allocated_unsampled_consumer_energy) else np.nan
+            time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4) if (not is_metered and time_cla_res and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy) else np.nan
 
-            unit_weight = round(float(weights_map.get(u.consumer_id, np.nan)), 6) if not is_metered else np.nan
+            unit_weight = round(float(weights_map.get(u.consumer_id)), 6) if not is_metered else np.nan
 
-            assigned_class = u.assigned_load_class if u.assigned_load_class else "residential"
+            assigned_class = u.assigned_load_class 
             consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
             # Registered consumer unit (consumer_type includes assigned class and status type)
