@@ -93,11 +93,8 @@ def register_lv1_consumers(topology: dict = None, seed: int = 1001, registry: Co
         cid = f"consumer_{feeder_id}_{bus}"
         is_metered = (idx < num_metered)
 
-        # Force metered consumers to cover all 4 load classes
-        if is_metered:
-            assigned_class = load_classes[idx % len(load_classes)]
-        else:
-            assigned_class = None
+        # Include all 4 consumer load classes across both metered and unmetered consumer units
+        assigned_class = load_classes[idx % len(load_classes)]
 
         ln_info = bus_line_map.get(bus, {})
         length = float(ln_info.get("length", 0.05))
