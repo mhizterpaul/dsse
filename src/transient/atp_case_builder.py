@@ -225,7 +225,11 @@ class ATPCaseBuilder:
                     branch_cards.append(f"  {fault_node}                       {r_fault_str}                                               0")
                     switch_cards.append(f"  {sec_node}  {fault_node}       {start_str}{end_str}                                             0")
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
-                eq_type = getattr(ev, "equipment_type", "ac_motor")
+                if not hasattr(ev, "equipment_type"):
+                    err_msg = f"Event missing required attribute 'equipment_type': {ev}"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg)
+                eq_type = ev.equipment_type
                 from src.loads import get_equipment_model
                 eq_model = get_equipment_model(eq_type)
                 r_stator = None
@@ -238,8 +242,12 @@ class ATPCaseBuilder:
                     if key in eq_model.atp_params:
                         x_stator = eq_model.atp_params[key]
                         break
-                r_eq = float(r_stator) if r_stator is not None else 0.5
-                x_eq = float(x_stator) if x_stator is not None else 10.0
+                if r_stator is None or x_stator is None:
+                    err_msg = f"Equipment model '{eq_type}' missing required R or X in atp_params"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg)
+                r_eq = float(r_stator)
+                x_eq = float(x_stator)
                 r_str = f"{r_eq:.4f}".rjust(10)
                 l_str = f"{x_eq * 1000.0 / (2*np.pi*freq_hz):.4f}".rjust(10)
                 node_prefix = f"E{idx}"

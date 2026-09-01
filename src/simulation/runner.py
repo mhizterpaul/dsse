@@ -22,6 +22,70 @@ class SimulationResult:
     operating_point: Optional[Any] = None
 
 
+def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
+    """
+    Extracts fault currents, fault resistance (R), line parameters (R1, X1),
+    and event specifications from active OpenDSS elements and event object.
+    Raises ValueError with stack trace if element or parameters are missing/invalid.
+    """
+    if hasattr(event_spec, "event_2") and hasattr(event_spec.event_2, "fault_type"):
+        ev_fault = event_spec.event_2
+    elif hasattr(event_spec, "event_1") and hasattr(event_spec.event_1, "fault_type"):
+        ev_fault = event_spec.event_1
+    elif hasattr(event_spec, "fault_type"):
+        ev_fault = event_spec
+    else:
+        return json.dumps({})
+
+    # Query Fault element
+    if not dss_instance.Circuit.SetActiveElement(f"Fault.{fault_id}"):
+        err_msg = f"Fault element 'Fault.{fault_id}' could not be activated in OpenDSS"
+        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+        raise ValueError(err_msg)
+
+    fault_currents = dss_instance.CktElement.Currents()
+    try:
+        fault_r = float(dss_instance.Properties.Value("r"))
+    except Exception as e:
+        err_msg = f"Could not read property 'r' from Fault.{fault_id}: {e}"
+        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+        raise ValueError(err_msg) from e
+
+    # Query Line element
+    if not dss_instance.Circuit.SetActiveElement(f"Line.{target_line}"):
+        err_msg = f"Line element 'Line.{target_line}' could not be activated in OpenDSS"
+        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+        raise ValueError(err_msg)
+
+    try:
+        line_r1 = float(dss_instance.Properties.Value("r1"))
+        line_x1 = float(dss_instance.Properties.Value("x1"))
+    except Exception as e:
+        err_msg = f"Could not read properties 'r1'/'x1' from Line.{target_line}: {e}"
+        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+        raise ValueError(err_msg) from e
+
+    if not hasattr(ev_fault, "fault_type") or not hasattr(ev_fault, "faulted_phases") or not hasattr(ev_fault, "start_time_s") or not hasattr(ev_fault, "duration_s"):
+        err_msg = f"Fault event object missing required attributes (fault_type, faulted_phases, start_time_s, duration_s): {ev_fault}"
+        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+        raise ValueError(err_msg)
+
+    fault_info = {
+        "fault_id": fault_id,
+        "target_line": target_line,
+        "fault_type": str(ev_fault.fault_type),
+        "fault_resistance_ohm": fault_r,
+        "faulted_phases": list(ev_fault.faulted_phases),
+        "fault_currents": [float(c) for c in fault_currents],
+        "line_r1_ohm": line_r1,
+        "line_x1_ohm": line_x1,
+        "start_time_s": float(ev_fault.start_time_s),
+        "duration_s": float(ev_fault.duration_s)
+    }
+
+    return json.dumps(fault_info)
+
+
 
 
 class CoSimulationRunner:
@@ -97,16 +161,32 @@ class CoSimulationRunner:
         from src.power_plant.lv_transformers import get_distribution_transformer_spec
         tx_spec = get_distribution_transformer_spec(feeder_idx, use_baseline=use_baseline_feeder)
 
+        target_tx = f"trans{feeder_idx}"
+        feeder_id = f"feeder_{feeder_idx}"
+
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
-            t_off = getattr(event, "time_offset_s", 0.0)
+            t_off = event.time_offset_s
             ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.4f}s"
-        elif getattr(event, "event_class", "") == "equipment_switch":
-            ev_key = f"{getattr(event, 'equipment_type')}_switch"
-        elif getattr(event, "event_class", "") == "line_fault":
-            f_phases = getattr(event, "faulted_phases", (0,))
-            ev_key = f"{getattr(event, 'fault_type')}_{'-'.join(map(str, f_phases))}_{getattr(event, 'fault_resistance', 0.001)}"
+        elif hasattr(event, "equipment_type"):
+            ev_key = f"{event.equipment_type}_switch"
+        elif hasattr(event, "fault_type"):
+            f_phases = event.faulted_phases
+            f_res = event.fault_resistance
+            ev_key = f"{event.fault_type}_{'-'.join(map(str, f_phases))}_{f_res}"
+        elif hasattr(event, "event_type"):
+            ev_key = f"event_{event.event_type}"
         else:
-            ev_key = f"event_{getattr(event, 'event_type', 'steady')}"
+            err_msg = f"Event object missing recognizable event type attributes: {event}"
+            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+            raise ValueError(err_msg)
+
+        v_tuple = op.phase_voltages_v[target_tx]
+        a_tuple = op.phase_angles_deg[target_tx]
+        freq = op.frequency_hz
+
+        atp_cache_key = (ev_key, feeder_id, target_tx, v_tuple, a_tuple, freq)
+        if atp_cache_key in self._atp_response_cache:
+            return self._atp_response_cache[atp_cache_key]
 
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
@@ -193,9 +273,14 @@ class CoSimulationRunner:
                 start_s = float(event.start_time_s)
                 dur_s = float(event.duration_s)
 
-            f_type = getattr(event, "fault_type", None)
-            f_phases = getattr(event, "faulted_phases", (0,))
-            f_res = float(getattr(event, "fault_resistance", 0.001))
+            if hasattr(event, "fault_type"):
+                f_type = event.fault_type
+                f_phases = event.faulted_phases
+                f_res = float(event.fault_resistance)
+            else:
+                f_type = None
+                f_phases = (0,)
+                f_res = 0.001
 
             transient_ev = TransientEvent(
                 event_class=ev_class,
@@ -371,6 +456,18 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev1, "joint_ev1")
     add_event_to_opendss(ev2, "joint_ev2")
     op_joint = plant.solve_operating_point(runner.dss)
+
+    active_fault_id = None
+    if hasattr(co_ev, "event_2") and hasattr(co_ev.event_2, "fault_type"):
+        active_fault_id = f"F_joint_ev2_{co_ev.event_2.fault_type}"
+    elif hasattr(co_ev, "event_1") and hasattr(co_ev.event_1, "fault_type"):
+        active_fault_id = f"F_joint_ev1_{co_ev.event_1.fault_type}"
+
+    if active_fault_id:
+        fault_info_json = extract_fault_info(runner.dss, active_fault_id, target_line, co_ev)
+    else:
+        fault_info_json = json.dumps({})
+
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
         op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint",
         feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
@@ -417,27 +514,6 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     i2 = i2_dict[tx_unit_id]
     v_joint = v_joint_dict[tx_unit_id]
     i_joint = i_joint_dict[tx_unit_id]
-
-    if hasattr(co_ev, "event_2") and hasattr(co_ev.event_2, "fault_type"):
-        ev2_fault = co_ev.event_2
-        f_phases = getattr(ev2_fault, "faulted_phases", [0])
-        fault_info_json = json.dumps({
-            "fault_type": str(ev2_fault.fault_type),
-            "fault_resistance_ohm": float(getattr(ev2_fault, "fault_resistance", 0.001)),
-            "faulted_phases": list(f_phases),
-            "bus": target_bus
-        })
-    elif hasattr(co_ev, "event_1") and hasattr(co_ev.event_1, "fault_type"):
-        ev1_fault = co_ev.event_1
-        f_phases = getattr(ev1_fault, "faulted_phases", [0])
-        fault_info_json = json.dumps({
-            "fault_type": str(ev1_fault.fault_type),
-            "fault_resistance_ohm": float(getattr(ev1_fault, "fault_resistance", 0.001)),
-            "faulted_phases": list(f_phases),
-            "bus": target_bus
-        })
-    else:
-        fault_info_json = json.dumps({})
 
     return {
         "co_ev": co_ev,
