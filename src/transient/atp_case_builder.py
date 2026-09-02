@@ -1,7 +1,7 @@
 import os
 import traceback
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Literal
+from typing import Optional, List, Tuple, Literal, Any
 import numpy as np
 
 
@@ -78,6 +78,9 @@ class TransientEvent:
     fault_type: Optional[str] = None
     faulted_phases: Tuple[int, ...] = (0,)
     fault_resistance_ohm: float = 0.001
+    equipment_type: Optional[str] = None
+    event_1: Optional[Any] = None
+    event_2: Optional[Any] = None
 
     @property
     def end_time_s(self) -> float:
@@ -368,7 +371,10 @@ class ATPCaseBuilder:
             location=target_tx,
             fault_type=f_type,
             faulted_phases=tuple(f_phases),
-            fault_resistance_ohm=f_res
+            fault_resistance_ohm=f_res,
+            equipment_type=getattr(event, "equipment_type", None),
+            event_1=getattr(event, "event_1", None),
+            event_2=getattr(event, "event_2", None)
         )
 
         sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
