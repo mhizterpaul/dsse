@@ -8,6 +8,7 @@ from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_networ
 from src.power_plant.lv_network_2 import generate_lv2_topology, build_lv2_network, register_lv2_consumers
 from src.power_plant.lv_network_3 import generate_lv3_topology, build_lv3_network, register_lv3_consumers
 from src.power_plant.consumer_registry import ConsumerRegistry
+from src.loads import get_equipment_model
 
 
 def generate_known_radial_topology(feeder_idx: int, num_buses: int = 20, rng=None, seed: int = 42) -> dict:
@@ -78,8 +79,6 @@ def identify_candidate_consumer_units(topology: dict) -> list[dict]:
     return candidate_consumer_units
 
 
-
-
 @dataclass
 class OperatingPoint:
     time_s: float
@@ -98,12 +97,91 @@ class OperatingPoint:
         self.transient_waveforms = atp_waveforms
 
 
+def configure_generator(dss, p_kw: float = 1500.0, q_kvar: float = 0.0):
+    """
+    Configures the generator element in OpenDSS.
+    """
+    dss.run_command(f"new generator.gen1 bus1=sourcebus phases=3 kv=33.0 kw={p_kw} kvar={q_kvar} model=1")
+
+
+def apply_generator_profile(dss, p_kw: Optional[float] = None, q_kvar: Optional[float] = None):
+    """
+    Applies or updates generator active and reactive power profiles in OpenDSS if specified.
+    """
+    if dss.Circuit.SetActiveElement("Generator.gen1"):
+        if p_kw is not None:
+            dss.run_command(f"Generator.gen1.kw={p_kw}")
+        if q_kvar is not None:
+            dss.run_command(f"Generator.gen1.kvar={q_kvar}")
+
+
+def compute_generator_size(
+    registry: Optional[ConsumerRegistry] = None,
+    safety_factor: float = 1.25,
+    power_factor: float = 0.8
+) -> dict:
+    """
+    Computes generator size suitable for the network during initialization in plant.py
+    using the loads in the network and transformers as described in the 4-step algorithm:
+
+    Step 1: List appliances, find running watts (steady power) and starting watts
+            (extra power needed for motor-driven items). Add up running watts.
+    Step 2: Account for power surges by finding the single appliance with highest starting watts surge
+            (starting watts - running watts) and add extra surge amount to total running watts.
+    Step 3: Multiply total wattage by safety buffer (1.20 to 1.25) to prevent overloading.
+            Divide final wattage by 1000 to get kilowatts (kW).
+    Step 4: Divide total kW by standard power factor of 0.8 to find minimum kVA.
+    """
+    total_running_watts = 0.0
+    max_starting_surge_watts = 0.0
+
+    motor_surge_multipliers = {
+        "ac_motor": 3.0,
+        "compressor": 3.5,
+        "industrial_fan": 2.5,
+        "dc_motor_inverter": 2.0,
+    }
+
+    if registry is not None:
+        for unit in registry.get_all_consumers():
+            for ld in unit.loads:
+                try:
+                    eq_model = get_equipment_model(ld.load_type)
+                    running_w = float(eq_model.rated_power_kw) * 1000.0
+                except Exception:
+                    running_w = 10000.0
+
+                total_running_watts += running_w
+
+                mult = motor_surge_multipliers.get(ld.load_type, 1.0)
+                starting_w = running_w * mult
+                surge_w = starting_w - running_w
+                if surge_w > max_starting_surge_watts:
+                    max_starting_surge_watts = surge_w
+
+    # Step 2: Account for Power Surges
+    peak_watts = total_running_watts + max_starting_surge_watts
+
+    # Step 3: Add Safety Margin (20%-25%) and convert to kW
+    design_watts = peak_watts * safety_factor
+    generator_kw = design_watts / 1000.0
+
+    # Step 4: Convert to kVA using standard power factor 0.8
+    generator_kva = generator_kw / power_factor
+
+    return {
+        "total_running_watts": total_running_watts,
+        "max_starting_surge_watts": max_starting_surge_watts,
+        "peak_watts": peak_watts,
+        "generator_kw": round(generator_kw, 2),
+        "generator_kva": round(generator_kva, 2)
+    }
 
 
 def build_single_lv_network_composition(
     dss,
     feeder_idx: int = 1,
-    generator_p_kw: float = 1500.0,
+    generator_p_kw: Optional[float] = None,
     generator_q_kvar: float = 0.0,
     use_baseline_transformers: bool = True,
     loads_dict: dict = None,
@@ -120,9 +198,6 @@ def build_single_lv_network_composition(
     dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
 
     build_hv_transformer(dss, verbose=verbose)
-
-    if generator_p_kw > 0:
-        configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
 
     dss.run_command(
         "new linecode.mv_feeder_linecode nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=0.03819 c0=0.012 units=km normamps=400.0"
@@ -161,19 +236,27 @@ def build_single_lv_network_composition(
         register_lv3_consumers(topology=top, seed=seed, registry=registry)
         build_lv3_network(dss, topology=top, loads_dict=loads_dict, registry=registry, seed=seed)
 
+    generator_info = compute_generator_size(registry)
+    if generator_p_kw is None or generator_p_kw <= 0:
+        generator_p_kw = generator_info["generator_kw"]
+
+    if generator_p_kw > 0:
+        configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
+
     dss.run_command("solve")
     candidate_consumer_units = identify_candidate_consumer_units(single_topology)
 
     return {
         "topology": single_topology,
         "registry": registry,
-        "candidate_consumer_units": candidate_consumer_units
+        "candidate_consumer_units": candidate_consumer_units,
+        "generator_info": generator_info
     }
 
 
 def build_three_lv_networks_composition(
     dss,
-    generator_p_kw: float = 1500.0,
+    generator_p_kw: Optional[float] = None,
     generator_q_kvar: float = 0.0,
     use_baseline_transformers: bool = True,
     loads_dict: dict = None,
@@ -199,9 +282,6 @@ def build_three_lv_networks_composition(
     dss.run_command("new circuit.plant_substation basekv=33.0 pu=1.0 phases=3 bus1=sourcebus basefreq=50.0")
 
     build_hv_transformer(dss, verbose=verbose)
-
-    if generator_p_kw > 0:
-        configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
 
     dss.run_command(
         "new linecode.mv_feeder_linecode nphases=3 r1=0.25 x1=0.35 r0=0.75 x0=1.12 c1=0.03819 c0=0.012 units=km normamps=400.0"
@@ -238,25 +318,40 @@ def build_three_lv_networks_composition(
     build_lv2_network(dss, topology=top2, loads_dict=loads_dict, registry=registry, seed=seed + 2)
     build_lv3_network(dss, topology=top3, loads_dict=loads_dict, registry=registry, seed=seed + 3)
 
+    generator_info = compute_generator_size(registry)
+    if generator_p_kw is None or generator_p_kw <= 0:
+        generator_p_kw = generator_info["generator_kw"]
+
+    if generator_p_kw > 0:
+        configure_generator(dss, p_kw=generator_p_kw, q_kvar=generator_q_kvar)
+
     dss.run_command("solve")
     candidate_consumer_units = identify_candidate_consumer_units(combined_topology)
 
     return {
         "topology": combined_topology,
         "registry": registry,
-        "candidate_consumer_units": candidate_consumer_units
+        "candidate_consumer_units": candidate_consumer_units,
+        "generator_info": generator_info
     }
 
 
 build_power_plant_and_downstream_networks = build_three_lv_networks_composition
 
 
-def solve_operating_point(dss, p_kw: float, q_kvar: float, time_s: float = 0.0) -> OperatingPoint:
+def solve_operating_point(
+    dss,
+    time_s: float = 0.0,
+    p_kw: Optional[float] = None,
+    q_kvar: Optional[float] = None
+) -> OperatingPoint:
     """
     Applies generator profiles, runs OpenDSS power flow, and extracts electrical operating point.
     Evaluates system operating frequency dynamically from OpenDSS.
     """
-    apply_generator_profile(dss, p_kw, q_kvar)
+    if p_kw is not None or q_kvar is not None:
+        apply_generator_profile(dss, p_kw=p_kw, q_kvar=q_kvar)
+
     dss.run_command("solve")
 
     # Evaluate operating frequency dynamically from OpenDSS solution
@@ -268,6 +363,19 @@ def solve_operating_point(dss, p_kw: float, q_kvar: float, time_s: float = 0.0) 
     except Exception as e:
         print(f"ERROR: Could not retrieve frequency from OpenDSS Solution ({e})\n{traceback.format_exc()}")
         raise RuntimeError(f"Failed to evaluate system operating frequency from OpenDSS: {e}") from e
+
+    gen_p = p_kw if p_kw is not None else 0.0
+    gen_q = q_kvar if q_kvar is not None else 0.0
+    if dss.Circuit.SetActiveElement("Generator.gen1"):
+        powers = dss.CktElement.Powers()
+        if len(powers) >= 2:
+            gen_p = round(float(abs(powers[0])), 4)
+            gen_q = round(float(abs(powers[1])), 4)
+    elif dss.Circuit.SetActiveElement("Vsource.source"):
+        powers = dss.CktElement.Powers()
+        if len(powers) >= 2:
+            gen_p = round(float(abs(powers[0])), 4)
+            gen_q = round(float(abs(powers[1])), 4)
 
     feeder_p = {}
     feeder_q = {}
@@ -297,8 +405,8 @@ def solve_operating_point(dss, p_kw: float, q_kvar: float, time_s: float = 0.0) 
 
     return OperatingPoint(
         time_s=time_s,
-        generator_p_kw=p_kw,
-        generator_q_kvar=q_kvar,
+        generator_p_kw=gen_p,
+        generator_q_kvar=gen_q,
         feeder_p_kw=feeder_p,
         feeder_q_kvar=feeder_q,
         transformer_loading=loading,
