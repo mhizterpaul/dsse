@@ -43,30 +43,22 @@ def simulate_and_plot_equipment_group(group_id: int = 1):
 
     waveforms = {}
 
+    from src.power_plant import plant
+
     for eq in equipment_types:
         s_ev = SingleEquipmentSwitchEvent(eq, 0.02, 0.04, "feeder1_head", {})
-        sim_res = runner.run_simulation(
-            events=[s_ev],
-            use_baseline_transformers=True,
-            include_load_event=True,
-            include_fault_event=False,
+        t, v_dict, i_dict, meta = runner.measure_transients(
+            op=plant.solve_operating_point(runner.dss),
+            event=s_ev,
             scenario_id=f"vis_g{group_id}_{eq}",
-            seed=42,
-            reinitialize_plant=False
+            feeder_idx=1
         )
 
-        m_id = "trans1_lv_boundary_consumer_unit"
-        cu = sim_res.processed_consumer_units.get(m_id)
+        v_raw = v_dict["trans1"]
+        i_raw = i_dict["trans1"]
 
-        t = sim_res.time_s if (sim_res.time_s is not None and len(sim_res.time_s) > 0) else np.linspace(0.0, 0.1, 1000)
-
-        if cu is None or "raw_voltage" not in cu or "raw_current" not in cu:
-            err_msg = f"ERROR: Missing transient waveform data for consumer unit '{m_id}' in scenario 'vis_g{group_id}_{eq}'."
-            print(f"{err_msg}\n{traceback.format_exc()}")
-            raise RuntimeError(err_msg)
-
-        v_high = remove_low_frequency_components(cu["raw_voltage"])
-        i_high = remove_low_frequency_components(cu["raw_current"])
+        v_high = remove_low_frequency_components(v_raw)
+        i_high = remove_low_frequency_components(i_raw)
 
         waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
 

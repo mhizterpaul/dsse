@@ -100,7 +100,7 @@ class TimeAdjustedCLAEstimator:
             raw_weights[cid] = float(adjusted_w)
 
         sum_adj = sum(raw_weights.values())
-        residual = sum_adj - 1.0
+        residual = 1 - sum_adj 
         n_units = len(unmetered_units)
 
         normalized_weights = {cid: float(w - (residual / n_units)) for cid, w in raw_weights.items()}
