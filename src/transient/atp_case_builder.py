@@ -284,6 +284,8 @@ class ATPCaseBuilder:
             "BLANK SWITCH",
             "BLANK SOURCE",
             "BLANK OUTPUT",
+            "/PLOT",
+            "  SECA  SECB  SECC",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
             "BLANK"
