@@ -76,11 +76,31 @@ class ATPRunner:
             )
 
             # Copy generated output files back (.lis, .dbg, .pl4)
+            pl4_generated = False
             for suffix in [".lis", ".dbg", ".pl4"]:
                 generated_file = work_dir / f"{temp_stem}{suffix}"
                 if generated_file.exists():
                     dest_file = case_path.with_suffix(suffix)
                     shutil.copy(generated_file, dest_file)
+                    if suffix == ".pl4":
+                        pl4_generated = True
+
+            if not pl4_generated:
+                lis_content = ""
+                lis_path = case_path.with_suffix(".lis")
+                if lis_path.exists():
+                    try:
+                        lis_content = lis_path.read_text(errors="replace")
+                    except Exception:
+                        pass
+                err_msg = (
+                    f"ATP-EMTP execution did not produce expected .pl4 output file for {case_path.name}.\n"
+                    f"ATP LIS Output:\n{lis_content[-2000:]}\n"
+                    f"ATP Stdout:\n{process.stdout}\n"
+                    f"ATP Stderr:\n{process.stderr}"
+                )
+                print(f"ERROR: {err_msg}")
+                raise RuntimeError(err_msg)
 
         finally:
             # Clean up isolated scratch directory
