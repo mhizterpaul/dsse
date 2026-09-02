@@ -290,7 +290,10 @@ class CoSimulationRunner:
                 location=f"trans{feeder_idx}",
                 fault_type=f_type,
                 faulted_phases=tuple(f_phases),
-                fault_resistance_ohm=f_res
+                fault_resistance_ohm=f_res,
+                equipment_type=getattr(event, "equipment_type", None),
+                event_1=getattr(event, "event_1", None),
+                event_2=getattr(event, "event_2", None)
             )
 
             sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
