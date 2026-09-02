@@ -197,12 +197,12 @@ class ATPCaseBuilder:
             for ph_char in ["A", "B", "C"]:
                 sec_node = f"SEC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
-                branch_cards.append(f"  {load_node}                       {r_ld_str}                                               0")
-                switch_cards.append(f"  {sec_node}  {load_node}       -1.0000   100.00                                             0")
+                branch_cards.append(f"  {load_node:<6}                       {r_ld_str}                                               0")
+                switch_cards.append(f"  {sec_node:<6}{load_node:<6}{'-1.0000':>10}{'100.00':>10}                                             0")
 
         # Transient Event Cards (supports single events and co-events)
         events_to_card = []
-        if hasattr(event, "event_1") and hasattr(event, "event_2"):
+        if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
             events_to_card = [event.event_1, event.event_2]
         else:
             events_to_card = [event]
@@ -213,8 +213,8 @@ class ATPCaseBuilder:
             dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s", 0.5)))
             end_s = start_s + dur_s
 
-            start_str = f"{start_s:.4f}".rjust(10)
-            end_str = f"{end_s:.4f}".rjust(10)
+            start_str = f"{start_s:10.4f}"
+            end_str = f"{end_s:10.4f}"
 
             if ev_class in ["line_fault", "fault"]:
                 f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases", (0,)))
@@ -224,11 +224,11 @@ class ATPCaseBuilder:
                 for p_idx in f_phases:
                     ph_char = ph_chars[p_idx]
                     sec_node = f"SEC{ph_char}"
-                    fault_node = f"FLT{idx}_{ph_char}"
-                    branch_cards.append(f"  {fault_node}                       {r_fault_str}                                               0")
-                    switch_cards.append(f"  {sec_node}  {fault_node}       {start_str}{end_str}                                             0")
+                    fault_node = f"F{idx}_{ph_char}"
+                    branch_cards.append(f"  {fault_node:<6}                       {r_fault_str}                                               0")
+                    switch_cards.append(f"  {sec_node:<6}{fault_node:<6}{start_str}{end_str}                                             0")
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
-                if not hasattr(ev, "equipment_type"):
+                if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
                     err_msg = f"Event missing required attribute 'equipment_type': {ev}"
                     print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                     raise ValueError(err_msg)
@@ -257,8 +257,8 @@ class ATPCaseBuilder:
                 for ph_char in ["A", "B", "C"]:
                     sec_node = f"SEC{ph_char}"
                     load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(f"  {load_node}                       {r_str}{l_str}                                               0")
-                    switch_cards.append(f"  {sec_node}  {load_node}       {start_str}{end_str}                                             0")
+                    branch_cards.append(f"  {load_node:<6}                       {r_str}{l_str}                                               0")
+                    switch_cards.append(f"  {sec_node:<6}{load_node:<6}{start_str}{end_str}                                             0")
 
         atp_lines = [
             "BEGIN NEW DATA CASE",
