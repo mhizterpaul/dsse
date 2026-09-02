@@ -78,8 +78,11 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
         "fault_resistance_ohm": fault_r,
         "faulted_phases": list(ev_fault.faulted_phases),
         "fault_currents": [float(c) for c in fault_currents],
+        "fault_current": [float(c) for c in fault_currents],
         "line_r1_ohm": line_r1,
         "line_x1_ohm": line_x1,
+        "line_resistance_ohm": line_r1,
+        "line_reactance_ohm": line_x1,
         "start_time_s": float(ev_fault.start_time_s),
         "duration_s": float(ev_fault.duration_s)
     }

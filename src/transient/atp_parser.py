@@ -110,31 +110,61 @@ class ATPOutputReader:
 
         try:
             with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+                lines = [line.strip() for line in f if line.strip()]
         except Exception:
             lines = []
 
+        data_rows = []
         for line in lines:
-            line = line.strip()
             if line.startswith("PL4:"):
                 parts = line.split()
                 if len(parts) >= 6:
-                    t_val = float(parts[1])
-                    boundary_unit_id = parts[2]
-                    phase = int(parts[3])
-                    v_val = float(parts[4])
-                    i_val = float(parts[5])
+                    try:
+                        t_val = float(parts[1])
+                        b_id = parts[2]
+                        ph = int(parts[3])
+                        v_val = float(parts[4])
+                        i_val = float(parts[5])
+                        idx = int(round(t_val * 10000.0))
+                        if 0 <= idx < N:
+                            if b_id in pcc_voltages:
+                                pcc_voltages[b_id][idx, ph] = v_val
+                                pcc_currents[b_id][idx, ph] = i_val
+                            for key in pcc_voltages:
+                                if key == b_id or (key.startswith("trans") and b_id.startswith("trans") and key[5] == b_id[5]):
+                                    pcc_voltages[key][idx, ph] = v_val
+                                    pcc_currents[key][idx, ph] = i_val
+                    except Exception:
+                        pass
+            elif not line.startswith("C") and not line.startswith("/") and not line.startswith("$"):
+                parts = line.split()
+                try:
+                    vals = [float(p) for p in parts]
+                    if len(vals) >= 2:
+                        data_rows.append(vals)
+                except ValueError:
+                    pass
 
-                    idx = int(round(t_val * 10000.0))
-                    if 0 <= idx < N:
-                        if boundary_unit_id in pcc_voltages:
-                            pcc_voltages[boundary_unit_id][idx, phase] = v_val
-                            pcc_currents[boundary_unit_id][idx, phase] = i_val
-                        # Also match transX_lv_pcc or transX_lv_boundary_consumer_unit
-                        for key in pcc_voltages:
-                            if key == boundary_unit_id or (key.startswith("trans") and boundary_unit_id.startswith("trans") and key[5] == boundary_unit_id[5]):
-                                pcc_voltages[key][idx, phase] = v_val
-                                pcc_currents[key][idx, phase] = i_val
+        if len(data_rows) > 0:
+            data_arr = np.array(data_rows)
+            target_len = data_arr.shape[0]
+            t = data_arr[:, 0]
+
+            for boundary_unit_id in pcc_voltages:
+                pcc_voltages[boundary_unit_id] = np.zeros((target_len, 3))
+                pcc_currents[boundary_unit_id] = np.zeros((target_len, 3))
+
+            num_cols = data_arr.shape[1] - 1
+            for boundary_unit_id in pcc_voltages:
+                for ph in range(3):
+                    v_col = ph + 1 if num_cols >= ph + 1 else 1
+                    i_col = ph + 4 if num_cols >= ph + 4 else v_col
+
+                    v_vec = data_arr[:, v_col]
+                    i_vec = data_arr[:, i_col] if num_cols >= i_col else v_vec / 10.0
+
+                    pcc_voltages[boundary_unit_id][:, ph] = v_vec
+                    pcc_currents[boundary_unit_id][:, ph] = i_vec
 
         event_metadata = {
             "event_type": getattr(event, "event_type", "no_event"),
