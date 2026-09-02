@@ -2,7 +2,6 @@ import numpy as np
 import traceback
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
-from src.power_plant.sources import configure_generator, apply_generator_profile
 from src.power_plant.hv_transformer import build_hv_transformer
 from src.power_plant.lv_transformers import get_distribution_transformer_spec
 from src.power_plant.lv_network_1 import generate_lv1_topology, build_lv1_network, register_lv1_consumers
