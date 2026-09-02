@@ -17,7 +17,6 @@ from src.transient.events import SingleLineFaultEvent, SingleEquipmentSwitchEven
 class SimulationResult:
     scenario_id: str
     steady_state_measurements: Dict[str, Any] = field(default_factory=dict)
-    processed_consumer_units: Dict[str, Any] = field(default_factory=dict)
     time_s: Optional[np.ndarray] = None
     operating_point: Optional[Any] = None
 
@@ -145,7 +144,6 @@ class CoSimulationRunner:
         self,
         op: Any,
         event: Any,
-        selected_consumer_units: List[dict],
         scenario_id: str,
         feeder_idx: int = 1,
         use_baseline_feeder: bool = True
@@ -313,7 +311,7 @@ class CoSimulationRunner:
             )
 
             atp_result = ATPRunner().run(atp_case_path)
-            emt_waveforms = ATPOutputReader().read(atp_result, selected_consumer_units, event)
+            emt_waveforms = ATPOutputReader().read(atp_result, event, transformer_id=target_tx)
 
             if emt_waveforms is None or emt_waveforms.time_s is None or len(emt_waveforms.time_s) == 0:
                 raise ValueError(f"ATP simulation returned empty waveforms for scenario {scenario_id}")
@@ -486,13 +484,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     bus_node_idx = int(rng.integers(1, 19))
     target_bus = f"f{feeder_idx}_node{bus_node_idx}"
     target_line = f"down_{feeder_idx}_{bus_node_idx}"
-
-    target_pcc = [{
-        "consumer_unit_id": f"trans{feeder_idx}_lv_boundary_consumer_unit",
-        "branch_type": "transformer_boundary",
-        "target_bus": target_bus,
-        "target_line": target_line
-    }]
+    target_tx = f"trans{feeder_idx}"
 
     def add_event_to_opendss(ev, event_prefix: str):
         ev_cls = getattr(ev, "event_class", None)
@@ -541,7 +533,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         fault_info_json = json.dumps({"bus": target_bus})
 
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
-        op_joint, co_ev, target_pcc, f"p{os.getpid()}_{task_idx}_joint",
+        op_joint, co_ev, f"p{os.getpid()}_{task_idx}_joint",
         feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
     )
 
@@ -551,7 +543,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev1, "ev1")
     op_1 = plant.solve_operating_point(runner.dss)
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
-        op_1, ev1, target_pcc, f"p{os.getpid()}_{task_idx}_ev1",
+        op_1, ev1, f"p{os.getpid()}_{task_idx}_ev1",
         feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
     )
 
@@ -561,11 +553,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev2, "ev2")
     op_2 = plant.solve_operating_point(runner.dss)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
-        op_2, ev2, target_pcc, f"p{os.getpid()}_{task_idx}_ev2",
+        op_2, ev2, f"p{os.getpid()}_{task_idx}_ev2",
         feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
     )
-
-    tx_unit_id = f"trans{feeder_idx}_lv_boundary_consumer_unit"
 
     for d_name, d_val in [
         ("v1_dict", v1_dict),
@@ -575,17 +565,17 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         ("v_joint_dict", v_joint_dict),
         ("i_joint_dict", i_joint_dict),
     ]:
-        if tx_unit_id not in d_val:
-            err_msg = f"Missing waveform key '{tx_unit_id}' in {d_name} for co-event scenario index {task_idx}"
+        if target_tx not in d_val:
+            err_msg = f"Missing waveform key '{target_tx}' in {d_name} for co-event scenario index {task_idx}"
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-    v1 = v1_dict[tx_unit_id]
-    i1 = i1_dict[tx_unit_id]
-    v2 = v2_dict[tx_unit_id]
-    i2 = i2_dict[tx_unit_id]
-    v_joint = v_joint_dict[tx_unit_id]
-    i_joint = i_joint_dict[tx_unit_id]
+    v1 = v1_dict[target_tx]
+    i1 = i1_dict[target_tx]
+    v2 = v2_dict[target_tx]
+    i2 = i2_dict[target_tx]
+    v_joint = v_joint_dict[target_tx]
+    i_joint = i_joint_dict[target_tx]
 
     return {
         "co_ev": co_ev,
