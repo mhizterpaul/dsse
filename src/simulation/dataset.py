@@ -485,13 +485,8 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # --- D. DATASET 4 GENERATION (108 Unique Co-Events Transformer Spec Parallel) ---
     # =========================================================================
     print("INFO: Running transient simulations for Dataset 4 (varying transformer specs)...")
-    d4_coevents = [co.with_time_shift(0.0) for co in all_108_pairs]
-    for idx, co in enumerate(d4_coevents):
-        f_id = (idx % 3) + 1
-        setattr(co, "gt_feeder_id", f_id)
-
     sim_res_d4 = runner.run_transient_simulation(
-        events=d4_coevents,
+        events=all_108_pairs,
         use_baseline_feeder=False,
         seed=42,
         reinitialize_plant=False
