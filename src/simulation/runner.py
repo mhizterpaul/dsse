@@ -300,7 +300,7 @@ class CoSimulationRunner:
                 source=source,
                 line=line,
                 loads=loads,
-                event=transient_ev,
+                event=event,
                 simulation=sim_config,
                 output_path=atp_case_path,
                 scenario_id=scenario_id
