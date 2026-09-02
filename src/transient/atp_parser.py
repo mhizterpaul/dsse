@@ -59,9 +59,6 @@ class ATPOutputReader:
             raise ValueError(f"Event object missing required attributes (event_type, start_time_s, duration_s): {event}")
 
         atp_case_path = Path(atp_result.case_path)
-        if not atp_case_path.exists():
-            raise ValueError(f"ATP circuit case file does not exist: {atp_case_path}")
-
         freq_hz = None
         try:
             with open(atp_case_path, "r", encoding="utf-8", errors="ignore") as f:
