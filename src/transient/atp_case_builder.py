@@ -266,7 +266,7 @@ class ATPCaseBuilder:
             f"POWER FREQUENCY                      {freq_hz:.0f}.",
             "$DUMMY, XYZ000",
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
-            f"   {simulation.time_step_s:.1E}   {simulation.t_stop_s:.2f}     50.     50.",
+            f"{simulation.time_step_s:8.6f}{simulation.t_stop_s:8.4f}     50.     50.",
             "    1000       1       1       1       1       0       0       1       0",
             "/BRANCH",
             "C < n1 >< n2 ><ref1><ref2>< R  >< L  >< C  >",
