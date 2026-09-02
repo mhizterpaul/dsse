@@ -10,6 +10,14 @@ class EMTWaveforms:
     event_metadata: dict
 
     @property
+    def voltages(self):
+        return self.pcc_voltages
+
+    @property
+    def currents(self):
+        return self.pcc_currents
+
+    @property
     def feeder_voltage_abc(self):
         return self.voltages
 
@@ -24,10 +32,6 @@ class EMTWaveforms:
     @property
     def transformer_current_abc(self):
         return self.currents
-
-    @property
-    def frequency_hz(self):
-        return #np.array([50.0]) use open dss operating freq
 
 
 class ATPOutputReader:
@@ -110,7 +114,7 @@ class ATPOutputReader:
                 voltages = {transformer_id: data[:target_len, 1:4]}
                 currents = {transformer_id: data[:target_len, 4:7]}
 
-                return EMTWaveforms(t, voltages, pcurrents, event_metadata)
+                return EMTWaveforms(t, voltages, currents, event_metadata)
 
         # Text-based PL4 reader
         try:
