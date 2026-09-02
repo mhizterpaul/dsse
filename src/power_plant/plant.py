@@ -341,9 +341,9 @@ build_power_plant_and_downstream_networks = build_three_lv_networks_composition
 
 def solve_operating_point(
     dss,
-    time_s: float = 0.0,
     p_kw: Optional[float] = None,
-    q_kvar: Optional[float] = None
+    q_kvar: Optional[float] = None,
+    time_s: float = 0.0
 ) -> OperatingPoint:
     """
     Applies generator profiles, runs OpenDSS power flow, and extracts electrical operating point.
