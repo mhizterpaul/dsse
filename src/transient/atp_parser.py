@@ -5,17 +5,9 @@ from pathlib import Path
 @dataclass
 class EMTWaveforms:
     time_s: np.ndarray
-    pcc_voltages: dict  # dict of {transformer_id: (N, 3)}
-    pcc_currents: dict  # dict of {transformer_id: (N, 3)}
+    voltages: dict  # dict of {transformer_id: (N, 3)}
+    currents: dict  # dict of {transformer_id: (N, 3)}
     event_metadata: dict
-
-    @property
-    def voltages(self):
-        return self.pcc_voltages
-
-    @property
-    def currents(self):
-        return self.pcc_currents
 
     @property
     def feeder_voltage_abc(self):
