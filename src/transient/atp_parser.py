@@ -8,7 +8,7 @@ class EMTWaveforms:
     voltages: dict  # dict of {transformer_id: (N, 3)}
     currents: dict  # dict of {transformer_id: (N, 3)}
     event_metadata: dict
-    frequency_hz: float = 50.0
+    frequency_hz: float
 
     @property
     def feeder_voltage_abc(self):
@@ -58,20 +58,25 @@ class ATPOutputReader:
         else:
             raise ValueError(f"Event object missing required attributes (event_type, start_time_s, duration_s): {event}")
 
-        freq_hz = 50.0
         atp_case_path = Path(atp_result.case_path)
-        if atp_case_path.exists():
-            try:
-                with open(atp_case_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if "POWER FREQUENCY" in line:
-                            parts = line.split("POWER FREQUENCY")
-                            if len(parts) > 1:
-                                val_str = parts[1].strip().rstrip(".")
-                                freq_hz = float(val_str)
-                            break
-            except Exception:
-                pass
+        if not atp_case_path.exists():
+            raise ValueError(f"ATP circuit case file does not exist: {atp_case_path}")
+
+        freq_hz = None
+        try:
+            with open(atp_case_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "POWER FREQUENCY" in line:
+                        parts = line.split("POWER FREQUENCY")
+                        if len(parts) > 1:
+                            val_str = parts[1].strip().rstrip(".")
+                            freq_hz = float(val_str)
+                        break
+        except Exception as e:
+            raise ValueError(f"Failed to read ATP circuit case file '{atp_case_path}': {e}") from e
+
+        if freq_hz is None:
+            raise ValueError(f"POWER FREQUENCY not found or invalid in ATP circuit case file: {atp_case_path}")
 
         event_metadata = {
             "event_type": ev_type,
