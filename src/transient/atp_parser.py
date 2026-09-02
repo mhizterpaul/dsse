@@ -8,6 +8,7 @@ class EMTWaveforms:
     voltages: dict  # dict of {transformer_id: (N, 3)}
     currents: dict  # dict of {transformer_id: (N, 3)}
     event_metadata: dict
+    frequency_hz: float = 50.0
 
     @property
     def feeder_voltage_abc(self):
@@ -106,7 +107,7 @@ class ATPOutputReader:
                 voltages = {transformer_id: data[:target_len, 1:4]}
                 currents = {transformer_id: data[:target_len, 4:7]}
 
-                return EMTWaveforms(t, voltages, currents, event_metadata)
+                return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=50.0)
 
         # Text-based PL4 reader
         try:
@@ -136,4 +137,4 @@ class ATPOutputReader:
         voltages = {transformer_id: data_arr[:, 1:4]}
         currents = {transformer_id: data_arr[:, 4:7]}
 
-        return EMTWaveforms(t, voltages, currents, event_metadata)
+        return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=50.0)
