@@ -245,21 +245,55 @@ class CoSimulationRunner:
                 pre_event=ThreePhaseState(
                     voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
                     voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-                ),
-                post_event=None
+                )
             )
+
+            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
+            if not self.dss.Circuit.SetActiveElement(line_elem_name):
+                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            try:
+                line_len = float(self.dss.Properties.Value("length"))
+                line_r1 = float(self.dss.Properties.Value("r1"))
+                line_x1 = float(self.dss.Properties.Value("x1"))
+                line_c1 = float(self.dss.Properties.Value("c1"))
+            except Exception as e:
+                err_msg = f"Could not read line properties from '{line_elem_name}': {e}"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg) from e
 
             line = LineModel(
                 name=f"line_{feeder_idx}",
                 from_bus="main_bus",
                 to_bus=f"feeder{feeder_idx}_head",
-                length_km=4.5,
-                r1_ohm_per_km=0.21,
-                x1_ohm_per_km=0.08,
-                c1_f_per_km=0.0
+                length_km=line_len,
+                r1_ohm_per_km=line_r1,
+                x1_ohm_per_km=line_x1,
+                c1_f_per_km=line_c1
             )
 
-            loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0, q_kvar=0.0, r_ohm=None, l_h=None)]
+            load_names = self.dss.Loads.AllNames()
+            if not load_names:
+                err_msg = f"No active loads found in OpenDSS circuit for scenario {scenario_id}"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            loads = []
+            for ld_name in load_names:
+                self.dss.Loads.Name(ld_name)
+                bus_name = self.dss.Properties.Value("bus1")
+                p_kw = float(self.dss.Loads.kW())
+                q_kvar = float(self.dss.Loads.kvar())
+                loads.append(LoadModel(
+                    name=ld_name,
+                    bus=bus_name,
+                    p_kw=p_kw,
+                    q_kvar=q_kvar,
+                    r_ohm=None,
+                    l_h=None
+                ))
 
             if hasattr(event, "event_1") and hasattr(event, "event_2"):
                 ev_class = "co_event"

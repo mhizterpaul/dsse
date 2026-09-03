@@ -45,7 +45,6 @@ class SourceModel:
     name: str
     frequency_hz: float
     pre_event: ThreePhaseState
-    post_event: Optional[ThreePhaseState] 
 
 
 @dataclass(frozen=True)
@@ -346,8 +345,7 @@ class ATPCaseBuilder:
             pre_event=ThreePhaseState(
                 voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
                 voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-            ),
-            post_event=None
+            )
         )
 
         line_params = getattr(realization, "line_parameters")
@@ -355,13 +353,24 @@ class ATPCaseBuilder:
             name=f"line_{feeder_idx}",
             from_bus="main_bus",
             to_bus=f"feeder{feeder_idx}_head",
-            length_km=4.5,
-            r1_ohm_per_km=float(line_params.get("r1")),
-            x1_ohm_per_km=float(line_params.get("x1")),
-            c1_f_per_km=0.0
+            length_km=float(line_params["length_km"]),
+            r1_ohm_per_km=float(line_params["r1"]),
+            x1_ohm_per_km=float(line_params["x1"]),
+            c1_f_per_km=float(line_params["c1"])
         )
 
-        loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0, q_kvar=0.0, r_ohm=None, l_h=None)]
+        raw_loads = getattr(realization, "loads")
+        loads = [
+            LoadModel(
+                name=ld["name"],
+                bus=ld["bus"],
+                p_kw=float(ld["p_kw"]),
+                q_kvar=float(ld["q_kvar"]),
+                r_ohm=ld.get("r_ohm"),
+                l_h=ld.get("l_h")
+            )
+            for ld in raw_loads
+        ]
 
         start_s = float(getattr(event, "start_time_s"))
         dur_s = float(getattr(event, "duration_s"))
