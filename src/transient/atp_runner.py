@@ -2,8 +2,12 @@ import os
 import subprocess
 import shutil
 import uuid
-import numpy as np
+import logging
 from pathlib import Path
+from src.transient.atp_case_builder import ATPCaseValidator
+
+logger = logging.getLogger(__name__)
+
 
 class ATPResult:
     def __init__(self, case_path: Path, output_dir: Path, return_code: int, stdout: str, stderr: str):
@@ -13,11 +17,13 @@ class ATPResult:
         self.stdout = stdout
         self.stderr = stderr
 
+
 class ATPRunner:
     """
     Thin process adapter around the actual ATP-EMTP executable (tpbig/tpbigm).
     Executes the real Windows binary via Wine on Linux runtime.
     Supports process isolation for parallel ProcessPoolExecutor tasks by generating unique temporary case names.
+    Validates ATP card format before execution and retains generated case files on execution failure.
     """
     def __init__(self, atp_executable: str | Path = None, timeout_s: float = 300.0):
         self.timeout_s = timeout_s
@@ -29,6 +35,9 @@ class ATPRunner:
 
         if case_path.suffix.lower() != ".atp":
             raise ValueError(f"Expected .ATP case file, got: {case_path}")
+
+        # Validate ATP card deck structure before running Wine
+        ATPCaseValidator.validate_file(case_path)
 
         atp_dir = Path("atpmingw_2024").resolve()
         tpbigm = atp_dir / "tpbigm.exe" if atp_dir.exists() else None
@@ -93,8 +102,10 @@ class ATPRunner:
                         lis_content = lis_path.read_text(errors="replace")
                     except Exception:
                         pass
+                logger.error("ATP execution failed. Generated input deck preserved at %s", case_path)
                 err_msg = (
                     f"ATP-EMTP execution did not produce expected .pl4 output file for {case_path.name}.\n"
+                    f"Generated ATP Case deck preserved at: {case_path}\n"
                     f"ATP LIS Output:\n{lis_content[-2000:]}\n"
                     f"ATP Stdout:\n{process.stdout}\n"
                     f"ATP Stderr:\n{process.stderr}"
@@ -111,6 +122,7 @@ class ATPRunner:
                     pass
 
         if process.returncode != 0:
+            logger.error("ATP execution failed with return code %d. Generated input deck preserved at %s", process.returncode, case_path)
             raise RuntimeError(f"ATP-EMTP execution failed with return code {process.returncode}:\n{process.stderr}\n{process.stdout}")
 
         return ATPResult(

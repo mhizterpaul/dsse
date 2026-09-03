@@ -87,8 +87,6 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
     return json.dumps(fault_info)
 
 
-
-
 class CoSimulationRunner:
     """
     Co-Simulation Orchestrator that energizes the imported plant from src.power_plant,
@@ -161,7 +159,8 @@ class CoSimulationRunner:
         from src.power_plant.lv_transformers import get_distribution_transformer_spec
         tx_spec = get_distribution_transformer_spec(feeder_idx, use_baseline=use_baseline_feeder)
 
-        target_tx = f"trans{feeder_idx}"
+        target_tx_key = f"trans{feeder_idx}"
+        target_tx_unit_id = f"trans{feeder_idx}_lv_boundary"
         feeder_id = f"feeder_{feeder_idx}"
 
         if hasattr(event, "event_1") and hasattr(event, "event_2"):
@@ -180,11 +179,11 @@ class CoSimulationRunner:
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-        v_tuple = op.phase_voltages_v[target_tx]
-        a_tuple = op.phase_angles_deg[target_tx]
+        v_tuple = op.phase_voltages_v[target_tx_key]
+        a_tuple = op.phase_angles_deg[target_tx_key]
         freq = op.frequency_hz
 
-        atp_cache_key = (ev_key, feeder_id, target_tx, v_tuple, a_tuple, freq)
+        atp_cache_key = (ev_key, feeder_id, target_tx_key, v_tuple, a_tuple, freq)
         if atp_cache_key in self._atp_response_cache:
             return self._atp_response_cache[atp_cache_key]
 
@@ -197,7 +196,6 @@ class CoSimulationRunner:
                 TransientEvent, SimulationConfig
             )
 
-            target_tx_key = f"trans{feeder_idx}"
             if "kvas" not in tx_spec or "kvs" not in tx_spec or "r_pct" not in tx_spec or "xhl_pct" not in tx_spec or "name" not in tx_spec:
                 err_msg = f"Missing required transformer specification key in tx_spec: {tx_spec}"
                 print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
@@ -243,9 +241,8 @@ class CoSimulationRunner:
             phase_v = op.phase_voltages_v[target_tx_key]
             phase_ang = op.phase_angles_deg[target_tx_key]
 
-            # Phase shift extracted directly from operating point angles
-            phase_shift_hv = float(phase_ang[0])
-            phase_shift_lv = float(phase_ang[0])
+            phase_shift_hv = 0.0
+            phase_shift_lv = 0.0
 
             r0_pct = float(tx_spec["r0_pct"])
             x0_pct = float(tx_spec["x0_pct"])
@@ -389,12 +386,14 @@ class CoSimulationRunner:
             )
 
             atp_result = ATPRunner().run(atp_case_path)
-            emt_waveforms = ATPOutputReader().read(atp_result, event, transformer_id=target_tx)
+            emt_waveforms = ATPOutputReader().read(atp_result, event, transformer_id=target_tx_unit_id)
 
             if emt_waveforms is None or emt_waveforms.time_s is None or len(emt_waveforms.time_s) == 0:
                 raise ValueError(f"ATP simulation returned empty waveforms for scenario {scenario_id}")
 
-            return emt_waveforms.time_s, emt_waveforms.voltages, emt_waveforms.currents, emt_waveforms.event_metadata
+            res_tuple = (emt_waveforms.time_s, emt_waveforms.voltages, emt_waveforms.currents, emt_waveforms.event_metadata)
+            self._atp_response_cache[atp_cache_key] = res_tuple
+            return res_tuple
 
         except Exception as e:
             lis_path = Path(atp_case_path).with_suffix(".lis")
@@ -407,7 +406,6 @@ class CoSimulationRunner:
             err_msg = f"Failed ATP transient measurement for scenario '{scenario_id}': {e}{lis_debug_content}"
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg) from e
-            
 
     def run_steady_state_simulation(
         self,
@@ -442,8 +440,6 @@ class CoSimulationRunner:
             scenario_id=scenario_id,
             operating_point=op
         )
-
-       
 
     def run_transient_simulation(
         self,
@@ -621,7 +617,3 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         "fault_info": fault_info_json,
         "gt_feeder_id": f"feeder_{feeder_idx}"
     }
-
-    
-
-    
