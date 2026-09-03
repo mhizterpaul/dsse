@@ -473,8 +473,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         fault_info_json = json.dumps({"bus": target_bus})
 
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
-        op_joint, co_ev, target, f"p{os.getpid()}_{task_idx}_joint",
-        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+        op=op_joint,
+        event=co_ev,
+        scenario_id=f"p{os.getpid()}_{task_idx}_joint",
+        feeder_idx=feeder_idx,
+        use_baseline_feeder=use_baseline_feeder
     )
 
     # --- STEP 2: Add Event 1 to network, solve for feeder parameters, evaluate transformer response for Event 1 ---
@@ -483,8 +486,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev1, "ev1")
     op_1 = plant.solve_operating_point(runner.dss)
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
-        op_1, ev1, target, f"p{os.getpid()}_{task_idx}_ev1",
-        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+        op=op_1,
+        event=ev1,
+        scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
+        feeder_idx=feeder_idx,
+        use_baseline_feeder=use_baseline_feeder
     )
 
     # --- STEP 3: Add Event 2 to network, solve for feeder parameters, evaluate transformer response for Event 2 ---
@@ -493,8 +499,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     add_event_to_opendss(ev2, "ev2")
     op_2 = plant.solve_operating_point(runner.dss)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
-        op_2, ev2, target, f"p{os.getpid()}_{task_idx}_ev2",
-        feeder_idx=feeder_idx, use_baseline_feeder=use_baseline_feeder
+        op=op_2,
+        event=ev2,
+        scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
+        feeder_idx=feeder_idx,
+        use_baseline_feeder=use_baseline_feeder
     )
 
     tx_unit_id = f"trans{feeder_idx}_lv_boundary"
