@@ -6,6 +6,16 @@ from pathlib import Path
 import numpy as np
 
 
+def opendss_kv_to_bctran_winding_kv(rated_ll_kv: float, connection: str) -> float:
+    """Converts 3-phase line-to-line kV rating to winding rated voltage based on connection type."""
+    conn = connection.strip().upper()
+    if conn in ["Y", "WYE", "LN"]:
+        return rated_ll_kv / np.sqrt(3.0)
+    if conn in ["D", "DELTA", "LL"]:
+        return rated_ll_kv
+    raise ValueError(f"Unsupported transformer connection: {connection}")
+
+
 @dataclass(frozen=True)
 class TransformerWinding:
     name: str
@@ -33,6 +43,7 @@ class TransformerSpec:
     short_circuit_tests: List[ShortCircuitTest]
     excitation_current_percent: Optional[float]
     excitation_loss_kw: Optional[float]
+    vector_group: Optional[str] = "Dy11"
 
 
 @dataclass(frozen=True)
@@ -81,6 +92,7 @@ class TransientEvent:
     equipment_type: Optional[str]
     event_1: Optional[Any]
     event_2: Optional[Any]
+    location_fraction: float = 0.5
 
     @property
     def end_time_s(self) -> float:
@@ -301,21 +313,47 @@ class ATPCaseBuilder:
             branch_cards.append(fmt_branch(src_node, mb_node, 0.001, 0.001, 0.0))
 
         # Line Cards (Main Bus to Transformer Primary)
-        r_line = line.r1_ohm_per_km * line.length_km
-        x_line = line.x1_ohm_per_km * line.length_km
-        l_line_mH = (x_line / (2.0 * np.pi * freq_hz)) * 1000.0
+        r_line_tot = line.r1_ohm_per_km * line.length_km
+        x_line_tot = line.x1_ohm_per_km * line.length_km
 
-        for ph_char in ["A", "B", "C"]:
-            mb_node = f"MB_{ph_char}"
-            tx_node = f"TX_{ph_char}"
-            branch_cards.append(fmt_branch(mb_node, tx_node, r_line, l_line_mH, 0.0))
+        events_to_card = []
+        if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
+            events_to_card = [event.event_1, event.event_2]
+        else:
+            events_to_card = [event]
+
+        # Check if line fault with specific location fraction exists
+        has_line_fault = any(getattr(ev, "event_class", None) in ["line_fault", "fault"] for ev in events_to_card)
+        alpha = float(getattr(event, "location_fraction", 0.5)) if has_line_fault else 1.0
+        alpha = min(max(alpha, 0.05), 0.95) if has_line_fault else 1.0
+
+        if has_line_fault and alpha < 1.0:
+            # Split line into MB -> FLOC and FLOC -> TX
+            r1_m = max(1e-4, r_line_tot * alpha)
+            l1_mH = max(1e-4, ((x_line_tot * alpha) / (2.0 * np.pi * freq_hz)) * 1000.0)
+            r2_m = max(1e-4, r_line_tot * (1.0 - alpha))
+            l2_mH = max(1e-4, ((x_line_tot * (1.0 - alpha)) / (2.0 * np.pi * freq_hz)) * 1000.0)
+
+            for ph_char in ["A", "B", "C"]:
+                mb_node = f"MB_{ph_char}"
+                floc_node = f"FL_{ph_char}"
+                tx_node = f"TX_{ph_char}"
+                branch_cards.append(fmt_branch(mb_node, floc_node, r1_m, l1_mH, 0.0))
+                branch_cards.append(fmt_branch(floc_node, tx_node, r2_m, l2_mH, 0.0))
+        else:
+            l_line_mH = (x_line_tot / (2.0 * np.pi * freq_hz)) * 1000.0
+            for ph_char in ["A", "B", "C"]:
+                mb_node = f"MB_{ph_char}"
+                tx_node = f"TX_{ph_char}"
+                branch_cards.append(fmt_branch(mb_node, tx_node, r_line_tot, l_line_mH, 0.0))
 
         # Transformer Primary to Secondary
         sc_test = transformer.short_circuit_tests[0]
         hv_w = transformer.windings[0]
         lv_w = transformer.windings[1]
 
-        z_base = (lv_w.rated_kv ** 2 * 1000.0) / lv_w.rated_mva
+        lv_winding_kv = opendss_kv_to_bctran_winding_kv(lv_w.rated_kv, lv_w.connection)
+        z_base = (lv_winding_kv ** 2 * 1000.0) / lv_w.rated_mva
         z_pos_pu = sc_test.z_pos_pu
         r_pos_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0)
         x_pos_pu = np.sqrt(max(0.0, z_pos_pu**2 - r_pos_pu**2))
@@ -356,12 +394,6 @@ class ATPCaseBuilder:
                 switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
 
         # --- EVENT OVERLAY (Load Switching & Fault Topologies) ---
-        events_to_card = []
-        if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
-            events_to_card = [event.event_1, event.event_2]
-        else:
-            events_to_card = [event]
-
         for idx, ev in enumerate(events_to_card):
             ev_class = getattr(ev, "event_class", None)
             if ev_class is None:
@@ -377,13 +409,16 @@ class ATPCaseBuilder:
                 f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", 0.001)))
                 ph_chars = ["A", "B", "C"]
 
+                # Connect fault at fault location node FL_ or SEC_
+                node_base = "FL_" if has_line_fault and alpha < 1.0 else "SEC"
+
                 if f_type in ["LG", "AG", "BG", "CG"]:
                     for p_idx in f_phases:
                         ph_char = ph_chars[p_idx]
-                        sec_node = f"SEC{ph_char}"
+                        bus_node = f"{node_base}{ph_char}" if node_base == "SEC" else f"{node_base}{ph_char}"
                         fault_node = f"F{idx}_{ph_char}"
                         branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+                        switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
                 elif f_type in ["LL", "AB", "BC", "CA"]:
                     if len(f_phases) >= 2:
                         p1_char = ph_chars[f_phases[0]]
@@ -391,15 +426,15 @@ class ATPCaseBuilder:
                         f_node1 = f"F{idx}_1"
                         f_node2 = f"F{idx}_2"
                         branch_cards.append(fmt_branch(f_node1, f_node2, f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(f"SEC{p1_char}", f_node1, start_s, end_s))
-                        switch_cards.append(fmt_switch(f"SEC{p2_char}", f_node2, start_s, end_s))
+                        switch_cards.append(fmt_switch(f"{node_base}{p1_char}", f_node1, start_s, end_s))
+                        switch_cards.append(fmt_switch(f"{node_base}{p2_char}", f_node2, start_s, end_s))
                 else:
                     for p_idx in f_phases:
                         ph_char = ph_chars[p_idx]
-                        sec_node = f"SEC{ph_char}"
+                        bus_node = f"{node_base}{ph_char}"
                         fault_node = f"F{idx}_{ph_char}"
                         branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+                        switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
 
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
                 if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
@@ -529,25 +564,27 @@ class ATPCaseBuilder:
         kvs = tx_spec_dict["kvs"]
         noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
         imag_pct = float(tx_spec_dict["imag_pct"])
+        loadloss_pct = float(tx_spec_dict.get("loadloss_pct", r_pct))
 
         z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
         losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
+        losses_pos_kw = (loadloss_pct / 100.0) * float(kvas[0])
 
         phase_v = operating_point.phase_voltages_v[target_tx]
         phase_ang = operating_point.phase_angles_deg[target_tx]
 
-        phase_shift_hv = float(phase_ang[0])
-        phase_shift_lv = float(phase_ang[0])
+        phase_shift_hv = 0.0
+        phase_shift_lv = float(tx_spec_dict.get("phase_shift_deg", 0.0))
 
         transformer = TransformerSpec(
             name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
-                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[0], phase_shift_hv),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[1], phase_shift_lv)
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=losses_pos_kw, z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
             ],
             excitation_current_percent=imag_pct,
             excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])

@@ -537,6 +537,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             raise ValueError(err_msg)
 
     # --- STEP 1: Joint co-event ---
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    op_pre = plant.solve_operating_point(runner.dss)
     add_event_to_opendss(ev1, "joint_ev1")
     add_event_to_opendss(ev2, "joint_ev2")
 
@@ -562,10 +564,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     )
 
     # --- STEP 2: Event 1 ---
-    runner.dss.run_command("disable Fault.*")
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    op_ev1 = plant.solve_operating_point(runner.dss)
     add_event_to_opendss(ev1, "ev1")
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
-        op=op_pre,
+        op=op_ev1,
         event=ev1,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
         feeder_idx=feeder_idx,
@@ -573,10 +576,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     )
 
     # --- STEP 3: Event 2 ---
-    runner.dss.run_command("disable Fault.*")
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    op_ev2 = plant.solve_operating_point(runner.dss)
     add_event_to_opendss(ev2, "ev2")
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
-        op=op_pre,
+        op=op_ev2,
         event=ev2,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
         feeder_idx=feeder_idx,
