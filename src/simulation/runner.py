@@ -222,22 +222,37 @@ class CoSimulationRunner:
             r_pct = float(tx_spec["r_pct"])
             xhl_pct = float(tx_spec["xhl_pct"])
 
+            tx_elem_name = f"Transformer.{target_tx_key}"
+            if not self.dss.Circuit.SetActiveElement(tx_elem_name):
+                err_msg = f"Transformer element '{tx_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            # Query real power losses of the feeding MV line from OpenDSS
+            line_losses = self.dss.CktElement.Losses()
+            line_loss_p_w = float(line_losses[0])
+            ex_loss_kw = abs(line_loss_p_w) / 1000.0
+
+            phase_v = op.phase_voltages_v[target_tx_key]
+            phase_ang = op.phase_angles_deg[target_tx_key]
+
+            # Phase shift extracted directly from operating point angles
+            phase_shift_hv = float(phase_ang[0])
+            phase_shift_lv = float(phase_ang[0])
+
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
                 windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", 0.0),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", 0.0)
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
                 ],
                 short_circuit_tests=[
                     ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=None, losses_zero_kw=None)
                 ],
-                excitation_current_percent=None,
-                excitation_loss_kw=None
+                excitation_current_percent=imag_pct,
+                excitation_loss_kw=ex_loss_kw
             )
-
-            phase_v = op.phase_voltages_v[target_tx_key]
-            phase_ang = op.phase_angles_deg[target_tx_key]
 
             source = SourceModel(
                 name="GRID",

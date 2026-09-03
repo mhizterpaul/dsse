@@ -317,27 +317,32 @@ class ATPCaseBuilder:
         freq_hz = float(getattr(operating_point, "frequency_hz"))
 
         tx_spec_dict = getattr(realization, "transformer_spec")
-        r_pct = float(tx_spec_dict.get("r_pct"))
-        xhl_pct = float(tx_spec_dict.get("xhl_pct"))
-        kvas = tx_spec_dict.get("kvas")
-        kvs = tx_spec_dict.get("kvs")
+        r_pct = float(tx_spec_dict["r_pct"])
+        xhl_pct = float(tx_spec_dict["xhl_pct"])
+        kvas = tx_spec_dict["kvas"]
+        kvs = tx_spec_dict["kvs"]
+        noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
+        imag_pct = float(tx_spec_dict["imag_pct"])
+
+        phase_v = operating_point.phase_voltages_v[target_tx]
+        phase_ang = operating_point.phase_angles_deg[target_tx]
+
+        phase_shift_hv = float(phase_ang[0])
+        phase_shift_lv = float(phase_ang[0])
 
         transformer = TransformerSpec(
-            name=str(tx_spec_dict.get("name")),
+            name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", kvs[0], kvas[0] / 1000.0, "Y", 0.0),
-                TransformerWinding("LV", kvs[1], kvas[1] / 1000.0, "Y", 0.0)
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2), losses_pos_kw=(r_pct/100.0)*kvas[0], z_zero_pu=None, losses_zero_kw=None)
+                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=None, losses_zero_kw=None)
             ],
-            excitation_current_percent=None,
-            excitation_loss_kw=None
+            excitation_current_percent=imag_pct,
+            excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])
         )
-
-        phase_v = operating_point.phase_voltages_v.get(target_tx)
-        phase_ang = operating_point.phase_angles_deg.get(target_tx) 
 
         source = SourceModel(
             name="GRID",
