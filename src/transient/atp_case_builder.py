@@ -124,7 +124,6 @@ class ATPCaseBuilder:
             raise ValueError("SimulationConfig must be provided")
 
         freq_hz = transformer.frequency_hz
-        freq_str = f"{freq_hz:.2f}".rjust(10)
 
         # Source peak voltages and angles from pre-event ThreePhaseState
         amp_a = source.pre_event.voltage_rms_v[0] * np.sqrt(2.0)
@@ -135,9 +134,13 @@ class ATPCaseBuilder:
         ang_b = source.pre_event.voltage_angle_deg[1]
         ang_c = source.pre_event.voltage_angle_deg[2]
 
-        src_a = f"14SRCA  -1{amp_a:10.2f}{freq_str}{ang_a:10.2f}          -1.0000    100.00"
-        src_b = f"14SRCB  -1{amp_b:10.2f}{freq_str}{ang_b:10.2f}          -1.0000    100.00"
-        src_c = f"14SRCC  -1{amp_c:10.2f}{freq_str}{ang_c:10.2f}          -1.0000    100.00"
+        def _type14_source(node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float = -1.0, t_stop: float = 1.0e3) -> str:
+            n_s = f"{node:<6}"[:6]
+            return f"14{n_s}{'0':>6}{amplitude:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
+
+        src_a = _type14_source("SRCA", amp_a, freq_hz, ang_a)
+        src_b = _type14_source("SRCB", amp_b, freq_hz, ang_b)
+        src_c = _type14_source("SRCC", amp_c, freq_hz, ang_c)
 
         branch_cards = []
         switch_cards = []
@@ -175,7 +178,7 @@ class ATPCaseBuilder:
             tx_node = f"TX_{ph_char}"
             branch_cards.append(fmt_branch(src_node, tx_node, r=r_line, l_mH=l_line_mH))
 
-        # BCTRAN Transformer Matrix / Impedance Cards
+        # Transformer Matrix / Impedance Cards
         sc_test = transformer.short_circuit_tests[0] 
         hv_w = transformer.windings[0] 
         lv_w = transformer.windings[1] 
@@ -235,28 +238,37 @@ class ATPCaseBuilder:
                 eq_type = ev.equipment_type
                 from src.loads import get_equipment_model
                 eq_model = get_equipment_model(eq_type)
-                r_stator = None
+
+                r_val = None
                 for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
                     if key in eq_model.atp_params:
-                        r_stator = eq_model.atp_params[key]
+                        r_val = eq_model.atp_params[key]
                         break
-                x_stator = None
-                for key in ["x_stator", "l_armature", "l_coil", "l_ac_filter", "l_filter", "c_doubler", "c_resonant"]:
+
+                l_mH_val = None
+                for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
                     if key in eq_model.atp_params:
-                        x_stator = eq_model.atp_params[key]
+                        l_mH_val = float(eq_model.atp_params[key]) * 1000.0
                         break
-                if r_stator is None or x_stator is None:
-                    err_msg = f"Equipment model '{eq_type}' missing required R or X in atp_params"
+
+                if l_mH_val is None:
+                    for key in ["x_stator", "x_rotor"]:
+                        if key in eq_model.atp_params:
+                            x_val = float(eq_model.atp_params[key])
+                            l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
+                            break
+
+                if r_val is None:
+                    err_msg = f"Equipment model '{eq_type}' missing required R in atp_params"
                     print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                     raise ValueError(err_msg)
-                r_eq = float(r_stator)
-                x_eq = float(x_stator)
-                l_eq_mH = (x_eq / (2.0 * np.pi * freq_hz)) * 1000.0
+
+                r_eq = float(r_val)
                 node_prefix = f"E{idx}"
                 for ph_char in ["A", "B", "C"]:
                     sec_node = f"SEC{ph_char}"
                     load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(fmt_branch(load_node, "", r=r_eq, l_mH=l_eq_mH))
+                    branch_cards.append(fmt_branch(load_node, "", r=r_eq, l_mH=l_mH_val))
                     switch_cards.append(fmt_switch(sec_node, load_node, t_close=start_s, t_open=end_s))
 
         atp_lines = [
@@ -265,7 +277,7 @@ class ATPCaseBuilder:
             f"POWER FREQUENCY                      {freq_hz:.0f}.",
             "$DUMMY, XYZ000",
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
-            f"{simulation.time_step_s:8.6f}{simulation.t_stop_s:8.4f}     50.     50.",
+            f"{simulation.time_step_s:10.6E}{simulation.t_stop_s:10.6E}     0.     0.",
             "    1000       1       1       1       1       0       0       1       0",
             "/BRANCH",
             "C < n1 >< n2 ><ref1><ref2>< R  >< L  >< C  >",
@@ -279,12 +291,11 @@ class ATPCaseBuilder:
             src_b,
             src_c,
             "/OUTPUT",
+            "  SECA  SECB  SECC",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",
             "BLANK OUTPUT",
-            "/PLOT",
-            "  SECA  SECB  SECC  C:TX_A-SECA C:TX_B-SECB C:TX_C-SECC",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
             "BLANK"
@@ -402,7 +413,9 @@ class ATPCaseBuilder:
             event_2=getattr(event, "event_2", None)
         )
 
-        sim_config = SimulationConfig(t_start_s, t_stop_s, time_step_s=1e-4)
+        t_start_s = 0.0
+        t_stop_s = max(start_s + dur_s + 0.05, 0.15)
+        sim_config = SimulationConfig(t_start_s=t_start_s, t_stop_s=t_stop_s, time_step_s=1e-4)
 
         return self.build_explicit(
             transformer=transformer,
