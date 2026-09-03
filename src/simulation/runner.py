@@ -241,8 +241,9 @@ class CoSimulationRunner:
             phase_v = op.phase_voltages_v[target_tx_key]
             phase_ang = op.phase_angles_deg[target_tx_key]
 
-            phase_shift_hv = 0.0
-            phase_shift_lv = 0.0
+            # Phase shift extracted directly from OpenDSS operating point angles
+            phase_shift_hv = float(phase_ang[0])
+            phase_shift_lv = float(phase_ang[0])
 
             r0_pct = float(tx_spec["r0_pct"])
             x0_pct = float(tx_spec["x0_pct"])

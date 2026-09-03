@@ -516,8 +516,8 @@ class ATPCaseBuilder:
         phase_v = operating_point.phase_voltages_v[target_tx]
         phase_ang = operating_point.phase_angles_deg[target_tx]
 
-        phase_shift_hv = 0.0
-        phase_shift_lv = 0.0
+        phase_shift_hv = float(phase_ang[0])
+        phase_shift_lv = float(phase_ang[0])
 
         transformer = TransformerSpec(
             name=str(tx_spec_dict["name"]),
