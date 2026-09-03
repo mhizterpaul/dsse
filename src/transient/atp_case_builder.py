@@ -148,9 +148,9 @@ class ATPCaseBuilder:
         def fmt_branch(n1: str, n2: str, r: float, l_mH: float, c_uF: float) -> str:
             n1_s = f"{n1:<6}"[:6]
             n2_s = f"{n2:<6}"[:6]
-            r_s = f"{r:10.4f}" if r < 1e5 else f"{r:10.4E}"
-            l_s = f"{l_mH:10.4f}" if l_mH != 0.0 else " " * 10
-            c_s = f"{c_uF:10.4f}" if c_uF != 0.0 else " " * 10
+            r_s = f"{r:10.4f}" 
+            l_s = f"{l_mH:10.4f}" 
+            c_s = f"{c_uF:10.4f}" 
             return f"  {n1_s}{n2_s}{'':<12}{r_s[:10]:>10}{l_s[:10]:>10}{c_s[:10]:>10}".rstrip()
 
         def fmt_switch(n1: str, n2: str, t_close: float, t_open: float) -> str:
