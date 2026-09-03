@@ -347,7 +347,7 @@ class ATPCaseBuilder:
                 tx_node = f"TX_{ph_char}"
                 branch_cards.append(fmt_branch(mb_node, tx_node, r_line_tot, l_line_mH, 0.0))
 
-        # Transformer Primary to Secondary
+        # Transformer Primary to Secondary (Coupled 3-phase matrix representation using Type 51, 52, 53)
         sc_test = transformer.short_circuit_tests[0]
         hv_w = transformer.windings[0]
         lv_w = transformer.windings[1]
@@ -358,14 +358,32 @@ class ATPCaseBuilder:
         r_pos_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0)
         x_pos_pu = np.sqrt(max(0.0, z_pos_pu**2 - r_pos_pu**2))
 
-        r_tx = r_pos_pu * z_base
-        x_tx = x_pos_pu * z_base
-        l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
+        r_pos = r_pos_pu * z_base
+        x_pos = x_pos_pu * z_base
+        l_pos_mH = (x_pos / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        for ph_char in ["A", "B", "C"]:
-            tx_node = f"TX_{ph_char}"
-            sec_node = f"SEC{ph_char}"
-            branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
+        if sc_test.z_zero_pu is not None and sc_test.losses_zero_kw is not None:
+            z_zero_pu = sc_test.z_zero_pu
+            r_zero_pu = sc_test.losses_zero_kw / (lv_w.rated_mva * 1000.0)
+            x_zero_pu = np.sqrt(max(0.0, z_zero_pu**2 - r_zero_pu**2))
+            r_zero = r_zero_pu * z_base
+            x_zero = x_zero_pu * z_base
+            l_zero_mH = (x_zero / (2.0 * np.pi * freq_hz)) * 1000.0
+        else:
+            r_zero = r_pos * 1.2
+            l_zero_mH = l_pos_mH * 1.2
+
+        # Symmetrical components conversion to 3-phase coupled self and mutual parameters
+        r_self = (r_zero + 2.0 * r_pos) / 3.0
+        l_self_mH = (l_zero_mH + 2.0 * l_pos_mH) / 3.0
+        r_mut = (r_zero - r_pos) / 3.0
+        l_mut_mH = (l_zero_mH - l_pos_mH) / 3.0
+
+        # Type 51, 52, 53 coupled branch cards for 3-phase transformer impedance coupling
+        c1 = f"51TX_A  SECA                {atp_e16(r_self)}{atp_e16(l_self_mH)}{atp_e16(0.0)}"
+        c2 = f"52TX_B  SECB                {atp_e16(r_mut)}{atp_e16(l_mut_mH)}{atp_e16(0.0)}"
+        c3 = "53TX_C  SECC"
+        branch_cards.extend([c1, c2, c3])
 
         # --- PRE-EVENT LOAD REALIZATION ---
         v_phase_list = [v_rms_a, v_rms_b, v_rms_c]
