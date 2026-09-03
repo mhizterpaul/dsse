@@ -307,13 +307,28 @@ class CoSimulationRunner:
                 bus_name = self.dss.Properties.Value("bus1")
                 p_kw = float(self.dss.Loads.kW())
                 q_kvar = float(self.dss.Loads.kvar())
+                try:
+                    kV_val = float(self.dss.Loads.kV())
+                except Exception as e:
+                    err_msg = f"Could not read load voltage rating (kV) for load '{ld_name}': {e}"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg) from e
+
+                if p_kw <= 0.0 or kV_val <= 0.0:
+                    err_msg = f"Invalid p_kw ({p_kw}) or kV ({kV_val}) for load '{ld_name}' in OpenDSS"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg)
+
+                r_ohm = ((kV_val * 1000.0) ** 2) / (p_kw * 1000.0)
+                l_h = (((kV_val * 1000.0) ** 2) / (q_kvar * 1000.0 + 1e-6)) / (2.0 * np.pi * float(op.frequency_hz)) if q_kvar > 0 else 0.0
+
                 loads.append(LoadModel(
                     name=ld_name,
                     bus=bus_name,
                     p_kw=p_kw,
                     q_kvar=q_kvar,
-                    r_ohm=None,
-                    l_h=None
+                    r_ohm=r_ohm,
+                    l_h=l_h
                 ))
 
             if hasattr(event, "event_1") and hasattr(event, "event_2"):

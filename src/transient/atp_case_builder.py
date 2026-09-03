@@ -64,8 +64,8 @@ class LoadModel:
     bus: str
     p_kw: float
     q_kvar: float 
-    r_ohm: Optional[float] 
-    l_h: Optional[float] 
+    r_ohm: float
+    l_h: float
 
 
 @dataclass(frozen=True)
@@ -187,10 +187,6 @@ class ATPCaseBuilder:
         # Loads Cards
         for l_idx, ld in enumerate(loads):
             r_val = ld.r_ohm
-            if r_val is None:
-                v_ll = lv_w.rated_kv * 1000.0
-                p_w = ld.p_kw * 1000.0
-                r_val = (v_ll ** 2) / (p_w + 1e-6)
             r_ld_str = f"{r_val:.4f}".rjust(10)
             node_prefix = f"L{l_idx}"
             for ph_char in ["A", "B", "C"]:
@@ -376,8 +372,8 @@ class ATPCaseBuilder:
                 bus=ld["bus"],
                 p_kw=float(ld["p_kw"]),
                 q_kvar=float(ld["q_kvar"]),
-                r_ohm=ld.get("r_ohm"),
-                l_h=ld.get("l_h")
+                r_ohm=float(ld["r_ohm"]),
+                l_h=float(ld["l_h"])
             )
             for ld in raw_loads
         ]
