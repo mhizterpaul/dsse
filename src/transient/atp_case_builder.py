@@ -10,7 +10,7 @@ class TransformerWinding:
     name: str
     rated_kv: float
     rated_mva: float
-    connection: str = "Y"
+    connection: str
     phase_shift_deg: float 
 
 
@@ -45,7 +45,6 @@ class SourceModel:
     name: str
     frequency_hz: float
     pre_event: ThreePhaseState
-    post_event: Optional[ThreePhaseState] 
 
 
 @dataclass(frozen=True)
@@ -65,8 +64,8 @@ class LoadModel:
     bus: str
     p_kw: float
     q_kvar: float 
-    r_ohm: Optional[float] 
-    l_h: Optional[float] 
+    r_ohm: float
+    l_h: float
 
 
 @dataclass(frozen=True)
@@ -91,7 +90,7 @@ class TransientEvent:
 class SimulationConfig:
     t_start_s: float 
     t_stop_s: float 
-    time_step_s: float = 1e-4
+    time_step_s: float
 
 
 class ATPCaseBuilder:
@@ -188,10 +187,6 @@ class ATPCaseBuilder:
         # Loads Cards
         for l_idx, ld in enumerate(loads):
             r_val = ld.r_ohm
-            if r_val is None:
-                v_ll = lv_w.rated_kv * 1000.0
-                p_w = ld.p_kw * 1000.0
-                r_val = (v_ll ** 2) / (p_w + 1e-6)
             r_ld_str = f"{r_val:.4f}".rjust(10)
             node_prefix = f"L{l_idx}"
             for ph_char in ["A", "B", "C"]:
@@ -318,25 +313,37 @@ class ATPCaseBuilder:
         freq_hz = float(getattr(operating_point, "frequency_hz"))
 
         tx_spec_dict = getattr(realization, "transformer_spec")
-        r_pct = float(tx_spec_dict.get("r_pct"))
-        xhl_pct = float(tx_spec_dict.get("xhl_pct"))
-        kvas = tx_spec_dict.get("kvas")
-        kvs = tx_spec_dict.get("kvs")
+        r_pct = float(tx_spec_dict["r_pct"])
+        xhl_pct = float(tx_spec_dict["xhl_pct"])
+        r0_pct = float(tx_spec_dict["r0_pct"])
+        x0_pct = float(tx_spec_dict["x0_pct"])
+        kvas = tx_spec_dict["kvas"]
+        kvs = tx_spec_dict["kvs"]
+        noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
+        imag_pct = float(tx_spec_dict["imag_pct"])
+
+        z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
+        losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
+
+        phase_v = operating_point.phase_voltages_v[target_tx]
+        phase_ang = operating_point.phase_angles_deg[target_tx]
+
+        phase_shift_hv = float(phase_ang[0])
+        phase_shift_lv = float(phase_ang[0])
 
         transformer = TransformerSpec(
-            name=str(tx_spec_dict.get("name")),
+            name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", kvs[0], kvas[0] / 1000.0, "Y"),
-                TransformerWinding("LV", kvs[1], kvas[1] / 1000.0, "Y")
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2), losses_pos_kw=(r_pct/100.0)*kvas[0])
-            ]
+                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+            ],
+            excitation_current_percent=imag_pct,
+            excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])
         )
-
-        phase_v = operating_point.phase_voltages_v.get(target_tx)
-        phase_ang = operating_point.phase_angles_deg.get(target_tx) 
 
         source = SourceModel(
             name="GRID",
@@ -352,12 +359,24 @@ class ATPCaseBuilder:
             name=f"line_{feeder_idx}",
             from_bus="main_bus",
             to_bus=f"feeder{feeder_idx}_head",
-            length_km=4.5,
-            r1_ohm_per_km=float(line_params.get("r1")),
-            x1_ohm_per_km=float(line_params.get("x1"))
+            length_km=float(line_params["length_km"]),
+            r1_ohm_per_km=float(line_params["r1"]),
+            x1_ohm_per_km=float(line_params["x1"]),
+            c1_f_per_km=float(line_params["c1"])
         )
 
-        loads = [LoadModel(name, bus, p_kw)] 
+        raw_loads = getattr(realization, "loads")
+        loads = [
+            LoadModel(
+                name=ld["name"],
+                bus=ld["bus"],
+                p_kw=float(ld["p_kw"]),
+                q_kvar=float(ld["q_kvar"]),
+                r_ohm=float(ld["r_ohm"]),
+                l_h=float(ld["l_h"])
+            )
+            for ld in raw_loads
+        ]
 
         start_s = float(getattr(event, "start_time_s"))
         dur_s = float(getattr(event, "duration_s"))

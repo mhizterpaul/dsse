@@ -222,20 +222,49 @@ class CoSimulationRunner:
             r_pct = float(tx_spec["r_pct"])
             xhl_pct = float(tx_spec["xhl_pct"])
 
+            tx_elem_name = f"Transformer.{target_tx_key}"
+            if not self.dss.Circuit.SetActiveElement(tx_elem_name):
+                err_msg = f"Transformer element '{tx_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
+            if not self.dss.Circuit.SetActiveElement(line_elem_name):
+                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            # Query real power losses of the feeding MV line from OpenDSS
+            line_losses = self.dss.CktElement.Losses()
+            line_loss_p_w = float(line_losses[0])
+            ex_loss_kw = abs(line_loss_p_w) / 1000.0
+
+            phase_v = op.phase_voltages_v[target_tx_key]
+            phase_ang = op.phase_angles_deg[target_tx_key]
+
+            # Phase shift extracted directly from operating point angles
+            phase_shift_hv = float(phase_ang[0])
+            phase_shift_lv = float(phase_ang[0])
+
+            r0_pct = float(tx_spec["r0_pct"])
+            x0_pct = float(tx_spec["x0_pct"])
+            imag_pct = float(tx_spec["imag_pct"])
+            z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
+            losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
+
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
                 windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y"),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y")
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
                 ],
                 short_circuit_tests=[
-                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]))
-                ]
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+                ],
+                excitation_current_percent=imag_pct,
+                excitation_loss_kw=ex_loss_kw
             )
-
-            phase_v = op.phase_voltages_v[target_tx_key]
-            phase_ang = op.phase_angles_deg[target_tx_key]
 
             source = SourceModel(
                 name="GRID",
@@ -246,16 +275,67 @@ class CoSimulationRunner:
                 )
             )
 
+            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
+            if not self.dss.Circuit.SetActiveElement(line_elem_name):
+                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            try:
+                line_len = float(self.dss.Properties.Value("length"))
+                line_r1 = float(self.dss.Properties.Value("r1"))
+                line_x1 = float(self.dss.Properties.Value("x1"))
+                line_c1 = float(self.dss.Properties.Value("c1"))
+            except Exception as e:
+                err_msg = f"Could not read line properties from '{line_elem_name}': {e}"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg) from e
+
             line = LineModel(
                 name=f"line_{feeder_idx}",
                 from_bus="main_bus",
                 to_bus=f"feeder{feeder_idx}_head",
-                length_km=4.5,
-                r1_ohm_per_km=0.21,
-                x1_ohm_per_km=0.08
+                length_km=line_len,
+                r1_ohm_per_km=line_r1,
+                x1_ohm_per_km=line_x1,
+                c1_f_per_km=line_c1
             )
 
-            loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0)]
+            load_names = self.dss.Loads.AllNames()
+            if not load_names:
+                err_msg = f"No active loads found in OpenDSS circuit for scenario {scenario_id}"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
+            loads = []
+            for ld_name in load_names:
+                self.dss.Loads.Name(ld_name)
+                bus_name = self.dss.Properties.Value("bus1")
+                p_kw = float(self.dss.Loads.kW())
+                q_kvar = float(self.dss.Loads.kvar())
+                try:
+                    kV_val = float(self.dss.Loads.kV())
+                except Exception as e:
+                    err_msg = f"Could not read load voltage rating (kV) for load '{ld_name}': {e}"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg) from e
+
+                if p_kw <= 0.0 or kV_val <= 0.0:
+                    err_msg = f"Invalid p_kw ({p_kw}) or kV ({kV_val}) for load '{ld_name}' in OpenDSS"
+                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                    raise ValueError(err_msg)
+
+                r_ohm = ((kV_val * 1000.0) ** 2) / (p_kw * 1000.0)
+                l_h = (((kV_val * 1000.0) ** 2) / (q_kvar * 1000.0 + 1e-6)) / (2.0 * np.pi * float(op.frequency_hz)) if q_kvar > 0 else 0.0
+
+                loads.append(LoadModel(
+                    name=ld_name,
+                    bus=bus_name,
+                    p_kw=p_kw,
+                    q_kvar=q_kvar,
+                    r_ohm=r_ohm,
+                    l_h=l_h
+                ))
 
             if hasattr(event, "event_1") and hasattr(event, "event_2"):
                 ev_class = "co_event"
