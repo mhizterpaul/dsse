@@ -270,9 +270,13 @@ class ATPCaseBuilder:
         freq_hz = transformer.frequency_hz
 
         # Source peak voltages and angles from pre-event ThreePhaseState
-        amp_a = source.pre_event.voltage_rms_v[0] * np.sqrt(2.0)
-        amp_b = source.pre_event.voltage_rms_v[1] * np.sqrt(2.0)
-        amp_c = source.pre_event.voltage_rms_v[2] * np.sqrt(2.0)
+        v_rms_a = source.pre_event.voltage_rms_v[0]
+        v_rms_b = source.pre_event.voltage_rms_v[1]
+        v_rms_c = source.pre_event.voltage_rms_v[2]
+
+        amp_a = v_rms_a * np.sqrt(2.0)
+        amp_b = v_rms_b * np.sqrt(2.0)
+        amp_c = v_rms_c * np.sqrt(2.0)
 
         ang_a = source.pre_event.voltage_angle_deg[0]
         ang_b = source.pre_event.voltage_angle_deg[1]
@@ -326,24 +330,25 @@ class ATPCaseBuilder:
             branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
 
         # --- PRE-EVENT LOAD REALIZATION ---
+        v_phase_list = [v_rms_a, v_rms_b, v_rms_c]
         for l_idx, ld in enumerate(loads):
-            if ld.p_kw > 0.0 or ld.q_kvar > 0.0:
-                p_phase_w = max(1e-3, (ld.p_kw * 1000.0) / 3.0)
-                q_phase_var = (ld.q_kvar * 1000.0) / 3.0
-                v_phase = 415.0 / np.sqrt(3.0)
-                s2_phase = p_phase_w**2 + q_phase_var**2
-                r_val = (v_phase**2 * p_phase_w) / s2_phase
-                x_val = (v_phase**2 * q_phase_var) / s2_phase
-                l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
-            elif ld.r_ohm > 0.0:
-                r_val = ld.r_ohm
-                l_val_mH = ld.l_h * 1000.0
-            else:
-                r_val = 10.0
-                l_val_mH = 1.0
-
             node_prefix = f"L{l_idx}"
-            for ph_char in ["A", "B", "C"]:
+            for p_idx, ph_char in enumerate(["A", "B", "C"]):
+                v_ph = v_phase_list[p_idx] if v_phase_list[p_idx] > 0 else 239.6
+                if ld.p_kw > 0.0 or ld.q_kvar > 0.0:
+                    p_phase_w = max(1e-3, (ld.p_kw * 1000.0) / 3.0)
+                    q_phase_var = (ld.q_kvar * 1000.0) / 3.0
+                    s2_phase = p_phase_w**2 + q_phase_var**2
+                    r_val = (v_ph**2 * p_phase_w) / s2_phase
+                    x_val = (v_ph**2 * q_phase_var) / s2_phase
+                    l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
+                elif ld.r_ohm > 0.0:
+                    r_val = ld.r_ohm
+                    l_val_mH = ld.l_h * 1000.0
+                else:
+                    r_val = 10.0
+                    l_val_mH = 1.0
+
                 sec_node = f"SEC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
                 branch_cards.append(fmt_branch(load_node, "", r_val, l_val_mH, 0.0))
