@@ -197,7 +197,8 @@ class CoSimulationRunner:
             from src.transient.atp_case_builder import (
                 TransformerSpec, TransformerWinding, ShortCircuitTest,
                 SourceModel, ThreePhaseState, LineModel, LoadModel,
-                TransientEvent, SimulationConfig
+                TransientEvent, SimulationConfig, SourceImpedance,
+                TheveninEquivalent, NetworkEquivalent
             )
 
             if "kvas" not in tx_spec or "kvs" not in tx_spec or "r_pct" not in tx_spec or "xhl_pct" not in tx_spec or "name" not in tx_spec:
@@ -294,6 +295,10 @@ class CoSimulationRunner:
                 print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                 raise ValueError(err_msg) from e
 
+            line_r0 = float(self.dss.Properties.Value("r0")) if self.dss.Properties.Value("r0") else line_r1 * 3.0
+            line_x0 = float(self.dss.Properties.Value("x0")) if self.dss.Properties.Value("x0") else line_x1 * 3.0
+            line_c0 = float(self.dss.Properties.Value("c0")) if self.dss.Properties.Value("c0") else line_c1
+
             line = LineModel(
                 name=f"line_{feeder_idx}",
                 from_bus="main_bus",
@@ -301,7 +306,58 @@ class CoSimulationRunner:
                 length_km=line_len,
                 r1_ohm_per_km=line_r1,
                 x1_ohm_per_km=line_x1,
-                c1_f_per_km=line_c1
+                c1_f_per_km=line_c1,
+                r0_ohm_per_km=line_r0,
+                x0_ohm_per_km=line_x0,
+                c0_f_per_km=line_c0
+            )
+
+            # Compute steady-state Thévenin equivalent (Z_th matrix and V_th phasors)
+            r1_tot = line_r1 * line_len
+            x1_tot = line_x1 * line_len
+            r0_tot = line_r0 * line_len
+            x0_tot = line_x0 * line_len
+
+            z1_comp = complex(r1_tot, x1_tot)
+            z0_comp = complex(r0_tot, x0_tot)
+            z_self = (z0_comp + 2.0 * z1_comp) / 3.0
+            z_mut = (z0_comp - z1_comp) / 3.0
+
+            z_th_matrix = np.array([
+                [z_self, z_mut, z_mut],
+                [z_mut, z_self, z_mut],
+                [z_mut, z_mut, z_self]
+            ], dtype=complex)
+
+            from src.transient.atp_case_builder import TheveninEquivalent, NetworkEquivalent
+            th_eq = TheveninEquivalent(
+                boundary_bus=f"feeder{feeder_idx}_head",
+                frequency_hz=float(op.frequency_hz),
+                v_th_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+                v_th_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2])),
+                z_th_ohm=z_th_matrix,
+                z1_ohm=z1_comp,
+                z0_ohm=z0_comp,
+                z2_ohm=z1_comp
+            )
+
+            source = SourceModel(
+                name="GRID",
+                frequency_hz=float(op.frequency_hz),
+                pre_event=ThreePhaseState(
+                    voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+                    voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
+                ),
+                impedance=SourceImpedance(r1_ohm=r1_tot, x1_ohm=x1_tot, r0_ohm=r0_tot, x0_ohm=x0_tot),
+                network_equivalent=NetworkEquivalent(
+                    boundary_bus=f"feeder{feeder_idx}_head",
+                    frequency_hz=float(op.frequency_hz),
+                    vabc_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+                    vabc_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2])),
+                    z1_ohm=z1_comp,
+                    z0_ohm=z0_comp,
+                    z2_ohm=z1_comp
+                )
             )
 
             load_names = self.dss.Loads.AllNames()

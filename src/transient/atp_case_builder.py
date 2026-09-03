@@ -66,6 +66,18 @@ class SourceImpedance:
 
 
 @dataclass(frozen=True)
+class TheveninEquivalent:
+    boundary_bus: str
+    frequency_hz: float
+    v_th_rms_v: Tuple[float, float, float]
+    v_th_angle_deg: Tuple[float, float, float]
+    z_th_ohm: np.ndarray  # (3, 3) complex phase-domain matrix
+    z1_ohm: complex
+    z0_ohm: Optional[complex] = None
+    z2_ohm: Optional[complex] = None
+
+
+@dataclass(frozen=True)
 class NetworkEquivalent:
     boundary_bus: str
     frequency_hz: float
