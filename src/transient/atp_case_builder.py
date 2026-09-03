@@ -142,25 +142,38 @@ class ATPCaseBuilder:
         branch_cards = []
         switch_cards = []
 
+        def fmt_branch(n1: str, n2: str, r: Optional[float] = None, l_mH: Optional[float] = None, c_uF: Optional[float] = None, btype: str = "  ") -> str:
+            n1_s = f"{n1:<6}"[:6]
+            n2_s = f"{n2:<6}"[:6]
+            if r is not None:
+                r_s = f"{r:10.4E}" if abs(r) >= 1e5 or (0 < abs(r) < 1e-3) else f"{r:10.4f}"
+            else:
+                r_s = " " * 10
+            l_s = f"{l_mH:10.4f}" if l_mH is not None else " " * 10
+            c_s = f"{c_uF:10.4f}" if c_uF is not None else " " * 10
+            return f"{btype[:2]:<2}{n1_s}{n2_s}{'':<12}{r_s[:10]}{l_s[:10]}{c_s[:10]}"
+
+        def fmt_switch(n1: str, n2: str, t_close: float, t_open: float, btype: str = "  ") -> str:
+            n1_s = f"{n1:<6}"[:6]
+            n2_s = f"{n2:<6}"[:6]
+            tc_s = f"{t_close:10.4f}"
+            to_s = f"{t_open:10.4f}"
+            return f"{btype[:2]:<2}{n1_s}{n2_s}{tc_s}{to_s}"
+
         # High resistance ground paths for source
-        branch_cards.extend([
-            "  SRCA                      1.E8                                               0",
-            "  SRCB                      1.E8                                               0",
-            "  SRCC                      1.E8                                               0",
-        ])
+        for ph_char in ["A", "B", "C"]:
+            src_node = f"SRC{ph_char}"
+            branch_cards.append(fmt_branch(src_node, "", r=1e8))
 
         # Line Cards
         r_line = line.r1_ohm_per_km * line.length_km
         x_line = line.x1_ohm_per_km * line.length_km
         l_line_mH = (x_line / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        r_line_str = f"{r_line:.4f}".rjust(10)
-        l_line_str = f"{l_line_mH:.4f}".rjust(10)
-
         for ph_char in ["A", "B", "C"]:
             src_node = f"SRC{ph_char}"
             tx_node = f"TX_{ph_char}"
-            branch_cards.append(f"  {src_node:<6}{tx_node:<6}             {r_line_str}{l_line_str}                                               0")
+            branch_cards.append(fmt_branch(src_node, tx_node, r=r_line, l_mH=l_line_mH))
 
         # BCTRAN Transformer Matrix / Impedance Cards
         sc_test = transformer.short_circuit_tests[0] 
@@ -176,24 +189,20 @@ class ATPCaseBuilder:
         x_tx = x_pu * z_base
         l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        r_tx_str = f"{r_tx:.4f}".rjust(10)
-        l_tx_str = f"{l_tx_mH:.4f}".rjust(10)
-
         for ph_char in ["A", "B", "C"]:
             tx_node = f"TX_{ph_char}"
             sec_node = f"SEC{ph_char}"
-            branch_cards.append(f"  {tx_node:<6}{sec_node:<6}             {r_tx_str}{l_tx_str}                                               0")
+            branch_cards.append(fmt_branch(tx_node, sec_node, r=r_tx, l_mH=l_tx_mH))
 
         # Loads Cards
         for l_idx, ld in enumerate(loads):
             r_val = ld.r_ohm
-            r_ld_str = f"{r_val:.4f}".rjust(10)
             node_prefix = f"L{l_idx}"
             for ph_char in ["A", "B", "C"]:
                 sec_node = f"SEC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
-                branch_cards.append(f"  {load_node:<6}                       {r_ld_str}                                               0")
-                switch_cards.append(f"  {sec_node:<6}{load_node:<6}{'-1.0000':>10}{'100.00':>10}                                             0")
+                branch_cards.append(fmt_branch(load_node, "", r=r_val))
+                switch_cards.append(fmt_switch(sec_node, load_node, t_close=-1.0, t_open=100.0))
 
         # Transient Event Cards (supports single events and co-events)
         events_to_card = []
@@ -208,20 +217,16 @@ class ATPCaseBuilder:
             dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s")))
             end_s = start_s + dur_s
 
-            start_str = f"{start_s:10.4f}"
-            end_str = f"{end_s:10.4f}"
-
             if ev_class in ["line_fault", "fault"]:
                 f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases"))
                 f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", getattr(event, "fault_resistance_ohm"))))
-                r_fault_str = f"{f_res:.4f}".rjust(10)
                 ph_chars = ["A", "B", "C"]
                 for p_idx in f_phases:
                     ph_char = ph_chars[p_idx]
                     sec_node = f"SEC{ph_char}"
                     fault_node = f"F{idx}_{ph_char}"
-                    branch_cards.append(f"  {fault_node:<6}                       {r_fault_str}                                               0")
-                    switch_cards.append(f"  {sec_node:<6}{fault_node:<6}{start_str}{end_str}                                             0")
+                    branch_cards.append(fmt_branch(fault_node, "", r=f_res))
+                    switch_cards.append(fmt_switch(sec_node, fault_node, t_close=start_s, t_open=end_s))
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
                 if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
                     err_msg = f"Event missing required attribute 'equipment_type': {ev}"
@@ -246,14 +251,13 @@ class ATPCaseBuilder:
                     raise ValueError(err_msg)
                 r_eq = float(r_stator)
                 x_eq = float(x_stator)
-                r_str = f"{r_eq:.4f}".rjust(10)
-                l_str = f"{x_eq * 1000.0 / (2*np.pi*freq_hz):.4f}".rjust(10)
+                l_eq_mH = (x_eq / (2.0 * np.pi * freq_hz)) * 1000.0
                 node_prefix = f"E{idx}"
                 for ph_char in ["A", "B", "C"]:
                     sec_node = f"SEC{ph_char}"
                     load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(f"  {load_node:<6}                       {r_str}{l_str}                                               0")
-                    switch_cards.append(f"  {sec_node:<6}{load_node:<6}{start_str}{end_str}                                             0")
+                    branch_cards.append(fmt_branch(load_node, "", r=r_eq, l_mH=l_eq_mH))
+                    switch_cards.append(fmt_switch(sec_node, load_node, t_close=start_s, t_open=end_s))
 
         atp_lines = [
             "BEGIN NEW DATA CASE",
