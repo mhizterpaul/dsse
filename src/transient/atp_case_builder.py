@@ -124,7 +124,6 @@ class ATPCaseBuilder:
             raise ValueError("SimulationConfig must be provided")
 
         freq_hz = transformer.frequency_hz
-        freq_str = f"{freq_hz:.2f}".rjust(10)
 
         # Source peak voltages and angles from pre-event ThreePhaseState
         amp_a = source.pre_event.voltage_rms_v[0] * np.sqrt(2.0)
@@ -135,34 +134,48 @@ class ATPCaseBuilder:
         ang_b = source.pre_event.voltage_angle_deg[1]
         ang_c = source.pre_event.voltage_angle_deg[2]
 
-        src_a = f"14SRCA  -1{amp_a:10.2f}{freq_str}{ang_a:10.2f}          -1.0000    100.00"
-        src_b = f"14SRCB  -1{amp_b:10.2f}{freq_str}{ang_b:10.2f}          -1.0000    100.00"
-        src_c = f"14SRCC  -1{amp_c:10.2f}{freq_str}{ang_c:10.2f}          -1.0000    100.00"
+        def _type14_source(node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float) -> str:
+            n_s = f"{node:<6}"[:6]
+            return f"14{n_s}{'0':>6}{amplitude:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
+
+        src_a = _type14_source("SRCA", amp_a, freq_hz, ang_a, -1.0, 1.0e3)
+        src_b = _type14_source("SRCB", amp_b, freq_hz, ang_b, -1.0, 1.0e3)
+        src_c = _type14_source("SRCC", amp_c, freq_hz, ang_c, -1.0, 1.0e3)
 
         branch_cards = []
         switch_cards = []
 
+        def fmt_branch(n1: str, n2: str, r: float, l_mH: float, c_uF: float) -> str:
+            n1_s = f"{n1:<6}"[:6]
+            n2_s = f"{n2:<6}"[:6]
+            r_s = f"{r:10.4f}" 
+            l_s = f"{l_mH:10.4f}" 
+            c_s = f"{c_uF:10.4f}" 
+            return f"  {n1_s}{n2_s}{'':<12}{r_s[:10]:>10}{l_s[:10]:>10}{c_s[:10]:>10}".rstrip()
+
+        def fmt_switch(n1: str, n2: str, t_close: float, t_open: float) -> str:
+            n1_s = f"{n1:<6}"[:6]
+            n2_s = f"{n2:<6}"[:6]
+            tc_s = f"{t_close:10.4f}"
+            to_s = f"{t_open:10.4f}"
+            return f"  {n1_s}{n2_s}{tc_s}{to_s}"
+
         # High resistance ground paths for source
-        branch_cards.extend([
-            "  SRCA                      1.E8                                               0",
-            "  SRCB                      1.E8                                               0",
-            "  SRCC                      1.E8                                               0",
-        ])
+        for ph_char in ["A", "B", "C"]:
+            src_node = f"SRC{ph_char}"
+            branch_cards.append(fmt_branch(src_node, "", 1e8, 0.0, 0.0))
 
         # Line Cards
         r_line = line.r1_ohm_per_km * line.length_km
         x_line = line.x1_ohm_per_km * line.length_km
         l_line_mH = (x_line / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        r_line_str = f"{r_line:.4f}".rjust(10)
-        l_line_str = f"{l_line_mH:.4f}".rjust(10)
-
         for ph_char in ["A", "B", "C"]:
             src_node = f"SRC{ph_char}"
             tx_node = f"TX_{ph_char}"
-            branch_cards.append(f"  {src_node:<6}{tx_node:<6}             {r_line_str}{l_line_str}                                               0")
+            branch_cards.append(fmt_branch(src_node, tx_node, r_line, l_line_mH, 0.0))
 
-        # BCTRAN Transformer Matrix / Impedance Cards
+        # Transformer Matrix / Impedance Cards
         sc_test = transformer.short_circuit_tests[0] 
         hv_w = transformer.windings[0] 
         lv_w = transformer.windings[1] 
@@ -176,24 +189,20 @@ class ATPCaseBuilder:
         x_tx = x_pu * z_base
         l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        r_tx_str = f"{r_tx:.4f}".rjust(10)
-        l_tx_str = f"{l_tx_mH:.4f}".rjust(10)
-
         for ph_char in ["A", "B", "C"]:
             tx_node = f"TX_{ph_char}"
             sec_node = f"SEC{ph_char}"
-            branch_cards.append(f"  {tx_node:<6}{sec_node:<6}             {r_tx_str}{l_tx_str}                                               0")
+            branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
 
         # Loads Cards
         for l_idx, ld in enumerate(loads):
             r_val = ld.r_ohm
-            r_ld_str = f"{r_val:.4f}".rjust(10)
             node_prefix = f"L{l_idx}"
             for ph_char in ["A", "B", "C"]:
                 sec_node = f"SEC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
-                branch_cards.append(f"  {load_node:<6}                       {r_ld_str}                                               0")
-                switch_cards.append(f"  {sec_node:<6}{load_node:<6}{'-1.0000':>10}{'100.00':>10}                                             0")
+                branch_cards.append(fmt_branch(load_node, "", r_val, 0.0, 0.0))
+                switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
 
         # Transient Event Cards (supports single events and co-events)
         events_to_card = []
@@ -208,20 +217,16 @@ class ATPCaseBuilder:
             dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s")))
             end_s = start_s + dur_s
 
-            start_str = f"{start_s:10.4f}"
-            end_str = f"{end_s:10.4f}"
-
             if ev_class in ["line_fault", "fault"]:
                 f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases"))
                 f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", getattr(event, "fault_resistance_ohm"))))
-                r_fault_str = f"{f_res:.4f}".rjust(10)
                 ph_chars = ["A", "B", "C"]
                 for p_idx in f_phases:
                     ph_char = ph_chars[p_idx]
                     sec_node = f"SEC{ph_char}"
                     fault_node = f"F{idx}_{ph_char}"
-                    branch_cards.append(f"  {fault_node:<6}                       {r_fault_str}                                               0")
-                    switch_cards.append(f"  {sec_node:<6}{fault_node:<6}{start_str}{end_str}                                             0")
+                    branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                    switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
                 if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
                     err_msg = f"Event missing required attribute 'equipment_type': {ev}"
@@ -230,30 +235,44 @@ class ATPCaseBuilder:
                 eq_type = ev.equipment_type
                 from src.loads import get_equipment_model
                 eq_model = get_equipment_model(eq_type)
-                r_stator = None
+
+                r_val = None
                 for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
                     if key in eq_model.atp_params:
-                        r_stator = eq_model.atp_params[key]
+                        r_val = eq_model.atp_params[key]
                         break
-                x_stator = None
-                for key in ["x_stator", "l_armature", "l_coil", "l_ac_filter", "l_filter", "c_doubler", "c_resonant"]:
+
+                l_mH_val = 0.0
+                for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
                     if key in eq_model.atp_params:
-                        x_stator = eq_model.atp_params[key]
+                        l_mH_val = float(eq_model.atp_params[key]) * 1000.0
                         break
-                if r_stator is None or x_stator is None:
-                    err_msg = f"Equipment model '{eq_type}' missing required R or X in atp_params"
+
+                if l_mH_val == 0.0:
+                    for key in ["x_stator", "x_rotor"]:
+                        if key in eq_model.atp_params:
+                            x_val = float(eq_model.atp_params[key])
+                            l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
+                            break
+
+                c_uF_val = 0.0
+                for key in ["c_doubler", "c_resonant", "c_dc_link", "c_supply_bank", "c_filter"]:
+                    if key in eq_model.atp_params:
+                        c_uF_val = float(eq_model.atp_params[key]) * 1e6
+                        break
+
+                if r_val is None:
+                    err_msg = f"Equipment model '{eq_type}' missing required R in atp_params"
                     print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                     raise ValueError(err_msg)
-                r_eq = float(r_stator)
-                x_eq = float(x_stator)
-                r_str = f"{r_eq:.4f}".rjust(10)
-                l_str = f"{x_eq * 1000.0 / (2*np.pi*freq_hz):.4f}".rjust(10)
+
+                r_eq = float(r_val)
                 node_prefix = f"E{idx}"
                 for ph_char in ["A", "B", "C"]:
                     sec_node = f"SEC{ph_char}"
                     load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(f"  {load_node:<6}                       {r_str}{l_str}                                               0")
-                    switch_cards.append(f"  {sec_node:<6}{load_node:<6}{start_str}{end_str}                                             0")
+                    branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH_val, c_uF_val))
+                    switch_cards.append(fmt_switch(sec_node, load_node, start_s, end_s))
 
         atp_lines = [
             "BEGIN NEW DATA CASE",
@@ -261,7 +280,7 @@ class ATPCaseBuilder:
             f"POWER FREQUENCY                      {freq_hz:.0f}.",
             "$DUMMY, XYZ000",
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
-            f"{simulation.time_step_s:8.6f}{simulation.t_stop_s:8.4f}     50.     50.",
+            f"{simulation.time_step_s:10.6E}{simulation.t_stop_s:10.6E}     0.     0.",
             "    1000       1       1       1       1       0       0       1       0",
             "/BRANCH",
             "C < n1 >< n2 ><ref1><ref2>< R  >< L  >< C  >",
@@ -275,12 +294,11 @@ class ATPCaseBuilder:
             src_b,
             src_c,
             "/OUTPUT",
+            "  SECA  SECB  SECC",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",
             "BLANK OUTPUT",
-            "/PLOT",
-            "  SECA  SECB  SECC  C:TX_A-SECA C:TX_B-SECB C:TX_C-SECC",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
             "BLANK"
@@ -393,12 +411,14 @@ class ATPCaseBuilder:
             fault_type=f_type,
             faulted_phases=tuple(f_phases),
             fault_resistance_ohm=f_res,
-            equipment_type=getattr(event, "equipment_type", None),
-            event_1=getattr(event, "event_1", None),
-            event_2=getattr(event, "event_2", None)
+            equipment_type=getattr(event, "equipment_type"),
+            event_1=getattr(event, "event_1"),
+            event_2=getattr(event, "event_2")
         )
 
-        sim_config = SimulationConfig(t_start_s, t_stop_s, time_step_s=1e-4)
+        t_start_s = 0.0
+        t_stop_s = max(start_s + dur_s + 0.05)
+        sim_config = SimulationConfig(t_start_s=t_start_s, t_stop_s=t_stop_s, time_step_s=1e-4)
 
         return self.build_explicit(
             transformer=transformer,
