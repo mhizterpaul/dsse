@@ -327,17 +327,17 @@ class ATPCaseBuilder:
 
         # Loads Cards (including R and L for each load)
         for l_idx, ld in enumerate(loads):
-            if ld.r_ohm > 0.0:
-                r_val = ld.r_ohm
-                l_val_mH = ld.l_h * 1000.0
-            elif ld.p_kw > 0.0:
-                p_w = ld.p_kw * 1000.0
+            if ld.p_kw > 0.0 or ld.q_kvar > 0.0:
+                p_w = max(1e-3, ld.p_kw * 1000.0)
                 q_var = ld.q_kvar * 1000.0
                 s2 = p_w**2 + q_var**2
                 v_ll = 415.0
                 r_val = (v_ll**2 * p_w) / s2
                 x_val = (v_ll**2 * q_var) / s2
-                l_val_mH = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
+                l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
+            elif ld.r_ohm > 0.0:
+                r_val = ld.r_ohm
+                l_val_mH = ld.l_h * 1000.0
             else:
                 r_val = 10.0
                 l_val_mH = 1.0

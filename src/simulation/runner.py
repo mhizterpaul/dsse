@@ -3,6 +3,7 @@ import numpy as np
 import traceback
 import json
 import os
+import multiprocessing as mp
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,9 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
         ev_fault = event_spec
     else:
         return json.dumps({})
+
+    # Solve power flow to initialize element current vectors
+    dss_instance.run_command("solve")
 
     # Query Fault element
     if not dss_instance.Circuit.SetActiveElement(f"Fault.{fault_id}"):
@@ -183,7 +187,7 @@ class CoSimulationRunner:
         a_tuple = op.phase_angles_deg[target_tx_key]
         freq = op.frequency_hz
 
-        atp_cache_key = (ev_key, feeder_id, target_tx_key, v_tuple, a_tuple, freq)
+        atp_cache_key = (ev_key, feeder_id, target_tx_key, v_tuple, a_tuple, freq, scenario_id)
         if atp_cache_key in self._atp_response_cache:
             return self._atp_response_cache[atp_cache_key]
 
@@ -233,15 +237,13 @@ class CoSimulationRunner:
                 print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                 raise ValueError(err_msg)
 
-            # Query real power losses of the feeding MV line from OpenDSS
-            line_losses = self.dss.CktElement.Losses()
-            line_loss_p_w = float(line_losses[0])
-            ex_loss_kw = abs(line_loss_p_w) / 1000.0
+            # Transformer excitation loss calculated from spec no-load loss percentage
+            noloadloss_pct = float(tx_spec.get("noloadloss_pct", 0.1))
+            ex_loss_kw = (noloadloss_pct / 100.0) * float(kvas[0])
 
             phase_v = op.phase_voltages_v[target_tx_key]
             phase_ang = op.phase_angles_deg[target_tx_key]
 
-            # Phase shift extracted directly from OpenDSS operating point angles
             phase_shift_hv = float(phase_ang[0])
             phase_shift_lv = float(phase_ang[0])
 
@@ -472,24 +474,22 @@ class CoSimulationRunner:
 
 def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     """
-    Worker function executed in parallel across 6 process workers.
+    Worker function executed in parallel across process workers.
     Reuses process-level CoSimulationRunner and its OpenDSS instance,
     picks random target buses and lines across feeders in the network,
-    adds dynamic loads and faults to OpenDSS, solves operating point for the connected transformer,
+    solves healthy pre-event operating point for initial state,
     and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event.
     """
     co_ev, use_baseline_feeder, seed, task_idx = args_tuple
 
     from src.loads import get_equipment_model
 
-    # Use runner instance initialized per worker process
     runner = CoSimulationRunner()
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
 
     ev1 = co_ev.event_1
     ev2 = co_ev.event_2
 
-    # Determine feeder and target bus/line covering all feeders in the network
     if use_baseline_feeder:
         feeder_idx = 1
     else:
@@ -503,6 +503,10 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     bus_node_idx = int(rng.integers(1, 19))
     target_bus = f"f{feeder_idx}_node{bus_node_idx}"
     target_line = f"down_{feeder_idx}_{bus_node_idx}"
+
+    # Solve healthy pre-event operating point before adding faults/loads to OpenDSS
+    runner.dss.run_command("disable Fault.*")
+    op_pre = plant.solve_operating_point(runner.dss)
 
     def add_event_to_opendss(ev, event_prefix: str):
         ev_cls = getattr(ev, "event_class", None)
@@ -530,12 +534,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-    # --- STEP 1: Add both events to network, solve for feeder parameters, evaluate transformer response for joint co-event ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-    runner.dss.run_command("disable Fault.*")
+    # --- STEP 1: Joint co-event ---
     add_event_to_opendss(ev1, "joint_ev1")
     add_event_to_opendss(ev2, "joint_ev2")
-    op_joint = plant.solve_operating_point(runner.dss)
 
     active_fault_id = None
     if hasattr(co_ev, "event_2") and hasattr(co_ev.event_2, "fault_type"):
@@ -551,33 +552,29 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         fault_info_json = json.dumps({"bus": target_bus})
 
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
-        op=op_joint,
+        op=op_pre,
         event=co_ev,
         scenario_id=f"p{os.getpid()}_{task_idx}_joint",
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
 
-    # --- STEP 2: Add Event 1 to network, solve for feeder parameters, evaluate transformer response for Event 1 ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    # --- STEP 2: Event 1 ---
     runner.dss.run_command("disable Fault.*")
     add_event_to_opendss(ev1, "ev1")
-    op_1 = plant.solve_operating_point(runner.dss)
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
-        op=op_1,
+        op=op_pre,
         event=ev1,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
 
-    # --- STEP 3: Add Event 2 to network, solve for feeder parameters, evaluate transformer response for Event 2 ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    # --- STEP 3: Event 2 ---
     runner.dss.run_command("disable Fault.*")
     add_event_to_opendss(ev2, "ev2")
-    op_2 = plant.solve_operating_point(runner.dss)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
-        op=op_2,
+        op=op_pre,
         event=ev2,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
         feeder_idx=feeder_idx,
