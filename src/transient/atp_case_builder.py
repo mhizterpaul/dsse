@@ -254,7 +254,7 @@ class ATPCaseBuilder:
     ) -> str:
         """
         Generates a valid ATP-EMTP card file from explicit domain models:
-        (Source -> Main Bus -> Line -> Transformer -> Loads -> Fault/Switch Event).
+        (Source -> Main Bus -> Line -> Transformer -> Pre-event Loads -> Event Overlay).
         """
         if transformer is None:
             raise ValueError("TransformerSpec must be provided")
@@ -325,15 +325,15 @@ class ATPCaseBuilder:
             sec_node = f"SEC{ph_char}"
             branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
 
-        # Loads Cards (including R and L for each load)
+        # --- PRE-EVENT LOAD REALIZATION ---
         for l_idx, ld in enumerate(loads):
             if ld.p_kw > 0.0 or ld.q_kvar > 0.0:
-                p_w = max(1e-3, ld.p_kw * 1000.0)
-                q_var = ld.q_kvar * 1000.0
-                s2 = p_w**2 + q_var**2
-                v_ll = 415.0
-                r_val = (v_ll**2 * p_w) / s2
-                x_val = (v_ll**2 * q_var) / s2
+                p_phase_w = max(1e-3, (ld.p_kw * 1000.0) / 3.0)
+                q_phase_var = (ld.q_kvar * 1000.0) / 3.0
+                v_phase = 415.0 / np.sqrt(3.0)
+                s2_phase = p_phase_w**2 + q_phase_var**2
+                r_val = (v_phase**2 * p_phase_w) / s2_phase
+                x_val = (v_phase**2 * q_phase_var) / s2_phase
                 l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
             elif ld.r_ohm > 0.0:
                 r_val = ld.r_ohm
@@ -347,9 +347,10 @@ class ATPCaseBuilder:
                 sec_node = f"SEC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
                 branch_cards.append(fmt_branch(load_node, "", r_val, l_val_mH, 0.0))
+                # Pre-event loads are connected before event time (tclose = -1.0)
                 switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
 
-        # Transient Event Cards (supports single events and co-events)
+        # --- EVENT OVERLAY (Load Switching & Fault Topologies) ---
         events_to_card = []
         if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
             events_to_card = [event.event_1, event.event_2]
@@ -366,15 +367,35 @@ class ATPCaseBuilder:
             end_s = start_s + dur_s
 
             if ev_class in ["line_fault", "fault"]:
+                f_type = str(getattr(ev, "fault_type", "LG")).upper()
                 f_phases = getattr(ev, "faulted_phases", (0,))
                 f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", 0.001)))
                 ph_chars = ["A", "B", "C"]
-                for p_idx in f_phases:
-                    ph_char = ph_chars[p_idx]
-                    sec_node = f"SEC{ph_char}"
-                    fault_node = f"F{idx}_{ph_char}"
-                    branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                    switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+
+                if f_type in ["LG", "AG", "BG", "CG"]:
+                    for p_idx in f_phases:
+                        ph_char = ph_chars[p_idx]
+                        sec_node = f"SEC{ph_char}"
+                        fault_node = f"F{idx}_{ph_char}"
+                        branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                        switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+                elif f_type in ["LL", "AB", "BC", "CA"]:
+                    if len(f_phases) >= 2:
+                        p1_char = ph_chars[f_phases[0]]
+                        p2_char = ph_chars[f_phases[1]]
+                        f_node1 = f"F{idx}_1"
+                        f_node2 = f"F{idx}_2"
+                        branch_cards.append(fmt_branch(f_node1, f_node2, f_res, 0.0, 0.0))
+                        switch_cards.append(fmt_switch(f"SEC{p1_char}", f_node1, start_s, end_s))
+                        switch_cards.append(fmt_switch(f"SEC{p2_char}", f_node2, start_s, end_s))
+                else:
+                    for p_idx in f_phases:
+                        ph_char = ph_chars[p_idx]
+                        sec_node = f"SEC{ph_char}"
+                        fault_node = f"F{idx}_{ph_char}"
+                        branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                        switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
                 if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
                     err_msg = f"Event missing required attribute 'equipment_type': {ev}"
