@@ -396,7 +396,14 @@ class CoSimulationRunner:
             return emt_waveforms.time_s, emt_waveforms.voltages, emt_waveforms.currents, emt_waveforms.event_metadata
 
         except Exception as e:
-            err_msg = f"Failed ATP transient measurement for scenario '{scenario_id}': {e}"
+            lis_path = Path(atp_case_path).with_suffix(".lis")
+            lis_debug_content = ""
+            if lis_path.exists():
+                try:
+                    lis_debug_content = f"\n--- ATP LIS Log Output ---\n{lis_path.read_text(errors='replace')[-2000:]}"
+                except Exception:
+                    pass
+            err_msg = f"Failed ATP transient measurement for scenario '{scenario_id}': {e}{lis_debug_content}"
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg) from e
             
