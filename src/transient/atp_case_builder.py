@@ -161,7 +161,7 @@ class ATPCaseBuilder:
         for ph_char in ["A", "B", "C"]:
             src_node = f"SRC{ph_char}"
             tx_node = f"TX_{ph_char}"
-            branch_cards.append(f"  {src_node}  {tx_node}             {r_line_str}{l_line_str}                                               0")
+            branch_cards.append(f"  {src_node:<6}{tx_node:<6}             {r_line_str}{l_line_str}                                               0")
 
         # BCTRAN Transformer Matrix / Impedance Cards
         sc_test = transformer.short_circuit_tests[0] if transformer.short_circuit_tests else ShortCircuitTest(1, 2, 0.0833, 18.0)
@@ -183,7 +183,7 @@ class ATPCaseBuilder:
         for ph_char in ["A", "B", "C"]:
             tx_node = f"TX_{ph_char}"
             sec_node = f"SEC{ph_char}"
-            branch_cards.append(f"  {tx_node}  {sec_node}             {r_tx_str}{l_tx_str}                                               0")
+            branch_cards.append(f"  {tx_node:<6}{sec_node:<6}             {r_tx_str}{l_tx_str}                                               0")
 
         # Loads Cards
         for l_idx, ld in enumerate(loads):
@@ -285,7 +285,7 @@ class ATPCaseBuilder:
             "BLANK SOURCE",
             "BLANK OUTPUT",
             "/PLOT",
-            "  SECA  SECB  SECC",
+            "  SECA  SECB  SECC  C:TX_A-SECA C:TX_B-SECB C:TX_C-SECC",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
             "BLANK"
