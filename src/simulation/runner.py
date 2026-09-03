@@ -240,6 +240,12 @@ class CoSimulationRunner:
             phase_shift_hv = float(phase_ang[0])
             phase_shift_lv = float(phase_ang[0])
 
+            r0_pct = float(tx_spec["r0_pct"])
+            x0_pct = float(tx_spec["x0_pct"])
+            imag_pct = float(tx_spec["imag_pct"])
+            z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
+            losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
+
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
@@ -248,7 +254,7 @@ class CoSimulationRunner:
                     TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
                 ],
                 short_circuit_tests=[
-                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=None, losses_zero_kw=None)
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
                 ],
                 excitation_current_percent=imag_pct,
                 excitation_loss_kw=ex_loss_kw
