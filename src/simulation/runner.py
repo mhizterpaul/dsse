@@ -254,16 +254,17 @@ class CoSimulationRunner:
             z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
             losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
+            rated_mva = float(kvas[0]) / 1000.0
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
-                windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
-                ],
-                short_circuit_tests=[
-                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
-                ],
+                windings=(
+                    TransformerWinding("HV", float(kvs[0]), rated_mva, "D"),
+                    TransformerWinding("LV", float(kvs[1]), rated_mva, "Y")
+                ),
+                short_circuit_tests=(
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), test_mva=rated_mva, z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw, zero_test_mva=rated_mva),
+                ),
                 excitation_current_percent=imag_pct,
                 excitation_loss_kw=ex_loss_kw
             )

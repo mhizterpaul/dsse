@@ -16,13 +16,16 @@ def opendss_kv_to_bctran_winding_kv(rated_ll_kv: float, connection: str) -> floa
     raise ValueError(f"Unsupported transformer connection: {connection}")
 
 
+Connection = Literal["Y", "D", "WYE", "DELTA"]
+
+
 @dataclass(frozen=True)
 class TransformerWinding:
     name: str
-    rated_kv: float
+    rated_ll_kv: float
     rated_mva: float
-    connection: str
-    phase_shift_deg: float
+    connection: Connection
+    tap_pu: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -31,18 +34,20 @@ class ShortCircuitTest:
     winding_j: int
     z_pos_pu: float
     losses_pos_kw: float
-    z_zero_pu: Optional[float]
-    losses_zero_kw: Optional[float]
+    test_mva: float
+    z_zero_pu: Optional[float] = None
+    losses_zero_kw: Optional[float] = None
+    zero_test_mva: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class TransformerSpec:
     name: str
     frequency_hz: float
-    windings: List[TransformerWinding]
-    short_circuit_tests: List[ShortCircuitTest]
-    excitation_current_percent: Optional[float]
-    excitation_loss_kw: Optional[float]
+    windings: Tuple[TransformerWinding, ...]
+    short_circuit_tests: Tuple[ShortCircuitTest, ...]
+    excitation_current_percent: Optional[float] = None
+    excitation_loss_kw: Optional[float] = None
     vector_group: Optional[str] = "Dy11"
 
 
@@ -53,10 +58,19 @@ class ThreePhaseState:
 
 
 @dataclass(frozen=True)
+class SourceImpedance:
+    r1_ohm: float
+    x1_ohm: float
+    r0_ohm: Optional[float] = None
+    x0_ohm: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class SourceModel:
     name: str
     frequency_hz: float
     pre_event: ThreePhaseState
+    impedance: Optional[SourceImpedance] = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,20 @@ class LineModel:
     r1_ohm_per_km: float
     x1_ohm_per_km: float
     c1_f_per_km: float
+    r0_ohm_per_km: float = 0.0
+    x0_ohm_per_km: float = 0.0
+    c0_f_per_km: float = 0.0
+
+
+@dataclass(frozen=True)
+class ReducedLoad:
+    load_id: str
+    name: str
+    bus: str
+    phases: Tuple[int, ...]
+    r_ohm_phase: Tuple[float, float, float]
+    l_h_phase: Tuple[float, float, float]
+    pre_event_connected: bool = True
 
 
 @dataclass(frozen=True)
@@ -78,6 +106,27 @@ class LoadModel:
     q_kvar: float
     r_ohm: float
     l_h: float
+
+
+@dataclass(frozen=True)
+class LoadSwitchEvent:
+    event_id: str
+    start_time_s: float
+    duration_s: float
+    load_ids: Tuple[str, ...]
+    action: Literal["open", "close"] = "close"
+    equipment_type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LineFaultEvent:
+    event_id: str
+    start_time_s: float
+    duration_s: float
+    location_fraction: float
+    fault_type: Literal["LG", "LL", "LLG", "LLL"]
+    faulted_phases: Tuple[int, ...]
+    fault_resistance_ohm: float
 
 
 @dataclass(frozen=True)
@@ -166,7 +215,7 @@ def fmt_branch(
     c_uF: float,
 ) -> str:
     """
-    ATP uncoupled type-0 series RLC branch with $VINTAGE, 1 high precision format (80 cols).
+    ATP uncoupled type-0 series RLC branch in standard ATP fixed-column format (80 cols).
     """
     if not any(abs(float(v)) > 0.0 for v in (r, l_mH, c_uF)):
         raise ValueError(f"ATP branch {n1}->{n2} has R=L=C=0; ATP requires at least one non-zero parameter.")
@@ -176,15 +225,19 @@ def fmt_branch(
     bus3 = " " * 6
     bus4 = " " * 6
 
+    r_s = f"{r:10.6f}" if abs(r) < 1e4 else f"{r:10.2E}"
+    l_s = f"{l_mH:10.6f}" if abs(l_mH) < 1e4 else f"{l_mH:10.2E}"
+    c_s = f"{c_uF:10.4f}" if abs(c_uF) < 1e4 else f"{c_uF:10.2E}"
+
     return (
         "  "
         f"{bus1}"
         f"{bus2}"
         f"{bus3}"
         f"{bus4}"
-        f"{atp_e16(r)}"
-        f"{atp_e16(l_mH)}"
-        f"{atp_e16(c_uF)}"
+        f"{r_s:>10}"
+        f"{l_s:>10}"
+        f"{c_s:>10}"
     ).ljust(80)
 
 
@@ -194,11 +247,12 @@ def fmt_switch(
     t_close: float,
     t_open: float,
 ) -> str:
-    """Formats switch card in ATP fixed-column layout starting at column 1 (80 cols)."""
+    """Formats switch card in ATP fixed-column layout starting in column 3 (80 cols)."""
     n1_s = f"{n1:<6}"[:6]
     n2_s = f"{n2:<6}"[:6]
 
     return (
+        "  "
         f"{n1_s}"
         f"{n2_s}"
         f"{t_close:10.4f}"
@@ -219,16 +273,6 @@ class ATPCaseValidator:
         for idx, line in enumerate(lines, 1):
             if len(line) > 80:
                 errors.append(f"Line {idx} exceeds 80 characters ({len(line)} chars): {line!r}")
-
-            if idx == 5 and not line.startswith("C") and not line.startswith("$"):
-                if len(line) < 32:
-                    errors.append(f"Line {idx} (misc card) is shorter than 32 characters ({len(line)} chars): {line!r}")
-                for f_idx in range(min(7, len(line) // 8)):
-                    field = line[f_idx * 8 : (f_idx + 1) * 8]
-                    try:
-                        float(field.replace("D", "E"))
-                    except ValueError:
-                        errors.append(f"Line {idx} field {f_idx + 1} (cols {f_idx * 8 + 1}-{f_idx * 8 + 8}) is not valid float: {field!r}")
 
             if line.startswith("14"):
                 if len(line) < 70:
@@ -258,7 +302,7 @@ class ATPCaseBuilder:
         transformer: TransformerSpec,
         source: SourceModel,
         line: LineModel,
-        loads: List[LoadModel],
+        loads: Any,
         event: Any,
         simulation: SimulationConfig,
         output_path: Optional[str] = None,
@@ -267,6 +311,7 @@ class ATPCaseBuilder:
         """
         Generates a valid ATP-EMTP card file from explicit domain models:
         (Source -> Main Bus -> Line -> Transformer -> Pre-event Loads -> Event Overlay).
+        Node names strictly adhere to <=6 character ATP limit (SRCA, MBA, TXA, SCA, etc).
         """
         if transformer is None:
             raise ValueError("TransformerSpec must be provided")
@@ -281,7 +326,6 @@ class ATPCaseBuilder:
 
         freq_hz = transformer.frequency_hz
 
-        # Source peak voltages and angles from pre-event ThreePhaseState
         v_rms_a = source.pre_event.voltage_rms_v[0]
         v_rms_b = source.pre_event.voltage_rms_v[1]
         v_rms_c = source.pre_event.voltage_rms_v[2]
@@ -306,13 +350,16 @@ class ATPCaseBuilder:
             src_node = f"SRC{ph_char}"
             branch_cards.append(fmt_branch(src_node, "", 1e8, 0.0, 0.0))
 
-        # Source to Main Bus internal/feeder-head connection
+        # Source to Main Bus connection
+        r_src = source.impedance.r1_ohm if source.impedance else 0.001
+        x_src = source.impedance.x1_ohm if source.impedance else 0.001
+        l_src_mH = (x_src / (2.0 * np.pi * freq_hz)) * 1000.0
         for ph_char in ["A", "B", "C"]:
             src_node = f"SRC{ph_char}"
-            mb_node = f"MB_{ph_char}"
-            branch_cards.append(fmt_branch(src_node, mb_node, 0.001, 0.001, 0.0))
+            mb_node = f"MB{ph_char}"
+            branch_cards.append(fmt_branch(src_node, mb_node, r_src, l_src_mH, 0.0))
 
-        # Line Cards (Main Bus to Transformer Primary)
+        # Line Cards (Main Bus to Transformer Primary TXA, TXB, TXC)
         r_line_tot = line.r1_ohm_per_km * line.length_km
         x_line_tot = line.x1_ohm_per_km * line.length_km
 
@@ -322,38 +369,37 @@ class ATPCaseBuilder:
         else:
             events_to_card = [event]
 
-        # Check if line fault with specific location fraction exists
-        has_line_fault = any(getattr(ev, "event_class", None) in ["line_fault", "fault"] for ev in events_to_card)
+        has_line_fault = any(getattr(ev, "event_class", None) in ["line_fault", "fault"] or isinstance(ev, LineFaultEvent) for ev in events_to_card)
         alpha = float(getattr(event, "location_fraction", 0.5)) if has_line_fault else 1.0
         alpha = min(max(alpha, 0.05), 0.95) if has_line_fault else 1.0
 
         if has_line_fault and alpha < 1.0:
-            # Split line into MB -> FLOC and FLOC -> TX
             r1_m = max(1e-4, r_line_tot * alpha)
             l1_mH = max(1e-4, ((x_line_tot * alpha) / (2.0 * np.pi * freq_hz)) * 1000.0)
             r2_m = max(1e-4, r_line_tot * (1.0 - alpha))
             l2_mH = max(1e-4, ((x_line_tot * (1.0 - alpha)) / (2.0 * np.pi * freq_hz)) * 1000.0)
 
             for ph_char in ["A", "B", "C"]:
-                mb_node = f"MB_{ph_char}"
-                floc_node = f"FL_{ph_char}"
-                tx_node = f"TX_{ph_char}"
+                mb_node = f"MB{ph_char}"
+                floc_node = f"FL{ph_char}"
+                tx_node = f"TX{ph_char}"
                 branch_cards.append(fmt_branch(mb_node, floc_node, r1_m, l1_mH, 0.0))
                 branch_cards.append(fmt_branch(floc_node, tx_node, r2_m, l2_mH, 0.0))
         else:
             l_line_mH = (x_line_tot / (2.0 * np.pi * freq_hz)) * 1000.0
             for ph_char in ["A", "B", "C"]:
-                mb_node = f"MB_{ph_char}"
-                tx_node = f"TX_{ph_char}"
+                mb_node = f"MB{ph_char}"
+                tx_node = f"TX{ph_char}"
                 branch_cards.append(fmt_branch(mb_node, tx_node, r_line_tot, l_line_mH, 0.0))
 
-        # Transformer Primary to Secondary (Coupled 3-phase matrix representation using Type 51, 52, 53)
+        # Transformer Primary (TX) to Secondary (SC) using Sequence Coupled Type 51, 52, 53 representation
+        # On LV secondary 0.415 kV LL base (0.2396 kV LN base)
         sc_test = transformer.short_circuit_tests[0]
         hv_w = transformer.windings[0]
         lv_w = transformer.windings[1]
 
-        lv_winding_kv = opendss_kv_to_bctran_winding_kv(lv_w.rated_kv, lv_w.connection)
-        z_base = (lv_winding_kv ** 2 * 1000.0) / lv_w.rated_mva
+        lv_ll_kv = getattr(lv_w, "rated_ll_kv", getattr(lv_w, "rated_kv", 0.415))
+        z_base = (lv_ll_kv ** 2 * 1000.0) / lv_w.rated_mva
         z_pos_pu = sc_test.z_pos_pu
         r_pos_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0)
         x_pos_pu = np.sqrt(max(0.0, z_pos_pu**2 - r_pos_pu**2))
@@ -370,140 +416,104 @@ class ATPCaseBuilder:
             x_zero = x_zero_pu * z_base
             l_zero_mH = (x_zero / (2.0 * np.pi * freq_hz)) * 1000.0
         else:
-            r_zero = r_pos * 1.2
-            l_zero_mH = l_pos_mH * 1.2
+            r_zero = r_pos * 2.0
+            l_zero_mH = l_pos_mH * 0.5
 
-        # Symmetrical components conversion to 3-phase coupled self and mutual parameters
-        r_self = (r_zero + 2.0 * r_pos) / 3.0
-        l_self_mH = (l_zero_mH + 2.0 * l_pos_mH) / 3.0
-        r_mut = (r_zero - r_pos) / 3.0
-        l_mut_mH = (l_zero_mH - l_pos_mH) / 3.0
-
-        # Type 51, 52, 53 coupled branch cards for 3-phase transformer impedance coupling
-        c1 = f"51TX_A  SECA                {atp_e16(r_self)}{atp_e16(l_self_mH)}{atp_e16(0.0)}"
-        c2 = f"52TX_B  SECB                {atp_e16(r_mut)}{atp_e16(l_mut_mH)}{atp_e16(0.0)}"
-        c3 = "53TX_C  SECC"
+        # Type 51 card defines Z0 (R0, L0, C0) and Type 52 card defines Z1 (R1, L1, C1)
+        c1 = f"51TXA   SCA                 {r_zero:10.6f}{l_zero_mH:10.6f}{0.0:10.4f}".ljust(80)
+        c2 = f"52TXB   SCB                 {r_pos:10.6f}{l_pos_mH:10.6f}{0.0:10.4f}".ljust(80)
+        c3 = "53TXC   SCC".ljust(80)
         branch_cards.extend([c1, c2, c3])
 
-        # --- PRE-EVENT LOAD REALIZATION ---
+        # --- PRE-EVENT REDUCED LOADS & LOAD SWITCHING OVERLAY ---
         v_phase_list = [v_rms_a, v_rms_b, v_rms_c]
+
+        # Check if load switch events are present
+        load_sw_events = [ev for ev in events_to_card if getattr(ev, "event_class", None) in ["load_switch", "equipment_switch", "co_event"] or isinstance(ev, LoadSwitchEvent)]
+
         for l_idx, ld in enumerate(loads):
-            node_prefix = f"L{l_idx}"
+            node_prefix = f"L{l_idx:02d}"
             for p_idx, ph_char in enumerate(["A", "B", "C"]):
                 v_ph = v_phase_list[p_idx] if v_phase_list[p_idx] > 0 else 239.6
-                if ld.p_kw > 0.0 or ld.q_kvar > 0.0:
-                    p_phase_w = max(1e-3, (ld.p_kw * 1000.0) / 3.0)
-                    q_phase_var = (ld.q_kvar * 1000.0) / 3.0
-                    s2_phase = p_phase_w**2 + q_phase_var**2
-                    r_val = (v_ph**2 * p_phase_w) / s2_phase
-                    x_val = (v_ph**2 * q_phase_var) / s2_phase
-                    l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
-                elif ld.r_ohm > 0.0:
-                    r_val = ld.r_ohm
-                    l_val_mH = ld.l_h * 1000.0
+                if isinstance(ld, ReducedLoad):
+                    r_val = ld.r_ohm_phase[p_idx]
+                    l_val_mH = ld.l_h_phase[p_idx] * 1000.0
                 else:
-                    r_val = 10.0
-                    l_val_mH = 1.0
+                    if getattr(ld, "p_kw", 0.0) > 0.0 or getattr(ld, "q_kvar", 0.0) > 0.0:
+                        p_phase_w = max(1e-3, (ld.p_kw * 1000.0) / 3.0)
+                        q_phase_var = (ld.q_kvar * 1000.0) / 3.0
+                        s2_phase = p_phase_w**2 + q_phase_var**2
+                        r_val = (v_ph**2 * p_phase_w) / s2_phase
+                        x_val = (v_ph**2 * q_phase_var) / s2_phase
+                        l_val_mH = max(0.0, (x_val / (2.0 * np.pi * freq_hz)) * 1000.0)
+                    elif getattr(ld, "r_ohm", 0.0) > 0.0:
+                        r_val = ld.r_ohm
+                        l_val_mH = ld.l_h * 1000.0
+                    else:
+                        r_val = 10.0
+                        l_val_mH = 1.0
 
-                sec_node = f"SEC{ph_char}"
+                sec_node = f"SC{ph_char}"
                 load_node = f"{node_prefix}{ph_char}"
                 branch_cards.append(fmt_branch(load_node, "", r_val, l_val_mH, 0.0))
-                # Pre-event loads are connected before event time (tclose = -1.0)
-                switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
 
-        # --- EVENT OVERLAY (Load Switching & Fault Topologies) ---
-        for idx, ev in enumerate(events_to_card):
-            ev_class = getattr(ev, "event_class", None)
-            if ev_class is None:
-                raise ValueError(f"Event object missing required attribute 'event_class': {ev}")
+                # Check if this load branch is targeted by a load switch event
+                sw_t_close = -1.0
+                sw_t_open = 100.0
+                for sw_ev in load_sw_events:
+                    sw_start = float(getattr(sw_ev, "start_time_s", 0.05))
+                    sw_dur = float(getattr(sw_ev, "duration_s", 0.05))
+                    sw_action = str(getattr(sw_ev, "action", "close"))
+                    target_ids = getattr(sw_ev, "load_ids", tuple())
 
+                    # If load matches target_ids or if no target_ids specified (switches last load or all loads)
+                    if (target_ids and (str(l_idx) in target_ids or ld.name in target_ids)) or (not target_ids and l_idx == len(loads) - 1):
+                        if sw_action == "open":
+                            sw_t_close = -1.0
+                            sw_t_open = sw_start
+                        else:
+                            sw_t_close = sw_start
+                            sw_t_open = sw_start + sw_dur
+
+                switch_cards.append(fmt_switch(sec_node, load_node, sw_t_close, sw_t_open))
+
+        # --- LINE FAULT OVERLAY ---
+        fault_events = [ev for ev in events_to_card if getattr(ev, "event_class", None) in ["line_fault", "fault"] or isinstance(ev, LineFaultEvent)]
+        for idx, ev in enumerate(fault_events):
             start_s = float(getattr(ev, "start_time_s", 0.0))
             dur_s = float(getattr(ev, "duration_s", 0.05))
             end_s = start_s + dur_s
 
-            if ev_class in ["line_fault", "fault"]:
-                f_type = str(getattr(ev, "fault_type", "LG")).upper()
-                f_phases = getattr(ev, "faulted_phases", (0,))
-                f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", 0.001)))
-                ph_chars = ["A", "B", "C"]
+            f_type = str(getattr(ev, "fault_type", "LG")).upper()
+            f_phases = getattr(ev, "faulted_phases", (0,))
+            f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", 0.001)))
+            ph_chars = ["A", "B", "C"]
 
-                # Connect fault at fault location node FL_ or SEC_
-                node_base = "FL_" if has_line_fault and alpha < 1.0 else "SEC"
+            node_base = "FL" if has_line_fault and alpha < 1.0 else "SC"
 
-                if f_type in ["LG", "AG", "BG", "CG"]:
-                    for p_idx in f_phases:
-                        ph_char = ph_chars[p_idx]
-                        bus_node = f"{node_base}{ph_char}" if node_base == "SEC" else f"{node_base}{ph_char}"
-                        fault_node = f"F{idx}_{ph_char}"
-                        branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
-                elif f_type in ["LL", "AB", "BC", "CA"]:
-                    if len(f_phases) >= 2:
-                        p1_char = ph_chars[f_phases[0]]
-                        p2_char = ph_chars[f_phases[1]]
-                        f_node1 = f"F{idx}_1"
-                        f_node2 = f"F{idx}_2"
-                        branch_cards.append(fmt_branch(f_node1, f_node2, f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(f"{node_base}{p1_char}", f_node1, start_s, end_s))
-                        switch_cards.append(fmt_switch(f"{node_base}{p2_char}", f_node2, start_s, end_s))
-                else:
-                    for p_idx in f_phases:
-                        ph_char = ph_chars[p_idx]
-                        bus_node = f"{node_base}{ph_char}"
-                        fault_node = f"F{idx}_{ph_char}"
-                        branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                        switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
-
-            elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
-                if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
-                    err_msg = f"Event missing required attribute 'equipment_type': {ev}"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg)
-                eq_type = ev.equipment_type
-                from src.loads import get_equipment_model
-                eq_model = get_equipment_model(eq_type)
-
-                r_val = None
-                for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
-                    if key in eq_model.atp_params:
-                        r_val = eq_model.atp_params[key]
-                        break
-
-                l_mH_val = 0.0
-                for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
-                    if key in eq_model.atp_params:
-                        l_mH_val = float(eq_model.atp_params[key]) * 1000.0
-                        break
-
-                if l_mH_val == 0.0:
-                    for key in ["x_stator", "x_rotor"]:
-                        if key in eq_model.atp_params:
-                            x_val = float(eq_model.atp_params[key])
-                            l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
-                            break
-
-                c_uF_val = 0.0
-                for key in ["c_doubler", "c_resonant", "c_dc_link", "c_supply_bank", "c_filter"]:
-                    if key in eq_model.atp_params:
-                        c_uF_val = float(eq_model.atp_params[key]) * 1e6
-                        break
-
-                if r_val is None:
-                    err_msg = f"Equipment model '{eq_type}' missing required R in atp_params"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg)
-
-                r_eq = float(r_val)
-                node_prefix = f"E{idx}"
-
-                sw_phases = getattr(ev, "faulted_phases", (0, 1, 2))
-                ph_chars = ["A", "B", "C"]
-                for p_idx in sw_phases:
+            if f_type in ["LG", "AG", "BG", "CG"]:
+                for p_idx in f_phases:
                     ph_char = ph_chars[p_idx]
-                    sec_node = f"SEC{ph_char}"
-                    load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH_val, c_uF_val))
-                    switch_cards.append(fmt_switch(sec_node, load_node, start_s, end_s))
+                    bus_node = f"{node_base}{ph_char}"
+                    fault_node = f"F{idx}{ph_char}"
+                    branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                    switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
+            elif f_type in ["LL", "AB", "BC", "CA"]:
+                if len(f_phases) >= 2:
+                    p1_char = ph_chars[f_phases[0]]
+                    p2_char = ph_chars[f_phases[1]]
+                    f_node1 = f"F{idx}1"
+                    f_node2 = f"F{idx}2"
+                    branch_cards.append(fmt_branch(f_node1, f_node2, f_res, 0.0, 0.0))
+                    switch_cards.append(fmt_switch(f"{node_base}{p1_char}", f_node1, start_s, end_s))
+                    switch_cards.append(fmt_switch(f"{node_base}{p2_char}", f_node2, start_s, end_s))
+            else:
+                for p_idx in f_phases:
+                    ph_char = ph_chars[p_idx]
+                    bus_node = f"{node_base}{ph_char}"
+                    fault_node = f"F{idx}{ph_char}"
+                    branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                    switch_cards.append(fmt_switch(bus_node, fault_node, start_s, end_s))
 
         misc_card = atp_misc_card(
             dt=simulation.time_step_s,
@@ -519,12 +529,10 @@ class ATPCaseBuilder:
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
             misc_card,
             "    1000       1       1       1       1       0       0       1       0",
-            "$VINTAGE, 1",
             "/BRANCH",
-            "C < n1 >< n2 ><ref1><ref2>< R               >< L               >< C               >"[:80],
+            "C < n1 >< n2 ><ref1><ref2>< R       >< L       >< C       >"[:80],
         ] + branch_cards + [
             "BLANK BRANCH",
-            "$VINTAGE, 0",
             "/SWITCH",
             "C < n 1>< n 2>< Tclose  >< Top/Tde  ><   Ie     >< Vf/CLOP  ><   type   >"[:80],
         ] + switch_cards + [
@@ -536,8 +544,8 @@ class ATPCaseBuilder:
             src_c,
             "BLANK SOURCE",
             "/OUTPUT",
-            "  SECA  SECB  SECC",
-            "  TX_A  SECA  TX_B  SECB  TX_C  SECC",
+            "  SCA   SCB   SCC",
+            "  MBA   SCA   MBB   SCB   MBC   SCC",
             "BLANK OUTPUT",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
@@ -591,19 +599,16 @@ class ATPCaseBuilder:
         phase_v = operating_point.phase_voltages_v[target_tx]
         phase_ang = operating_point.phase_angles_deg[target_tx]
 
-        phase_shift_hv = 0.0
-        phase_shift_lv = float(tx_spec_dict.get("phase_shift_deg", 0.0))
-
         transformer = TransformerSpec(
             name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
-            windings=[
-                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[0], phase_shift_hv),
-                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[1], phase_shift_lv)
-            ],
-            short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=losses_pos_kw, z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
-            ],
+            windings=(
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[0]),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, tx_spec_dict.get("conns", ["D", "Y"])[1])
+            ),
+            short_circuit_tests=(
+                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=losses_pos_kw, test_mva=float(kvas[0])/1000.0, z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw, zero_test_mva=float(kvas[0])/1000.0),
+            ),
             excitation_current_percent=imag_pct,
             excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])
         )

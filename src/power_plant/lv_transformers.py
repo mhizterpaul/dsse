@@ -14,10 +14,10 @@ TRANSFORMER_MODELS = {
         "kvs": [11.0, 0.415],
         "kvas": [1500.0, 1500.0],
         # Winding & Losses
-        "r_pct": 0.60,         # 0.60% resistance (50 kW copper loss @ full load)
+        "r_pct": 0.60,         # 0.60% resistance (9.0 kW copper loss @ full load)
         "xhl_pct": 8.33,       # 8.33% leakage reactance (8.35% %Z, X/R = 13.9)
-        "noloadloss_pct": 0.1, # 7.5 kW core loss (0.1%)
-        "loadloss_pct": 0.667, # 50 kW copper loss (0.667%)
+        "noloadloss_pct": 0.1, # 1.5 kW core loss (0.1%)
+        "loadloss_pct": 0.60,  # 9.0 kW copper loss (0.60%)
         "imag_pct": 0.8,       # 0.8% excitation current
         # Sequence Impedances (pu)
         "r0_pct": 1.20,        # Zero-sequence resistance 0.0120 pu
