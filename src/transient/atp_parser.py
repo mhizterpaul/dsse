@@ -5,9 +5,10 @@ from pathlib import Path
 @dataclass
 class EMTWaveforms:
     time_s: np.ndarray
-    pcc_voltages: dict  # dict of {transformer_id: (N, 3)}
-    pcc_currents: dict  # dict of {transformer_id: (N, 3)}
+    voltages: dict  # dict of {transformer_id: (N, 3)}
+    currents: dict  # dict of {transformer_id: (N, 3)}
     event_metadata: dict
+    frequency_hz: float
 
     @property
     def feeder_voltage_abc(self):
@@ -24,10 +25,6 @@ class EMTWaveforms:
     @property
     def transformer_current_abc(self):
         return self.currents
-
-    @property
-    def frequency_hz(self):
-        return #np.array([50.0]) use open dss operating freq
 
 
 class ATPOutputReader:
@@ -60,6 +57,23 @@ class ATPOutputReader:
             dur_s = float(event.duration_s)
         else:
             raise ValueError(f"Event object missing required attributes (event_type, start_time_s, duration_s): {event}")
+
+        atp_case_path = Path(atp_result.case_path)
+        freq_hz = None
+        try:
+            with open(atp_case_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "POWER FREQUENCY" in line:
+                        parts = line.split("POWER FREQUENCY")
+                        if len(parts) > 1:
+                            val_str = parts[1].strip().rstrip(".")
+                            freq_hz = float(val_str)
+                        break
+        except Exception as e:
+            raise ValueError(f"Failed to read ATP circuit case file '{atp_case_path}': {e}") from e
+
+        if freq_hz is None:
+            raise ValueError(f"POWER FREQUENCY not found or invalid in ATP circuit case file: {atp_case_path}")
 
         event_metadata = {
             "event_type": ev_type,
@@ -110,7 +124,7 @@ class ATPOutputReader:
                 voltages = {transformer_id: data[:target_len, 1:4]}
                 currents = {transformer_id: data[:target_len, 4:7]}
 
-                return EMTWaveforms(t, voltages, pcurrents, event_metadata)
+                return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=freq_hz)
 
         # Text-based PL4 reader
         try:
@@ -140,4 +154,4 @@ class ATPOutputReader:
         voltages = {transformer_id: data_arr[:, 1:4]}
         currents = {transformer_id: data_arr[:, 4:7]}
 
-        return EMTWaveforms(t, voltages, currents, event_metadata)
+        return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=freq_hz)

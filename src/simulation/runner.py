@@ -308,7 +308,7 @@ class CoSimulationRunner:
             )
 
             atp_result = ATPRunner().run(atp_case_path)
-            emt_waveforms = ATPOutputReader().read(atp_result, transformer_id=target_tx, event)
+            emt_waveforms = ATPOutputReader().read(atp_result, event, transformer_id=target_tx)
 
             if emt_waveforms is None or emt_waveforms.time_s is None or len(emt_waveforms.time_s) == 0:
                 raise ValueError(f"ATP simulation returned empty waveforms for scenario {scenario_id}")
