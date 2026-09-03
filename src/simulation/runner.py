@@ -226,12 +226,14 @@ class CoSimulationRunner:
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
                 windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y"),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y")
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", 0.0),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", 0.0)
                 ],
                 short_circuit_tests=[
-                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]))
-                ]
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=None, losses_zero_kw=None)
+                ],
+                excitation_current_percent=None,
+                excitation_loss_kw=None
             )
 
             phase_v = op.phase_voltages_v[target_tx_key]
@@ -243,7 +245,8 @@ class CoSimulationRunner:
                 pre_event=ThreePhaseState(
                     voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
                     voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-                )
+                ),
+                post_event=None
             )
 
             line = LineModel(
@@ -252,10 +255,11 @@ class CoSimulationRunner:
                 to_bus=f"feeder{feeder_idx}_head",
                 length_km=4.5,
                 r1_ohm_per_km=0.21,
-                x1_ohm_per_km=0.08
+                x1_ohm_per_km=0.08,
+                c1_f_per_km=0.0
             )
 
-            loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0)]
+            loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0, q_kvar=0.0, r_ohm=None, l_h=None)]
 
             if hasattr(event, "event_1") and hasattr(event, "event_2"):
                 ev_class = "co_event"

@@ -10,7 +10,7 @@ class TransformerWinding:
     name: str
     rated_kv: float
     rated_mva: float
-    connection: str = "Y"
+    connection: str
     phase_shift_deg: float 
 
 
@@ -91,7 +91,7 @@ class TransientEvent:
 class SimulationConfig:
     t_start_s: float 
     t_stop_s: float 
-    time_step_s: float = 1e-4
+    time_step_s: float
 
 
 class ATPCaseBuilder:
@@ -327,12 +327,14 @@ class ATPCaseBuilder:
             name=str(tx_spec_dict.get("name")),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", kvs[0], kvas[0] / 1000.0, "Y"),
-                TransformerWinding("LV", kvs[1], kvas[1] / 1000.0, "Y")
+                TransformerWinding("HV", kvs[0], kvas[0] / 1000.0, "Y", 0.0),
+                TransformerWinding("LV", kvs[1], kvas[1] / 1000.0, "Y", 0.0)
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2), losses_pos_kw=(r_pct/100.0)*kvas[0])
-            ]
+                ShortCircuitTest(1, 2, z_pos_pu=np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2), losses_pos_kw=(r_pct/100.0)*kvas[0], z_zero_pu=None, losses_zero_kw=None)
+            ],
+            excitation_current_percent=None,
+            excitation_loss_kw=None
         )
 
         phase_v = operating_point.phase_voltages_v.get(target_tx)
@@ -344,7 +346,8 @@ class ATPCaseBuilder:
             pre_event=ThreePhaseState(
                 voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
                 voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-            )
+            ),
+            post_event=None
         )
 
         line_params = getattr(realization, "line_parameters")
@@ -354,10 +357,11 @@ class ATPCaseBuilder:
             to_bus=f"feeder{feeder_idx}_head",
             length_km=4.5,
             r1_ohm_per_km=float(line_params.get("r1")),
-            x1_ohm_per_km=float(line_params.get("x1"))
+            x1_ohm_per_km=float(line_params.get("x1")),
+            c1_f_per_km=0.0
         )
 
-        loads = [LoadModel(name, bus, p_kw)] 
+        loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0, q_kvar=0.0, r_ohm=None, l_h=None)]
 
         start_s = float(getattr(event, "start_time_s"))
         dur_s = float(getattr(event, "duration_s"))
