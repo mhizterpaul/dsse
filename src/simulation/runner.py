@@ -228,6 +228,12 @@ class CoSimulationRunner:
                 print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                 raise ValueError(err_msg)
 
+            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
+            if not self.dss.Circuit.SetActiveElement(line_elem_name):
+                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
+                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
+                raise ValueError(err_msg)
+
             # Query real power losses of the feeding MV line from OpenDSS
             line_losses = self.dss.CktElement.Losses()
             line_loss_p_w = float(line_losses[0])
