@@ -66,11 +66,23 @@ class SourceImpedance:
 
 
 @dataclass(frozen=True)
+class NetworkEquivalent:
+    boundary_bus: str
+    frequency_hz: float
+    vabc_rms_v: Tuple[float, float, float]
+    vabc_angle_deg: Tuple[float, float, float]
+    z1_ohm: complex
+    z0_ohm: Optional[complex] = None
+    z2_ohm: Optional[complex] = None
+
+
+@dataclass(frozen=True)
 class SourceModel:
     name: str
     frequency_hz: float
     pre_event: ThreePhaseState
     impedance: Optional[SourceImpedance] = None
+    network_equivalent: Optional[NetworkEquivalent] = None
 
 
 @dataclass(frozen=True)
