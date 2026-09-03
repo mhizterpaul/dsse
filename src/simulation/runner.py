@@ -244,8 +244,9 @@ class CoSimulationRunner:
             phase_v = op.phase_voltages_v[target_tx_key]
             phase_ang = op.phase_angles_deg[target_tx_key]
 
-            phase_shift_hv = float(phase_ang[0])
-            phase_shift_lv = float(phase_ang[0])
+            # Transformer vector group phase shift displacement
+            phase_shift_hv = 0.0
+            phase_shift_lv = float(tx_spec.get("phase_shift_deg", 0.0))
 
             r0_pct = float(tx_spec["r0_pct"])
             x0_pct = float(tx_spec["x0_pct"])
@@ -466,7 +467,8 @@ class CoSimulationRunner:
             for idx, ev in enumerate(events)
         ]
 
-        with ProcessPoolExecutor(max_workers=6) as executor:
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=6, mp_context=ctx) as executor:
             results = list(executor.map(_simulate_single_coevent_worker, tasks))
 
         return results
