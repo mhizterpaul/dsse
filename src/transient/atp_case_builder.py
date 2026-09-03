@@ -469,7 +469,7 @@ class ATPCaseBuilder:
                 load_node = f"{node_prefix}{ph_char}"
                 branch_cards.append(fmt_branch(load_node, "", r_val, l_val_mH, 0.0))
 
-                # Check if this load branch is targeted by a load switch event
+                # Load branches are connected from t_close = -1.0 s for pre-event steady-state initialization
                 sw_t_close = -1.0
                 sw_t_open = 100.0
                 for sw_ev in load_sw_events:
@@ -478,7 +478,6 @@ class ATPCaseBuilder:
                     sw_action = str(getattr(sw_ev, "action", "close"))
                     target_ids = getattr(sw_ev, "load_ids", tuple())
 
-                    # If load matches target_ids or if no target_ids specified (switches last load or all loads)
                     if (target_ids and (str(l_idx) in target_ids or ld.name in target_ids)) or (not target_ids and l_idx == len(loads) - 1):
                         if sw_action == "open":
                             sw_t_close = -1.0
@@ -488,6 +487,60 @@ class ATPCaseBuilder:
                             sw_t_open = sw_start + sw_dur
 
                 switch_cards.append(fmt_switch(sec_node, load_node, sw_t_close, sw_t_open))
+
+        # --- EXPLICIT TEST EQUIPMENT LOAD OVERLAY ---
+        for idx, sw_ev in enumerate(load_sw_events):
+            eq_type = getattr(sw_ev, "equipment_type", None)
+            if eq_type:
+                from src.loads import get_equipment_model
+                eq_model = get_equipment_model(eq_type)
+
+                r_val = None
+                for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
+                    if key in eq_model.atp_params:
+                        r_val = eq_model.atp_params[key]
+                        break
+
+                l_mH_val = 0.0
+                for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
+                    if key in eq_model.atp_params:
+                        l_mH_val = float(eq_model.atp_params[key]) * 1000.0
+                        break
+
+                if l_mH_val == 0.0:
+                    for key in ["x_stator", "x_rotor"]:
+                        if key in eq_model.atp_params:
+                            x_val = float(eq_model.atp_params[key])
+                            l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
+                            break
+
+                c_uF_val = 0.0
+                for key in ["c_doubler", "c_resonant", "c_dc_link", "c_supply_bank", "c_filter"]:
+                    if key in eq_model.atp_params:
+                        c_uF_val = float(eq_model.atp_params[key]) * 1e6
+                        break
+
+                if r_val is not None:
+                    sw_start = float(getattr(sw_ev, "start_time_s", 0.05))
+                    sw_dur = float(getattr(sw_ev, "duration_s", 0.05))
+                    sw_action = str(getattr(sw_ev, "action", "close"))
+
+                    if sw_action == "close":
+                        sw_t_close = sw_start
+                        sw_t_open = sw_start + sw_dur
+                    else:
+                        sw_t_close = -1.0
+                        sw_t_open = sw_start
+
+                    node_prefix = f"E{idx:02d}"
+                    sw_phases = getattr(sw_ev, "faulted_phases", (0, 1, 2))
+                    ph_chars = ["A", "B", "C"]
+                    for p_idx in sw_phases:
+                        ph_char = ph_chars[p_idx]
+                        sec_node = f"SC{ph_char}"
+                        load_node = f"{node_prefix}{ph_char}"
+                        branch_cards.append(fmt_branch(load_node, "", float(r_val), l_mH_val, c_uF_val))
+                        switch_cards.append(fmt_switch(sec_node, load_node, sw_t_close, sw_t_open))
 
         # --- LINE FAULT OVERLAY ---
         fault_events = [ev for ev in events_to_card if getattr(ev, "event_class", None) in ["line_fault", "fault"] or isinstance(ev, LineFaultEvent)]
