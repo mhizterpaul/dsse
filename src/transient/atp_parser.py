@@ -145,7 +145,23 @@ class ATPOutputReader:
                     pass
 
         if len(data_rows) == 0:
-            raise ValueError(f"ATP .pl4 file '{output_path}' contains no valid 7-column numeric waveform data rows")
+            dbg_path = output_path.with_suffix(".dbg")
+            dbg_content = ""
+            if dbg_path.exists():
+                try:
+                    dbg_content = f"\n--- ATP DBG Log Output ---\n{dbg_path.read_text(errors='replace')[-2000:]}"
+                except Exception:
+                    pass
+            lis_path = output_path.with_suffix(".lis")
+            lis_content = ""
+            if lis_path.exists():
+                try:
+                    lis_content = f"\n--- ATP LIS Log Output ---\n{lis_path.read_text(errors='replace')[-2000:]}"
+                except Exception:
+                    pass
+            err_msg = f"ATP .pl4 file '{output_path}' contains no valid 7-column numeric waveform data rows.{dbg_content}{lis_content}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
 
         data_arr = np.array(data_rows)
         target_len = data_arr.shape[0]
