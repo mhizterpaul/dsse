@@ -103,6 +103,14 @@ def atp_e8(value: float) -> str:
     return f"{s:>8}"
 
 
+def atp_e16(value: float) -> str:
+    """Formats float into exact 16-character field right-aligned for ATP $VINTAGE, 1 E16.8 format."""
+    s = f"{float(value):16.8E}"
+    if len(s) > 16:
+        s = f"{float(value):16.7E}"
+    return f"{s:>16}"[:16]
+
+
 def atp_misc_card(
     dt: float,
     tmax: float,
@@ -126,69 +134,67 @@ def fmt_type14_source(
     t_start: float,
     t_stop: float,
 ) -> str:
-    """Formats Type 14 AC voltage source card following strict ATP fixed-column positions."""
+    """Formats Type 14 AC voltage source card following strict ATP fixed-column positions (80 cols)."""
     node_str = f"{node:<6}"[:6]
-    return (
-        f"14{node_str}"
-        f"{amplitude:10.3f}"
-        f"{frequency:10.3f}"
-        f"{phase_deg:10.3f}"
-        f"{t_start:10.3f}"
-        f"{t_stop:10.3f}"
-    )
+    amp_s = f"{amplitude:10.3f}"
+    freq_s = f"{frequency:10.3f}"
+    ph_s = f"{phase_deg:10.3f}"
+    a1_s = " " * 10
+    t1_s = " " * 10
+    tstart_s = f"{t_start:10.3f}"
+    tstop_s = f"{t_stop:10.3f}"
+    return f"14{node_str} 0{amp_s}{freq_s}{ph_s}{a1_s}{t1_s}{tstart_s}{tstop_s}".ljust(80)
 
 
-def fmt_num10(v: float) -> str:
-    """Formats a float value into a 10-character right-aligned field for ATP branch/switch cards."""
-    v = float(v)
-    if v == 0.0:
-        return f"{0.0:10.4f}"
-    abs_v = abs(v)
-    if abs_v >= 1e5 or abs_v < 1e-3:
-        s = f"{v:10.4E}"
-    else:
-        s = f"{v:10.4f}"
-    return f"{s:>10}"[:10]
-
-
-def fmt_branch(n1: str, n2: str, r: float, l_mH: float, c_uF: float) -> str:
-    """Formats standard RLC branch card in ATP 80-column layout."""
-    n1_s = f"{n1:<6}"[:6]
-    n2_s = f"{n2:<6}"[:6] if n2 else "      "
-    r_s = fmt_num10(r)
-    l_s = fmt_num10(l_mH)
-    c_s = fmt_num10(c_uF)
-    return f"  {n1_s}{n2_s}            {r_s}{l_s}{c_s}"
-
-
-def fmt_type51_branch(
-    n1_a: str, n2_a: str,
-    n1_b: str, n2_b: str,
-    n1_c: str, n2_c: str,
-    r_self: float, l_self_mH: float,
-    r_mut: float, l_mut_mH: float
+def fmt_branch(
+    n1: str,
+    n2: str,
+    r: float,
+    l_mH: float,
+    c_uF: float,
 ) -> str:
-    """Formats Type 51 3-phase coupled R-L branch card in ATP 80-column layout."""
-    p1a = f"{n1_a:<6}"[:6]
-    p2a = f"{n2_a:<6}"[:6]
-    p1b = f"{n1_b:<6}"[:6]
-    p2b = f"{n2_b:<6}"[:6]
-    p1c = f"{n1_c:<6}"[:6]
-    p2c = f"{n2_c:<6}"[:6]
-    rs_s = atp_e8(r_self)
-    ls_s = atp_e8(l_self_mH)
-    rm_s = atp_e8(r_mut)
-    lm_s = atp_e8(l_mut_mH)
-    return f"51{p1a}{p2a}{p1b}{p2b}{p1c}{p2c}      {rs_s}{ls_s}{rm_s}{lm_s}"
+    """
+    ATP uncoupled type-0 series RLC branch with $VINTAGE, 1 high precision format (80 cols).
+    """
+    if not any(abs(float(v)) > 0.0 for v in (r, l_mH, c_uF)):
+        raise ValueError(f"ATP branch {n1}->{n2} has R=L=C=0; ATP requires at least one non-zero parameter.")
+
+    bus1 = f"{n1:<6}"[:6]
+    bus2 = f"{n2:<6}"[:6] if n2 else " " * 6
+    bus3 = " " * 6
+    bus4 = " " * 6
+
+    return (
+        "  "
+        f"{bus1}"
+        f"{bus2}"
+        f"{bus3}"
+        f"{bus4}"
+        f"{atp_e16(r)}"
+        f"{atp_e16(l_mH)}"
+        f"{atp_e16(c_uF)}"
+    ).ljust(80)
 
 
-def fmt_switch(n1: str, n2: str, t_close: float, t_open: float) -> str:
-    """Formats switch card in ATP 80-column layout."""
+def fmt_switch(
+    n1: str,
+    n2: str,
+    t_close: float,
+    t_open: float,
+) -> str:
+    """Formats switch card in ATP fixed-column layout starting at column 1 (80 cols)."""
     n1_s = f"{n1:<6}"[:6]
     n2_s = f"{n2:<6}"[:6]
-    tc_s = fmt_num10(t_close)
-    to_s = fmt_num10(t_open)
-    return f"  {n1_s}{n2_s}{tc_s}{to_s}"
+
+    return (
+        f"{n1_s}"
+        f"{n2_s}"
+        f"{t_close:10.4f}"
+        f"{t_open:10.4f}"
+        f"{0.0:10.4f}"
+        f"{0.0:10.4f}"
+        f"{0:10.0f}"
+    ).ljust(80)
 
 
 class ATPCaseValidator:
@@ -213,8 +219,8 @@ class ATPCaseValidator:
                         errors.append(f"Line {idx} field {f_idx + 1} (cols {f_idx * 8 + 1}-{f_idx * 8 + 8}) is not valid float: {field!r}")
 
             if line.startswith("14"):
-                if len(line) < 58:
-                    errors.append(f"Line {idx} type 14 source card shorter than 58 chars: {line!r}")
+                if len(line) < 70:
+                    errors.append(f"Line {idx} type 14 source card shorter than 70 chars: {line!r}")
                 node = line[2:8]
                 if not node.strip():
                     errors.append(f"Line {idx} type 14 source card missing node name in cols 3-8: {line!r}")
@@ -300,7 +306,7 @@ class ATPCaseBuilder:
             tx_node = f"TX_{ph_char}"
             branch_cards.append(fmt_branch(mb_node, tx_node, r_line, l_line_mH, 0.0))
 
-        # Transformer Matrix / Coupled Impedance Cards
+        # Transformer Primary to Secondary
         sc_test = transformer.short_circuit_tests[0]
         hv_w = transformer.windings[0]
         lv_w = transformer.windings[1]
@@ -310,46 +316,32 @@ class ATPCaseBuilder:
         r_pos_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0)
         x_pos_pu = np.sqrt(max(0.0, z_pos_pu**2 - r_pos_pu**2))
 
-        r1 = r_pos_pu * z_base
-        x1 = x_pos_pu * z_base
-        l1_mH = (x1 / (2.0 * np.pi * freq_hz)) * 1000.0
+        r_tx = r_pos_pu * z_base
+        x_tx = x_pos_pu * z_base
+        l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
 
-        if sc_test.z_zero_pu is not None and sc_test.losses_zero_kw is not None:
-            z_zero_pu = sc_test.z_zero_pu
-            r_zero_pu = sc_test.losses_zero_kw / (lv_w.rated_mva * 1000.0)
-            x_zero_pu = np.sqrt(max(0.0, z_zero_pu**2 - r_zero_pu**2))
-            r0 = r_zero_pu * z_base
-            x0 = x_zero_pu * z_base
-            l0_mH = (x0 / (2.0 * np.pi * freq_hz)) * 1000.0
-        else:
-            r0 = r1
-            l0_mH = l1_mH
-
-        r_self = (2.0 * r1 + r0) / 3.0
-        l_self_mH = (2.0 * l1_mH + l0_mH) / 3.0
-        r_mut = (r0 - r1) / 3.0
-        l_mut_mH = (l0_mH - l1_mH) / 3.0
-
-        # Base transformer branches
         for ph_char in ["A", "B", "C"]:
             tx_node = f"TX_{ph_char}"
             sec_node = f"SEC{ph_char}"
-            branch_cards.append(fmt_branch(tx_node, sec_node, r_self, l_self_mH, 0.0))
-
-        if abs(r_mut) > 1e-6 or abs(l_mut_mH) > 1e-6:
-            type51_card = fmt_type51_branch(
-                "TX_A", "SECA",
-                "TX_B", "SECB",
-                "TX_C", "SECC",
-                r_self, l_self_mH,
-                r_mut, l_mut_mH
-            )
-            branch_cards.append(type51_card)
+            branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
 
         # Loads Cards (including R and L for each load)
         for l_idx, ld in enumerate(loads):
-            r_val = ld.r_ohm
-            l_val_mH = ld.l_h * 1000.0
+            if ld.r_ohm > 0.0:
+                r_val = ld.r_ohm
+                l_val_mH = ld.l_h * 1000.0
+            elif ld.p_kw > 0.0:
+                p_w = ld.p_kw * 1000.0
+                q_var = ld.q_kvar * 1000.0
+                s2 = p_w**2 + q_var**2
+                v_ll = 415.0
+                r_val = (v_ll**2 * p_w) / s2
+                x_val = (v_ll**2 * q_var) / s2
+                l_val_mH = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
+            else:
+                r_val = 10.0
+                l_val_mH = 1.0
+
             node_prefix = f"L{l_idx}"
             for ph_char in ["A", "B", "C"]:
                 sec_node = f"SEC{ph_char}"
@@ -448,16 +440,18 @@ class ATPCaseBuilder:
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
             misc_card,
             "    1000       1       1       1       1       0       0       1       0",
+            "$VINTAGE, 1",
             "/BRANCH",
-            "C < n1 >< n2 ><ref1><ref2>< R  >< L  >< C  >",
+            "C < n1 >< n2 ><ref1><ref2>< R               >< L               >< C               >"[:80],
         ] + branch_cards + [
             "BLANK BRANCH",
+            "$VINTAGE, 0",
             "/SWITCH",
-            "C < n 1>< n 2>< Tclose ><Top/Tde ><   Ie   ><Vf/CLOP ><  type  >",
+            "C < n 1>< n 2>< Tclose  >< Top/Tde  ><   Ie     >< Vf/CLOP  ><   type   >"[:80],
         ] + switch_cards + [
             "BLANK SWITCH",
             "/SOURCE",
-            "C < n 1><>< Ampl.  >< Freq.  ><Phase/T0>< TSTART >< TSTOP  >",
+            "C < n 1><>< Ampl.    >< Freq.    ><Phase/T0 >< TSTART   >< TSTOP    >"[:80],
             src_a,
             src_b,
             src_c,
