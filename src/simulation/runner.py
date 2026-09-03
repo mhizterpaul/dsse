@@ -419,13 +419,6 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     target_bus = f"f{feeder_idx}_node{bus_node_idx}"
     target_line = f"down_{feeder_idx}_{bus_node_idx}"
 
-    target = [{
-        "tx_id": f"trans{feeder_idx}_lv_boundary",
-        "branch_type": "transformer_boundary",
-        "target_bus": target_bus,
-        "target_line": target_line
-    }]
-
     def add_event_to_opendss(ev, event_prefix: str):
         ev_cls = getattr(ev, "event_class", None)
         if ev_cls == "equipment_switch":
