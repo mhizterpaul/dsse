@@ -11,7 +11,7 @@ class TransformerWinding:
     rated_kv: float
     rated_mva: float
     connection: str = "Y"
-    phase_shift_deg: float = 0.0
+    phase_shift_deg: float 
 
 
 @dataclass(frozen=True)
@@ -20,8 +20,8 @@ class ShortCircuitTest:
     winding_j: int
     z_pos_pu: float
     losses_pos_kw: float
-    z_zero_pu: Optional[float] = None
-    losses_zero_kw: Optional[float] = None
+    z_zero_pu: Optional[float] 
+    losses_zero_kw: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -30,8 +30,8 @@ class TransformerSpec:
     frequency_hz: float
     windings: List[TransformerWinding]
     short_circuit_tests: List[ShortCircuitTest]
-    excitation_current_percent: Optional[float] = None
-    excitation_loss_kw: Optional[float] = None
+    excitation_current_percent: Optional[float] 
+    excitation_loss_kw: Optional[float] 
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ class SourceModel:
     name: str
     frequency_hz: float
     pre_event: ThreePhaseState
-    post_event: Optional[ThreePhaseState] = None
+    post_event: Optional[ThreePhaseState] 
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class LineModel:
     length_km: float
     r1_ohm_per_km: float
     x1_ohm_per_km: float
-    c1_f_per_km: float = 0.0
+    c1_f_per_km: float 
 
 
 @dataclass(frozen=True)
@@ -64,9 +64,9 @@ class LoadModel:
     name: str
     bus: str
     p_kw: float
-    q_kvar: float = 0.0
-    r_ohm: Optional[float] = None
-    l_h: Optional[float] = None
+    q_kvar: float 
+    r_ohm: Optional[float] 
+    l_h: Optional[float] 
 
 
 @dataclass(frozen=True)
@@ -75,12 +75,12 @@ class TransientEvent:
     start_time_s: float
     duration_s: float
     location: str
-    fault_type: Optional[str] = None
-    faulted_phases: Tuple[int, ...] = (0,)
-    fault_resistance_ohm: float = 0.001
-    equipment_type: Optional[str] = None
-    event_1: Optional[Any] = None
-    event_2: Optional[Any] = None
+    fault_type: Optional[str] 
+    faulted_phases: Tuple[int, ...] 
+    fault_resistance_ohm: float 
+    equipment_type: Optional[str]
+    event_1: Optional[Any] 
+    event_2: Optional[Any] 
 
     @property
     def end_time_s(self) -> float:
@@ -89,8 +89,8 @@ class TransientEvent:
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    t_start_s: float = 0.0
-    t_stop_s: float = 0.15
+    t_start_s: float 
+    t_stop_s: float 
     time_step_s: float = 1e-4
 
 
@@ -164,13 +164,13 @@ class ATPCaseBuilder:
             branch_cards.append(f"  {src_node:<6}{tx_node:<6}             {r_line_str}{l_line_str}                                               0")
 
         # BCTRAN Transformer Matrix / Impedance Cards
-        sc_test = transformer.short_circuit_tests[0] if transformer.short_circuit_tests else ShortCircuitTest(1, 2, 0.0833, 18.0)
-        hv_w = transformer.windings[0] if len(transformer.windings) > 0 else TransformerWinding("HV", 33.0, 1.5)
-        lv_w = transformer.windings[1] if len(transformer.windings) > 1 else TransformerWinding("LV", 0.415, 1.5)
+        sc_test = transformer.short_circuit_tests[0] 
+        hv_w = transformer.windings[0] 
+        lv_w = transformer.windings[1] 
 
         z_base = (lv_w.rated_kv ** 2 * 1000.0) / lv_w.rated_mva
         z_pu = sc_test.z_pos_pu
-        r_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0) if lv_w.rated_mva > 0 else 0.006
+        r_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0) 
         x_pu = np.sqrt(max(0.0, z_pu**2 - r_pu**2))
 
         r_tx = r_pu * z_base
@@ -208,17 +208,17 @@ class ATPCaseBuilder:
             events_to_card = [event]
 
         for idx, ev in enumerate(events_to_card):
-            ev_class = getattr(ev, "event_class", getattr(event, "event_class", "equipment_switch"))
-            start_s = float(getattr(ev, "start_time_s", getattr(event, "start_time_s", 0.02)))
-            dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s", 0.5)))
+            ev_class = getattr(ev, "event_class", getattr(event, "event_class"))
+            start_s = float(getattr(ev, "start_time_s", getattr(event, "start_time_s")))
+            dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s")))
             end_s = start_s + dur_s
 
             start_str = f"{start_s:10.4f}"
             end_str = f"{end_s:10.4f}"
 
             if ev_class in ["line_fault", "fault"]:
-                f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases", (0,)))
-                f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", getattr(event, "fault_resistance_ohm", 0.001))))
+                f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases"))
+                f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", getattr(event, "fault_resistance_ohm"))))
                 r_fault_str = f"{f_res:.4f}".rjust(10)
                 ph_chars = ["A", "B", "C"]
                 for p_idx in f_phases:
@@ -309,22 +309,22 @@ class ATPCaseBuilder:
         if event is None:
             raise ValueError("Event must be provided to ATPCaseBuilder")
 
-        target_tx = getattr(event, "target", "trans1")
-        feeder_idx = getattr(realization, "feeder_idx", 1)
+        target_tx = getattr(event, "target")
+        feeder_idx = getattr(realization, "feeder_idx")
 
         if not operating_point:
             raise ValueError("Operating point must be provided to ATPCaseBuilder")
 
-        freq_hz = float(getattr(operating_point, "frequency_hz", 50.0))
+        freq_hz = float(getattr(operating_point, "frequency_hz"))
 
-        tx_spec_dict = getattr(realization, "transformer_spec", {})
-        r_pct = float(tx_spec_dict.get("r_pct", 0.60))
-        xhl_pct = float(tx_spec_dict.get("xhl_pct", 8.33))
-        kvas = tx_spec_dict.get("kvas", [1500.0, 1500.0])
-        kvs = tx_spec_dict.get("kvs", [11.0, 0.415])
+        tx_spec_dict = getattr(realization, "transformer_spec")
+        r_pct = float(tx_spec_dict.get("r_pct"))
+        xhl_pct = float(tx_spec_dict.get("xhl_pct"))
+        kvas = tx_spec_dict.get("kvas")
+        kvs = tx_spec_dict.get("kvs")
 
         transformer = TransformerSpec(
-            name=str(tx_spec_dict.get("name", f"trans{feeder_idx}")),
+            name=str(tx_spec_dict.get("name")),
             frequency_hz=freq_hz,
             windings=[
                 TransformerWinding("HV", kvs[0], kvas[0] / 1000.0, "Y"),
@@ -335,8 +335,8 @@ class ATPCaseBuilder:
             ]
         )
 
-        phase_v = operating_point.phase_voltages_v.get(target_tx, (240.0, 240.0, 240.0)) if hasattr(operating_point, "phase_voltages_v") else (240.0, 240.0, 240.0)
-        phase_ang = operating_point.phase_angles_deg.get(target_tx, (0.0, -120.0, 120.0)) if hasattr(operating_point, "phase_angles_deg") else (0.0, -120.0, 120.0)
+        phase_v = operating_point.phase_voltages_v.get(target_tx)
+        phase_ang = operating_point.phase_angles_deg.get(target_tx) 
 
         source = SourceModel(
             name="GRID",
@@ -347,24 +347,24 @@ class ATPCaseBuilder:
             )
         )
 
-        line_params = getattr(realization, "line_parameters", {})
+        line_params = getattr(realization, "line_parameters")
         line = LineModel(
             name=f"line_{feeder_idx}",
             from_bus="main_bus",
             to_bus=f"feeder{feeder_idx}_head",
             length_km=4.5,
-            r1_ohm_per_km=float(line_params.get("r1", 0.21)),
-            x1_ohm_per_km=float(line_params.get("x1", 0.08))
+            r1_ohm_per_km=float(line_params.get("r1")),
+            x1_ohm_per_km=float(line_params.get("x1"))
         )
 
-        loads = [LoadModel(name="default_load", bus=f"feeder{feeder_idx}_sec", p_kw=100.0)]
+        loads = [LoadModel(name, bus, p_kw)] 
 
-        start_s = float(getattr(event, "start_time_s", 0.02))
-        dur_s = float(getattr(event, "duration_s", 0.5))
-        ev_class = str(getattr(event, "event_class", "equipment_switch"))
-        f_type = getattr(event, "fault_type", None)
-        f_phases = getattr(event, "faulted_phases", (0,))
-        f_res = float(getattr(event, "fault_resistance", 0.001))
+        start_s = float(getattr(event, "start_time_s"))
+        dur_s = float(getattr(event, "duration_s"))
+        ev_class = str(getattr(event, "event_class"))
+        f_type = getattr(event, "fault_type")
+        f_phases = getattr(event, "faulted_phases")
+        f_res = float(getattr(event, "fault_resistance"))
 
         transient_ev = TransientEvent(
             event_class=ev_class,
@@ -379,7 +379,7 @@ class ATPCaseBuilder:
             event_2=getattr(event, "event_2", None)
         )
 
-        sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
+        sim_config = SimulationConfig(t_start_s, t_stop_s, time_step_s=1e-4)
 
         return self.build_explicit(
             transformer=transformer,
