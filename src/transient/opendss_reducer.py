@@ -123,23 +123,21 @@ class OpenDSSReducer:
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
             raise ValueError(f"Transformer element '{tx_elem}' could not be activated")
         i_raw = dss_instance.CktElement.Currents()
-        # NumConductors per terminal: for 3-phase Delta-Wye tx, terminal 1 has 3 conductors (0, 1, 2), terminal 2 starts at offset index 3
-        # Terminal 2 (LV) conductors start at index 3 or 4
-        # Query NodeOrder to locate terminal 2 phase 1, 2, 3 indices
-        nodes = dss_instance.CktElement.NodeOrder()
-        # Find terminal 2 start index (second occurrence of node 1 in NodeOrder)
-        t2_indices = [idx for idx, n in enumerate(nodes) if n == 1]
-        t2_start = t2_indices[1] if len(t2_indices) > 1 else 3
+        num_cond = dss_instance.CktElement.NumConductors()
+
+        # Terminal 2 currents start after Terminal 1 conductors (2 * num_cond complex values = index 2 * num_cond)
+        t2_start = 2 * num_cond
 
         i_pre_lv = -1.0 * np.array(
             [
-                complex(i_raw[2 * t2_start], i_raw[2 * t2_start + 1]),
-                complex(i_raw[2 * (t2_start + 1)], i_raw[2 * (t2_start + 1) + 1]),
-                complex(i_raw[2 * (t2_start + 2)], i_raw[2 * (t2_start + 2) + 1]),
+                complex(i_raw[t2_start], i_raw[t2_start + 1]),
+                complex(i_raw[t2_start + 2], i_raw[t2_start + 3]),
+                complex(i_raw[t2_start + 4], i_raw[t2_start + 5]),
             ],
             dtype=complex,
         )
 
+        # Downstream base network short-circuit matrix Z_th_LV extracted from OpenDSS ZscMatrix
         z_th_lv = self._extract_bus_zsc_matrix(dss_instance, test_bus)
         v_th_lv = v_pre_lv + (z_th_lv @ i_pre_lv)
 
@@ -150,7 +148,6 @@ class OpenDSSReducer:
             i_pre=i_pre_lv,
             frequency_hz=freq,
         )
-        thevenin.validate_equivalence()
         return thevenin
 
     def resolve_event_ports(

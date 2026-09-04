@@ -54,7 +54,7 @@ class ATPCaseBuilder:
         freq_hz = float(transformer.frequency_hz)
 
         def _type14_source(
-            node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float
+            node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float = 0.0, t_stop: float = 1000.0
         ) -> str:
             n_s = f"{node:<6}"[:6]
             flag_s = " 0"
@@ -62,7 +62,7 @@ class ATPCaseBuilder:
             f_s = f"{frequency:10.3f}"[:10]
             p_s = f"{phase_deg:10.3f}"[:10]
             a1_s = f"{-1.0:10.3f}"[:10]
-            t1_s = f"{1.0:10.3f}"[:10]
+            t1_s = f"{1000.0:10.3f}"[:10]
             t0_s = f"{max(t_start, 0.0):10.3f}"[:10]
             t1_end_s = f"{t_stop:10.3f}"[:10]
             return f"14{n_s}{flag_s}{a_s}{f_s}{p_s}{a1_s}{t1_s}{t0_s}{t1_end_s}"
@@ -110,15 +110,16 @@ class ATPCaseBuilder:
         for ph_char in ["A", "B", "C"]:
             branch_cards.append(fmt_branch(f"SRC{ph_char}", "", 1e8, 0.0, 0.0))
 
-        # Upstream Thévenin Z_th_HV Branches (SRCA, B, C to HV_A, HV_B, HV_C)
+        # Upstream Thévenin Z_th_HV Branches (SRCA, B, C to HVA, HVB, HVC)
+        # BCTRAN punch uses 3-phase nodes HVA, HVB, HVC and LVA, LVB, LVC
         ph_chars = ["A", "B", "C"]
         for i, ph in enumerate(ph_chars):
             r_hv = max(float(np.real(upstream.z_th[i, i])), 1e-4)
             x_hv = max(float(np.imag(upstream.z_th[i, i])), 1e-4)
             l_hv_mH = (x_hv / (2.0 * np.pi * freq_hz)) * 1000.0
-            branch_cards.append(fmt_branch(f"SRC{ph}", f"HV_{ph}", r_hv, l_hv_mH, 0.0))
+            branch_cards.append(fmt_branch(f"SRC{ph}", f"HV{ph}", r_hv, l_hv_mH, 0.0))
 
-        # 2. Downstream Base LV Network Thévenin (VTH_A, B, C and Z_th_LV connecting to LV_A, B, C)
+        # 2. Downstream Base LV Network Active Thévenin (VTHA, VTHB, VTHC and Z_th_LV connecting to LVA, LVB, LVC)
         amp_dn = np.abs(downstream.v_th) * np.sqrt(2.0)
         ang_dn = np.rad2deg(np.angle(downstream.v_th))
 
@@ -131,9 +132,9 @@ class ATPCaseBuilder:
             r_lv = max(float(np.real(downstream.z_th[i, i])), 1e-4)
             x_lv = max(float(np.imag(downstream.z_th[i, i])), 1e-4)
             l_lv_mH = (x_lv / (2.0 * np.pi * freq_hz)) * 1000.0
-            branch_cards.append(fmt_branch(f"LV_{ph}", f"VTH{ph}", r_lv, l_lv_mH, 0.0))
+            branch_cards.append(fmt_branch(f"LV{ph}", f"VTH{ph}", r_lv, l_lv_mH, 0.0))
 
-        # 3. Test Event Branches & Switches attached at transformer LV port (LV_A, B, C)
+        # 3. Test Event Branches & Switches attached at transformer LV port (LVA, LVB, LVC)
         for idx, ev in enumerate(events):
             t_close = float(ev.start_time_s)
             t_open = float(ev.end_time_s)
@@ -146,7 +147,7 @@ class ATPCaseBuilder:
                 node_prefix = f"E{idx}"
                 for p_idx in ev.phases:
                     ph = ph_chars[p_idx]
-                    sec_node = f"LV_{ph}"
+                    sec_node = f"LV{ph}"
                     load_node = f"{node_prefix}{ph}"
                     branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH, c_uF))
                     switch_cards.append(fmt_switch(sec_node, load_node, t_close, t_open))
@@ -158,7 +159,7 @@ class ATPCaseBuilder:
                 if f_type in ["LG", "LLG", "LLL"]:
                     for p_idx in ev.phases:
                         ph = ph_chars[p_idx]
-                        sec_node = f"LV_{ph}"
+                        sec_node = f"LV{ph}"
                         fault_node = f"F{idx}_{ph}"
                         branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
                         switch_cards.append(fmt_switch(sec_node, fault_node, t_close, t_open))
@@ -166,8 +167,8 @@ class ATPCaseBuilder:
                     # Phase-to-phase fault between faulted phases
                     if len(ev.phases) >= 2:
                         p1, p2 = ev.phases[0], ev.phases[1]
-                        node1 = f"LV_{ph_chars[p1]}"
-                        node2 = f"LV_{ph_chars[p2]}"
+                        node1 = f"LV{ph_chars[p1]}"
+                        node2 = f"LV{ph_chars[p2]}"
                         f_node = f"F{idx}_LL"
                         branch_cards.append(fmt_branch(f_node, "", f_res, 0.0, 0.0))
                         switch_cards.append(fmt_switch(node1, f_node, t_close, t_open))
@@ -198,7 +199,7 @@ class ATPCaseBuilder:
             src_dn_b,
             src_dn_c,
             "/OUTPUT",
-            "  LV_A  LV_B  LV_C",
+            "  LVA   LVB   LVC",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",

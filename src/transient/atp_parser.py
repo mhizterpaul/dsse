@@ -52,7 +52,7 @@ class ATPOutputReader:
             best_arr = None
             min_t_start = float("inf")
 
-            # Probe channels and byte offsets
+            # Probe channels and byte offsets (ATP groups variables in blocks of 4: t, V1, V2, V3, t, I1, I2, I3 -> 8 cols)
             for nc in [8, 7, 6, 9, 10, 12, 4]:
                 rec_size = nc * 4
                 for offset in range(16, min(2048, len(raw) - rec_size * 2), 4):
@@ -164,7 +164,9 @@ class ATPOutputReader:
             if native_data is not None and native_data.shape[0] > 0 and native_data.shape[1] >= 7:
                 t = native_data[:, 0]
                 voltages = {transformer_id: native_data[:, 1:4]}
-                currents = {transformer_id: native_data[:, 4:7]}
+                # If 8 columns (t, v1, v2, v3, t, i1, i2, i3), currents are in cols 5:8; otherwise cols 4:7
+                i_cols = slice(5, 8) if native_data.shape[1] >= 8 else slice(4, 7)
+                currents = {transformer_id: native_data[:, i_cols]}
                 return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=freq_hz)
 
             # 2. Try external pyatp/atp_utils libraries if installed
@@ -186,7 +188,8 @@ class ATPOutputReader:
                         target_len = data.shape[0]
                         t = data[:target_len, 0]
                         voltages = {transformer_id: data[:target_len, 1:4]}
-                        currents = {transformer_id: data[:target_len, 4:7]}
+                        i_cols = slice(5, 8) if data.shape[1] >= 8 else slice(4, 7)
+                        currents = {transformer_id: data[:target_len, i_cols]}
                         return EMTWaveforms(
                             t, voltages, currents, event_metadata, frequency_hz=freq_hz
                         )
@@ -235,6 +238,7 @@ class ATPOutputReader:
         t = data_arr[:, 0]
 
         voltages = {transformer_id: data_arr[:, 1:4]}
-        currents = {transformer_id: data_arr[:, 4:7]}
+        i_cols = slice(5, 8) if data_arr.shape[1] >= 8 else slice(4, 7)
+        currents = {transformer_id: data_arr[:, i_cols]}
 
         return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=freq_hz)
