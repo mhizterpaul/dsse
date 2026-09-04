@@ -123,16 +123,14 @@ class OpenDSSReducer:
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
             raise ValueError(f"Transformer element '{tx_elem}' could not be activated")
         i_raw = dss_instance.CktElement.Currents()
-        nodes = dss_instance.CktElement.NodeOrder()
+        n_cond1 = dss_instance.CktElement.NConducts()
 
-        # Find terminal 2 (LV) phase indices
-        # In OpenDSS node order for 2-winding 3-phase tx: [1, 2, 3, 0, 1, 2, 3, 0]
-        # Terminal 2 starts at index 4
+        # Terminal 2 (LV) phase indices start dynamically at n_cond1
         i_pre_lv = -1.0 * np.array(
             [
-                complex(i_raw[2 * 4], i_raw[2 * 4 + 1]),
-                complex(i_raw[2 * 5], i_raw[2 * 5 + 1]),
-                complex(i_raw[2 * 6], i_raw[2 * 6 + 1]),
+                complex(i_raw[2 * n_cond1], i_raw[2 * n_cond1 + 1]),
+                complex(i_raw[2 * (n_cond1 + 1)], i_raw[2 * (n_cond1 + 1) + 1]),
+                complex(i_raw[2 * (n_cond1 + 2)], i_raw[2 * (n_cond1 + 2) + 1]),
             ],
             dtype=complex,
         )
