@@ -22,7 +22,7 @@ from src.transient.events import (
     SingleEquipmentSwitchEvent,
     SingleLineFaultEvent,
     EquipmentEquipmentCoEvent,
-    EquipmentLineFaultCoEvent
+    EquipmentLineFaultCoEvent,
 )
 
 
@@ -49,8 +49,14 @@ def get_all_108_coevents(target_line: str = "feeder1_head"):
     Total: 28 + 80 = 108 unique co-events.
     """
     equipment_types = [
-        "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
-        "compressor", "audio_amplifier", "ups", "industrial_fan"
+        "ac_motor",
+        "dc_motor_inverter",
+        "microwave",
+        "induction_plate",
+        "compressor",
+        "audio_amplifier",
+        "ups",
+        "industrial_fan",
     ]
 
     fault_configs = [
@@ -63,7 +69,7 @@ def get_all_108_coevents(target_line: str = "feeder1_head"):
         ("LLG", (0, 1), "ABG"),
         ("LLG", (1, 2), "BCG"),
         ("LLG", (2, 0), "CAG"),
-        ("LLL", (0, 1, 2), "ABC")
+        ("LLL", (0, 1, 2), "ABC"),
     ]
 
     coevents = []
@@ -211,7 +217,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         use_baseline_feeder=True,
         scenario_id="steady_5min_run",
         seed=42,
-        reinitialize_plant=False
+        reinitialize_plant=False,
     )
 
     registry = runner.plant_data["registry"] if runner.plant_data else None
@@ -252,18 +258,20 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         unsampled_units = [u for u in feeder_units if not u.is_metered]
 
         gt_sampled_energy_kwh = round(
-            sum(consumer_energies.get(u.consumer_id) for u in sampled_units),
-            4
+            sum(consumer_energies.get(u.consumer_id) for u in sampled_units), 4
         )
 
         gt_unsampled_true_kwh = round(
-            sum(consumer_energies.get(u.consumer_id) for u in unsampled_units),
-            4
+            sum(consumer_energies.get(u.consumer_id) for u in unsampled_units), 4
         )
 
         gt_latent_energy_kwh = round(
-            sum(consumer_energies.get(latent_map[u.bus_id].consumer_id) for u in feeder_units if u.bus_id in latent_map),
-            4
+            sum(
+                consumer_energies.get(latent_map[u.bus_id].consumer_id)
+                for u in feeder_units
+                if u.bus_id in latent_map
+            ),
+            4,
         )
 
         # Dynamic physics-based transformer losses and line losses from OpenDSS
@@ -287,7 +295,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         consumer_line_loss_kw = 0.0
         for u in feeder_units:
             try:
-                # Set active bus first per OpenDSS API requirements
                 bus_idx = runner.dss.Circuit.SetActiveBus(u.bus_id)
                 v_vec = np.array(runner.dss.Bus.VMagAngle())
                 if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
@@ -297,7 +304,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                         f"Bus index: {bus_idx}. Available circuit buses count: {len(all_buses)}"
                     )
             except Exception as e:
-                print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
+                print(
+                    f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}"
+                )
                 raise
 
             v_ln = float(np.mean(v_vec[0::2]))
@@ -307,7 +316,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 eq = get_equipment_model(ld.load_type)
                 p_w = eq.rated_power_kw * 1000.0
                 if eq.power_factor <= 0:
-                    raise ValueError(f"Equipment '{ld.load_type}' has non-positive power factor: {eq.power_factor}")
+                    raise ValueError(
+                        f"Equipment '{ld.load_type}' has non-positive power factor: {eq.power_factor}"
+                    )
                 i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
                 i_total_line += i_ld
             p_loss_kw = 3.0 * (i_total_line ** 2) * u.service_line_resistance_ohm / 1000.0
@@ -319,40 +330,36 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
         feeder_supply_energy_kwh = round(
             gt_sampled_energy_kwh + gt_unsampled_true_kwh + gt_latent_energy_kwh + gt_tech_loss_kwh,
-            4
+            4,
         )
 
-        
-
         metered_consumer_energies = {
-            u.consumer_id: consumer_energies[u.consumer_id]
-            for u in sampled_units
+            u.consumer_id: consumer_energies[u.consumer_id] for u in sampled_units
         }
 
         # Store in steady state measurements
         sim_res_d1.steady_state_measurements = {
-            u.consumer_id: {"energy_kwh": consumer_energies[u.consumer_id]}
-            for u in feeder_units
+            u.consumer_id: {"energy_kwh": consumer_energies[u.consumer_id]} for u in feeder_units
         }
 
         cla_res = cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
-            registry=registry
-        ) 
+            registry=registry,
+        )
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             metered_consumer_energies=metered_consumer_energies,
-            registry=registry
-        ) 
+            registry=registry,
+        )
 
         unmetered_units = [u for u in feeder_units if not u.is_metered]
         weights_map = cla_estimator.weighting_function(unmetered_units)
 
-        duration_hours = 5.0 / 60.0  # Total time network energized (5 minutes = 300 s / 3600 h)
+        duration_hours = 5.0 / 60.0
 
         for u in feeder_units:
             is_metered = u.is_metered
@@ -361,9 +368,13 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 bus_idx = runner.dss.Circuit.SetActiveBus(u.bus_id)
                 v_vec = np.array(runner.dss.Bus.VMagAngle())
                 if len(v_vec) < 2 or np.mean(v_vec[0::2]) <= 0:
-                    raise ValueError(f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec}, bus_idx: {bus_idx})")
+                    raise ValueError(
+                        f"Missing or non-positive voltage magnitude for bus '{u.bus_id}' (v_vec: {v_vec}, bus_idx: {bus_idx})"
+                    )
             except Exception as e:
-                print(f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}")
+                print(
+                    f"ERROR: Exception occurred while querying bus '{u.bus_id}' for consumer unit '{u.consumer_id}': {e}\n{traceback.format_exc()}"
+                )
                 raise
 
             v_ln = float(np.mean(v_vec[0::2]))
@@ -380,55 +391,96 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 eq = get_equipment_model(ld.load_type)
                 p_w = eq.rated_power_kw * 1000.0
                 if eq.power_factor <= 0:
-                    raise ValueError(f"Equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}")
+                    raise ValueError(
+                        f"Equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}"
+                    )
                 i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
                 i_total_line += i_ld
                 pf_eff += eq.power_factor
 
             pf_eff = pf_eff / num_loads
             if i_total_line <= 0:
-                raise ValueError(f"Total current for consumer unit '{u.consumer_id}' is non-positive: {i_total_line}")
+                raise ValueError(
+                    f"Total current for consumer unit '{u.consumer_id}' is non-positive: {i_total_line}"
+                )
             z_mag = v_ln / i_total_line
-            unit_consumed_energy_kwh = (3.0 * z_mag * (i_total_line ** 2) * pf_eff * duration_hours) / 1000.0
+            unit_consumed_energy_kwh = (
+                3.0 * z_mag * (i_total_line ** 2) * pf_eff * duration_hours
+            ) / 1000.0
 
             # Calculate service drop line loss directly from consumer unit service line resistance
             r_drop = u.service_line_resistance_ohm
             p_loss_kw = 3.0 * (i_total_line ** 2) * r_drop / 1000.0
             c_line_loss_kwh = round(float(p_loss_kw * duration_hours), 6)
 
-            cla_est = round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4) if (not is_metered and cla_res and u.consumer_id in cla_res.allocated_unsampled_consumer_energy) else np.nan
-            time_cla_est = round(float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4) if (not is_metered and time_cla_res and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy) else np.nan
+            cla_est = (
+                round(float(cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4)
+                if (
+                    not is_metered
+                    and cla_res
+                    and u.consumer_id in cla_res.allocated_unsampled_consumer_energy
+                )
+                else np.nan
+            )
+            time_cla_est = (
+                round(
+                    float(time_cla_res.allocated_unsampled_consumer_energy.get(u.consumer_id)), 4
+                )
+                if (
+                    not is_metered
+                    and time_cla_res
+                    and u.consumer_id in time_cla_res.allocated_unsampled_consumer_energy
+                )
+                else np.nan
+            )
 
-            unit_weight = round(float(weights_map.get(u.consumer_id)), 6) if not is_metered else np.nan
+            unit_weight = (
+                round(float(weights_map.get(u.consumer_id)), 6) if not is_metered else np.nan
+            )
 
-            assigned_class = u.assigned_load_class 
+            assigned_class = u.assigned_load_class
             consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
-            # Registered consumer unit (consumer_type includes assigned class and status type)
-            rows_1.append({
-                "gt_consumer_unit_id": u.consumer_id,
-                "consumer_type": consumer_type_label,
-                "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
-                "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
-                "assigned_weight": unit_weight,
-                "gt_consumed_energy_kwh": round(unit_consumed_energy_kwh, 4),
-                "consumer_line_losses": c_line_loss_kwh,
-                "cla_estimates": cla_est,
-                "time_adjusted_cla_estimates": time_cla_est
-            })
+            # Registered consumer unit
+            rows_1.append(
+                {
+                    "gt_consumer_unit_id": u.consumer_id,
+                    "consumer_type": consumer_type_label,
+                    "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
+                    "consumer_unit_loads": json.dumps(
+                        [
+                            {
+                                "load_id": ld.load_id,
+                                "circuit_id": ld.circuit_id,
+                                "load_type": ld.load_type,
+                            }
+                            for ld in u.loads
+                        ]
+                    ),
+                    "assigned_weight": unit_weight,
+                    "gt_consumed_energy_kwh": round(unit_consumed_energy_kwh, 4),
+                    "consumer_line_losses": c_line_loss_kwh,
+                    "cla_estimates": cla_est,
+                    "time_adjusted_cla_estimates": time_cla_est,
+                }
+            )
 
             # Latent / unknown consumer unit at same bus if present
             latent_u = latent_map.get(u.bus_id)
             if latent_u:
                 i_latent_total = 0.0
                 if len(latent_u.loads) == 0:
-                    raise ValueError(f"Latent consumer unit '{latent_u.consumer_id}' has no connected load circuits")
+                    raise ValueError(
+                        f"Latent consumer unit '{latent_u.consumer_id}' has no connected load circuits"
+                    )
 
                 for ld in latent_u.loads:
                     eq = get_equipment_model(ld.load_type)
                     p_w = eq.rated_power_kw * 1000.0
                     if eq.power_factor <= 0:
-                        raise ValueError(f"Latent equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}")
+                        raise ValueError(
+                            f"Latent equipment '{ld.load_type}' has invalid power factor: {eq.power_factor}"
+                        )
                     i_ld = p_w / ((3.0 ** 0.5) * v_ll * eq.power_factor)
                     i_latent_total += i_ld
 
@@ -436,17 +488,30 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 p_latent_loss_kw = 3.0 * (i_latent_total ** 2) * r_latent_drop / 1000.0
                 latent_line_loss_kwh = round(float(p_latent_loss_kw * duration_hours), 6)
 
-                rows_1.append({
-                    "gt_consumer_unit_id": latent_u.consumer_id,
-                    "consumer_type": "latent",
-                    "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
-                    "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
-                    "assigned_weight": np.nan,
-                    "gt_consumed_energy_kwh": np.nan,
-                    "consumer_line_losses": latent_line_loss_kwh,
-                    "cla_estimates": np.nan,
-                    "time_adjusted_cla_estimates": np.nan
-                })
+                rows_1.append(
+                    {
+                        "gt_consumer_unit_id": latent_u.consumer_id,
+                        "consumer_type": "latent",
+                        "consumer_unit_source": json.dumps(
+                            {"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}
+                        ),
+                        "consumer_unit_loads": json.dumps(
+                            [
+                                {
+                                    "load_id": ld.load_id,
+                                    "circuit_id": ld.circuit_id,
+                                    "load_type": ld.load_type,
+                                }
+                                for ld in latent_u.loads
+                            ]
+                        ),
+                        "assigned_weight": np.nan,
+                        "gt_consumed_energy_kwh": np.nan,
+                        "consumer_line_losses": latent_line_loss_kwh,
+                        "cla_estimates": np.nan,
+                        "time_adjusted_cla_estimates": np.nan,
+                    }
+                )
 
     print("INFO: Completed Dataset 1 generation.")
 
@@ -457,10 +522,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     print("INFO: Running transient simulations for Dataset 2...")
     sim_res_d2 = runner.run_transient_simulation(
-        events=all_108_pairs,
-        use_baseline_feeder=True,
-        seed=42,
-        reinitialize_plant=False
+        events=all_108_pairs, use_baseline_feeder=True, seed=42, reinitialize_plant=False
     )
     rows_2 = process_dataset_coevents(sim_res_d2, dataset_name="Dataset 2")
 
@@ -470,14 +532,10 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     print("INFO: Running transient simulations for Dataset 3 (time-shifted with varying offsets)...")
     offsets = np.linspace(0.005, 0.050, len(all_108_pairs))
     d3_coevents = [
-        co.with_time_shift(round(float(offsets[idx]), 4))
-        for idx, co in enumerate(all_108_pairs)
+        co.with_time_shift(round(float(offsets[idx]), 4)) for idx, co in enumerate(all_108_pairs)
     ]
     sim_res_d3 = runner.run_transient_simulation(
-        events=d3_coevents,
-        use_baseline_feeder=True,
-        seed=42,
-        reinitialize_plant=False
+        events=d3_coevents, use_baseline_feeder=True, seed=42, reinitialize_plant=False
     )
     rows_3 = process_dataset_coevents(sim_res_d3, dataset_name="Dataset 3")
 
@@ -486,10 +544,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
     # =========================================================================
     print("INFO: Running transient simulations for Dataset 4 (varying transformer specs)...")
     sim_res_d4 = runner.run_transient_simulation(
-        events=all_108_pairs,
-        use_baseline_feeder=False,
-        seed=42,
-        reinitialize_plant=False
+        events=all_108_pairs, use_baseline_feeder=False, seed=42, reinitialize_plant=False
     )
     rows_4 = process_dataset_coevents(sim_res_d4, dataset_name="Dataset 4")
 
@@ -506,7 +561,9 @@ def generate_experiments_dataset(write_to_disk: bool = True):
         df_3.to_csv(dir_path / "dataset_3.csv", index=False)
         df_4.to_csv(dir_path / "dataset_4.csv", index=False)
 
-        print(f"INFO: Successfully written datasets to {dir_path / 'dataset_1.csv'}, {dir_path / 'dataset_2.csv'}, {dir_path / 'dataset_3.csv'}, and {dir_path / 'dataset_4.csv'}")
+        print(
+            f"INFO: Successfully written datasets to {dir_path / 'dataset_1.csv'}, {dir_path / 'dataset_2.csv'}, {dir_path / 'dataset_3.csv'}, and {dir_path / 'dataset_4.csv'}"
+        )
 
     return df_1, df_2, df_3, df_4
 
