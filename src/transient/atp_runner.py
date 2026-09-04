@@ -5,6 +5,7 @@ import uuid
 import numpy as np
 from pathlib import Path
 
+
 class ATPResult:
     def __init__(self, case_path: Path, output_dir: Path, return_code: int, stdout: str, stderr: str):
         self.case_path = case_path
@@ -13,16 +14,19 @@ class ATPResult:
         self.stdout = stdout
         self.stderr = stderr
 
+
 class ATPRunner:
     """
     Thin process adapter around the actual ATP-EMTP executable (tpbig/tpbigm).
     Executes the real Windows binary via Wine on Linux runtime.
     Supports process isolation for parallel ProcessPoolExecutor tasks by generating unique temporary case names.
+    Supports expect_pl4=False for BCTRAN supporting routine matrix generation cases.
     """
+
     def __init__(self, atp_executable: str | Path = None, timeout_s: float = 300.0):
         self.timeout_s = timeout_s
 
-    def run(self, atp_case_path: str | Path) -> ATPResult:
+    def run(self, atp_case_path: str | Path, expect_pl4: bool = True) -> ATPResult:
         case_path = Path(atp_case_path).resolve()
         if not case_path.exists():
             raise FileNotFoundError(f"ATP case file not found: {case_path}")
@@ -85,7 +89,7 @@ class ATPRunner:
                     if suffix == ".pl4":
                         pl4_generated = True
 
-            if not pl4_generated:
+            if expect_pl4 and not pl4_generated:
                 lis_content = ""
                 lis_path = case_path.with_suffix(".lis")
                 if lis_path.exists():
@@ -111,12 +115,14 @@ class ATPRunner:
                     pass
 
         if process.returncode != 0:
-            raise RuntimeError(f"ATP-EMTP execution failed with return code {process.returncode}:\n{process.stderr}\n{process.stdout}")
+            raise RuntimeError(
+                f"ATP-EMTP execution failed with return code {process.returncode}:\n{process.stderr}\n{process.stdout}"
+            )
 
         return ATPResult(
             case_path=case_path,
             output_dir=case_path.parent,
             return_code=process.returncode,
             stdout=process.stdout,
-            stderr=process.stderr
+            stderr=process.stderr,
         )

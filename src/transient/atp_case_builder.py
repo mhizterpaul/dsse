@@ -4,275 +4,174 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple, Literal, Any
 import numpy as np
 
-
-@dataclass(frozen=True)
-class TransformerWinding:
-    name: str
-    rated_kv: float
-    rated_mva: float
-    connection: str
-    phase_shift_deg: float 
-
-
-@dataclass(frozen=True)
-class ShortCircuitTest:
-    winding_i: int
-    winding_j: int
-    z_pos_pu: float
-    losses_pos_kw: float
-    z_zero_pu: Optional[float] 
-    losses_zero_kw: Optional[float]
-
-
-@dataclass(frozen=True)
-class TransformerSpec:
-    name: str
-    frequency_hz: float
-    windings: List[TransformerWinding]
-    short_circuit_tests: List[ShortCircuitTest]
-    excitation_current_percent: Optional[float] 
-    excitation_loss_kw: Optional[float] 
-
-
-@dataclass(frozen=True)
-class ThreePhaseState:
-    voltage_rms_v: Tuple[float, float, float]
-    voltage_angle_deg: Tuple[float, float, float]
-
-
-@dataclass(frozen=True)
-class SourceModel:
-    name: str
-    frequency_hz: float
-    pre_event: ThreePhaseState
-
-
-@dataclass(frozen=True)
-class LineModel:
-    name: str
-    from_bus: str
-    to_bus: str
-    length_km: float
-    r1_ohm_per_km: float
-    x1_ohm_per_km: float
-    c1_f_per_km: float 
-
-
-@dataclass(frozen=True)
-class LoadModel:
-    name: str
-    bus: str
-    p_kw: float
-    q_kvar: float 
-    r_ohm: float
-    l_h: float
-
-
-@dataclass(frozen=True)
-class TransientEvent:
-    event_class: str
-    start_time_s: float
-    duration_s: float
-    location: str
-    fault_type: Optional[str] 
-    faulted_phases: Tuple[int, ...] 
-    fault_resistance_ohm: float 
-    equipment_type: Optional[str]
-    event_1: Optional[Any] 
-    event_2: Optional[Any] 
-
-    @property
-    def end_time_s(self) -> float:
-        return self.start_time_s + self.duration_s
-
-
-@dataclass(frozen=True)
-class SimulationConfig:
-    t_start_s: float 
-    t_stop_s: float 
-    time_step_s: float
+from src.transient.models import (
+    TransformerSpec,
+    ThreePhaseThevenin,
+    TestBranch,
+    SimulationConfig,
+)
 
 
 class ATPCaseBuilder:
-    def __init__(self, template_path: str = None):
+    """
+    Serialization layer for generating valid ATP-EMTP circuit cases from reduced domain models:
+    Upstream Thévenin -> BCTRAN Transformer -> Downstream Base LV Network Thévenin -> Test Branches/Switches.
+
+    Remove legacy feeder line models, load models, and scalar R-L transformer calculations.
+    """
+
+    def __init__(self, template_path: Optional[str] = None):
         self.template_path = template_path
 
     def build_explicit(
         self,
         transformer: TransformerSpec,
-        source: SourceModel,
-        line: LineModel,
-        loads: List[LoadModel],
-        event: TransientEvent,
+        upstream: ThreePhaseThevenin,
+        downstream: ThreePhaseThevenin,
+        events: List[TestBranch],
         simulation: SimulationConfig,
+        bctran_punch: str,
         output_path: Optional[str] = None,
-        scenario_id: str = "transient_scenario"
+        scenario_id: str = "transient_scenario",
     ) -> str:
         """
-        Generates a valid ATP-EMTP card file from explicit domain models:
-        (Source -> Line -> BCTRAN Transformer -> Loads -> Fault/Switch Event).
+        Generates a valid ATP case file from reduced multi-port Thévenin equivalents,
+        BCTRAN punched coupled transformer matrix, and explicit test event branches.
         """
-        if transformer is None:
-            raise ValueError("TransformerSpec must be provided")
-        if source is None:
-            raise ValueError("SourceModel must be provided")
-        if line is None:
-            raise ValueError("LineModel must be provided")
-        if event is None:
-            raise ValueError("TransientEvent must be provided")
-        if simulation is None:
-            raise ValueError("SimulationConfig must be provided")
+        if not transformer:
+            raise ValueError("TransformerSpec must be provided to ATPCaseBuilder")
+        if not upstream:
+            raise ValueError("Upstream ThreePhaseThevenin must be provided to ATPCaseBuilder")
+        if not downstream:
+            raise ValueError("Downstream ThreePhaseThevenin must be provided to ATPCaseBuilder")
+        if events is None:
+            raise ValueError("Events list must be provided to ATPCaseBuilder")
+        if not simulation:
+            raise ValueError("SimulationConfig must be provided to ATPCaseBuilder")
+        if not bctran_punch:
+            raise ValueError("BCTRAN punch matrix string must be provided to ATPCaseBuilder")
 
-        freq_hz = transformer.frequency_hz
+        freq_hz = float(transformer.frequency_hz)
 
-        # Source peak voltages and angles from pre-event ThreePhaseState
-        amp_a = source.pre_event.voltage_rms_v[0] * np.sqrt(2.0)
-        amp_b = source.pre_event.voltage_rms_v[1] * np.sqrt(2.0)
-        amp_c = source.pre_event.voltage_rms_v[2] * np.sqrt(2.0)
-
-        ang_a = source.pre_event.voltage_angle_deg[0]
-        ang_b = source.pre_event.voltage_angle_deg[1]
-        ang_c = source.pre_event.voltage_angle_deg[2]
-
-        def _type14_source(node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float) -> str:
+        def _type14_source(
+            node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float
+        ) -> str:
             n_s = f"{node:<6}"[:6]
-            return f"14{n_s}{'0':>6}{amplitude:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
-
-        src_a = _type14_source("SRCA", amp_a, freq_hz, ang_a, -1.0, 1.0e3)
-        src_b = _type14_source("SRCB", amp_b, freq_hz, ang_b, -1.0, 1.0e3)
-        src_c = _type14_source("SRCC", amp_c, freq_hz, ang_c, -1.0, 1.0e3)
-
-        branch_cards = []
-        switch_cards = []
+            flag_s = " 0"
+            a_s = f"{amplitude:10.3f}"[:10]
+            f_s = f"{frequency:10.3f}"[:10]
+            p_s = f"{phase_deg:10.3f}"[:10]
+            a1_s = f"{-1.0:10.3f}"[:10]
+            t1_s = f"{1.0:10.3f}"[:10]
+            t0_s = f"{max(t_start, 0.0):10.3f}"[:10]
+            t1_end_s = f"{t_stop:10.3f}"[:10]
+            return f"14{n_s}{flag_s}{a_s}{f_s}{p_s}{a1_s}{t1_s}{t0_s}{t1_end_s}"
 
         def fmt_branch(n1: str, n2: str, r: float, l_mH: float, c_uF: float) -> str:
             n1_s = f"{n1:<6}"[:6]
             n2_s = f"{n2:<6}"[:6]
-            r_s = f"{r:10.4f}" 
-            l_s = f"{l_mH:10.4f}" 
-            c_s = f"{c_uF:10.4f}" 
+            r_s = f"{r:10.4f}"
+            l_s = f"{l_mH:10.4f}"
+            c_s = f"{c_uF:10.4f}"
             return f"  {n1_s}{n2_s}{'':<12}{r_s[:10]:>10}{l_s[:10]:>10}{c_s[:10]:>10}".rstrip()
 
-        def fmt_switch(n1: str, n2: str, t_close: float, t_open: float) -> str:
+        def fmt_switch(
+            n1: str,
+            n2: str,
+            t_close: float,
+            t_open: float,
+            i_initial: float = 0.0,
+            vf: float = 0.0,
+            switch_type: int = 0,
+        ) -> str:
             n1_s = f"{n1:<6}"[:6]
             n2_s = f"{n2:<6}"[:6]
-            tc_s = f"{t_close:10.4f}"
-            to_s = f"{t_open:10.4f}"
-            return f"  {n1_s}{n2_s}{tc_s}{to_s}"
+            return (
+                f"  {n1_s}{n2_s}"
+                f"{t_close:10.4f}"
+                f"{t_open:10.4f}"
+                f"{i_initial:10.4f}"
+                f"{vf:10.4f}"
+                f"{switch_type:10d}"
+            )
 
-        # High resistance ground paths for source
+        # 1. Upstream Type-14 Sources (peak amplitude and angle from upstream.v_th)
+        amp_up = np.abs(upstream.v_th) * np.sqrt(2.0)
+        ang_up = np.rad2deg(np.angle(upstream.v_th))
+
+        src_up_a = _type14_source("SRCA", amp_up[0], freq_hz, ang_up[0], 0.0, 1.0e3)
+        src_up_b = _type14_source("SRCB", amp_up[1], freq_hz, ang_up[1], 0.0, 1.0e3)
+        src_up_c = _type14_source("SRCC", amp_up[2], freq_hz, ang_up[2], 0.0, 1.0e3)
+
+        branch_cards = []
+        switch_cards = []
+
+        # High-resistance grounding paths for sources
         for ph_char in ["A", "B", "C"]:
-            src_node = f"SRC{ph_char}"
-            branch_cards.append(fmt_branch(src_node, "", 1e8, 0.0, 0.0))
+            branch_cards.append(fmt_branch(f"SRC{ph_char}", "", 1e8, 0.0, 0.0))
 
-        # Line Cards
-        r_line = line.r1_ohm_per_km * line.length_km
-        x_line = line.x1_ohm_per_km * line.length_km
-        l_line_mH = (x_line / (2.0 * np.pi * freq_hz)) * 1000.0
+        # Upstream Thévenin Z_th_HV Branches (SRCA, B, C to HV_A, HV_B, HV_C)
+        ph_chars = ["A", "B", "C"]
+        for i, ph in enumerate(ph_chars):
+            r_hv = max(float(np.real(upstream.z_th[i, i])), 1e-4)
+            x_hv = max(float(np.imag(upstream.z_th[i, i])), 1e-4)
+            l_hv_mH = (x_hv / (2.0 * np.pi * freq_hz)) * 1000.0
+            branch_cards.append(fmt_branch(f"SRC{ph}", f"HV_{ph}", r_hv, l_hv_mH, 0.0))
 
-        for ph_char in ["A", "B", "C"]:
-            src_node = f"SRC{ph_char}"
-            tx_node = f"TX_{ph_char}"
-            branch_cards.append(fmt_branch(src_node, tx_node, r_line, l_line_mH, 0.0))
+        # 2. Downstream Base LV Network Thévenin (VTH_A, B, C and Z_th_LV connecting to LV_A, B, C)
+        amp_dn = np.abs(downstream.v_th) * np.sqrt(2.0)
+        ang_dn = np.rad2deg(np.angle(downstream.v_th))
 
-        # Transformer Matrix / Impedance Cards
-        sc_test = transformer.short_circuit_tests[0] 
-        hv_w = transformer.windings[0] 
-        lv_w = transformer.windings[1] 
+        src_dn_a = _type14_source("VTHA", amp_dn[0], freq_hz, ang_dn[0], 0.0, 1.0e3)
+        src_dn_b = _type14_source("VTHB", amp_dn[1], freq_hz, ang_dn[1], 0.0, 1.0e3)
+        src_dn_c = _type14_source("VTHC", amp_dn[2], freq_hz, ang_dn[2], 0.0, 1.0e3)
 
-        z_base = (lv_w.rated_kv ** 2 * 1000.0) / lv_w.rated_mva
-        z_pu = sc_test.z_pos_pu
-        r_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0) 
-        x_pu = np.sqrt(max(0.0, z_pu**2 - r_pu**2))
+        for i, ph in enumerate(ph_chars):
+            branch_cards.append(fmt_branch(f"VTH{ph}", "", 1e8, 0.0, 0.0))
+            r_lv = max(float(np.real(downstream.z_th[i, i])), 1e-4)
+            x_lv = max(float(np.imag(downstream.z_th[i, i])), 1e-4)
+            l_lv_mH = (x_lv / (2.0 * np.pi * freq_hz)) * 1000.0
+            branch_cards.append(fmt_branch(f"LV_{ph}", f"VTH{ph}", r_lv, l_lv_mH, 0.0))
 
-        r_tx = r_pu * z_base
-        x_tx = x_pu * z_base
-        l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
+        # 3. Test Event Branches & Switches attached at transformer LV port (LV_A, B, C)
+        for idx, ev in enumerate(events):
+            t_close = float(ev.start_time_s)
+            t_open = float(ev.end_time_s)
 
-        for ph_char in ["A", "B", "C"]:
-            tx_node = f"TX_{ph_char}"
-            sec_node = f"SEC{ph_char}"
-            branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
+            if ev.branch_type in ["equipment", "load"]:
+                r_eq = float(ev.model.get("R", 1.0))
+                l_mH = float(ev.model.get("L_mH", 0.0))
+                c_uF = float(ev.model.get("C_uF", 0.0))
 
-        # Loads Cards
-        for l_idx, ld in enumerate(loads):
-            r_val = ld.r_ohm
-            node_prefix = f"L{l_idx}"
-            for ph_char in ["A", "B", "C"]:
-                sec_node = f"SEC{ph_char}"
-                load_node = f"{node_prefix}{ph_char}"
-                branch_cards.append(fmt_branch(load_node, "", r_val, 0.0, 0.0))
-                switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
-
-        # Transient Event Cards (supports single events and co-events)
-        events_to_card = []
-        if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
-            events_to_card = [event.event_1, event.event_2]
-        else:
-            events_to_card = [event]
-
-        for idx, ev in enumerate(events_to_card):
-            ev_class = getattr(ev, "event_class", getattr(event, "event_class"))
-            start_s = float(getattr(ev, "start_time_s", getattr(event, "start_time_s")))
-            dur_s = float(getattr(ev, "duration_s", getattr(event, "duration_s")))
-            end_s = start_s + dur_s
-
-            if ev_class in ["line_fault", "fault"]:
-                f_phases = getattr(ev, "faulted_phases", getattr(event, "faulted_phases"))
-                f_res = float(getattr(ev, "fault_resistance_ohm", getattr(ev, "fault_resistance", getattr(event, "fault_resistance_ohm"))))
-                ph_chars = ["A", "B", "C"]
-                for p_idx in f_phases:
-                    ph_char = ph_chars[p_idx]
-                    sec_node = f"SEC{ph_char}"
-                    fault_node = f"F{idx}_{ph_char}"
-                    branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                    switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
-            elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
-                if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
-                    err_msg = f"Event missing required attribute 'equipment_type': {ev}"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg)
-                eq_type = ev.equipment_type
-                from src.loads import get_equipment_model
-                eq_model = get_equipment_model(eq_type)
-
-                r_val = None
-                for key in ["r_stator", "r_armature", "r_coil", "r_internal", "r_magnetron", "r_speaker"]:
-                    if key in eq_model.atp_params:
-                        r_val = eq_model.atp_params[key]
-                        break
-
-                l_mH_val = 0.0
-                for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
-                    if key in eq_model.atp_params:
-                        l_mH_val = float(eq_model.atp_params[key]) * 1000.0
-                        break
-
-                if l_mH_val == 0.0:
-                    for key in ["x_stator", "x_rotor"]:
-                        if key in eq_model.atp_params:
-                            x_val = float(eq_model.atp_params[key])
-                            l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
-                            break
-
-                c_uF_val = 0.0
-                for key in ["c_doubler", "c_resonant", "c_dc_link", "c_supply_bank", "c_filter"]:
-                    if key in eq_model.atp_params:
-                        c_uF_val = float(eq_model.atp_params[key]) * 1e6
-                        break
-
-                if r_val is None:
-                    err_msg = f"Equipment model '{eq_type}' missing required R in atp_params"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg)
-
-                r_eq = float(r_val)
                 node_prefix = f"E{idx}"
-                for ph_char in ["A", "B", "C"]:
-                    sec_node = f"SEC{ph_char}"
-                    load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH_val, c_uF_val))
-                    switch_cards.append(fmt_switch(sec_node, load_node, start_s, end_s))
+                for p_idx in ev.phases:
+                    ph = ph_chars[p_idx]
+                    sec_node = f"LV_{ph}"
+                    load_node = f"{node_prefix}{ph}"
+                    branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH, c_uF))
+                    switch_cards.append(fmt_switch(sec_node, load_node, t_close, t_open))
+
+            elif ev.branch_type in ["fault"]:
+                f_res = float(ev.model.get("fault_resistance_ohm", 0.001))
+                f_type = str(ev.model.get("fault_type", "LG"))
+
+                if f_type in ["LG", "LLG", "LLL"]:
+                    for p_idx in ev.phases:
+                        ph = ph_chars[p_idx]
+                        sec_node = f"LV_{ph}"
+                        fault_node = f"F{idx}_{ph}"
+                        branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
+                        switch_cards.append(fmt_switch(sec_node, fault_node, t_close, t_open))
+                elif f_type in ["LL"]:
+                    # Phase-to-phase fault between faulted phases
+                    if len(ev.phases) >= 2:
+                        p1, p2 = ev.phases[0], ev.phases[1]
+                        node1 = f"LV_{ph_chars[p1]}"
+                        node2 = f"LV_{ph_chars[p2]}"
+                        f_node = f"F{idx}_LL"
+                        branch_cards.append(fmt_branch(f_node, "", f_res, 0.0, 0.0))
+                        switch_cards.append(fmt_switch(node1, f_node, t_close, t_open))
+                        switch_cards.append(fmt_switch(node2, f_node, t_close, t_open))
 
         atp_lines = [
             "BEGIN NEW DATA CASE",
@@ -280,34 +179,39 @@ class ATPCaseBuilder:
             f"POWER FREQUENCY                      {freq_hz:.0f}.",
             "$DUMMY, XYZ000",
             "C  dT  >< Tmax >< Xopt >< Copt ><Epsiln>",
-            f"{simulation.time_step_s:10.6E}{simulation.t_stop_s:10.6E}     0.     0.",
+            f"{simulation.time_step_s:8.2E}{simulation.t_stop_s:8.2E}      0.      0.",
             "    1000       1       1       1       1       0       0       1       0",
             "/BRANCH",
             "C < n1 >< n2 ><ref1><ref2>< R  >< L  >< C  >",
         ] + branch_cards + [
+            "C --- BCTRAN Transformer Punch Matrix ---",
+            bctran_punch,
             "/SWITCH",
             "C < n 1>< n 2>< Tclose ><Top/Tde ><   Ie   ><Vf/CLOP ><  type  >",
         ] + switch_cards + [
             "/SOURCE",
             "C < n 1><>< Ampl.  >< Freq.  ><Phase/T0><   A1   ><   T1   >< TSTART >< TSTOP  >",
-            src_a,
-            src_b,
-            src_c,
+            src_up_a,
+            src_up_b,
+            src_up_c,
+            src_dn_a,
+            src_dn_b,
+            src_dn_c,
             "/OUTPUT",
-            "  SECA  SECB  SECC",
+            "  LV_A  LV_B  LV_C",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",
             "BLANK OUTPUT",
             "BLANK PLOT",
             "BEGIN NEW DATA CASE",
-            "BLANK"
+            "BLANK",
         ]
 
         atp_content = "\n".join(atp_lines)
         if output_path:
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(atp_content)
         return atp_content
 
@@ -322,12 +226,6 @@ class ATPCaseBuilder:
         if event is None:
             raise ValueError("Event must be provided to ATPCaseBuilder")
 
-        target_tx = getattr(event, "target")
-        feeder_idx = getattr(realization, "feeder_idx")
-
-        if not operating_point:
-            raise ValueError("Operating point must be provided to ATPCaseBuilder")
-
         freq_hz = float(getattr(operating_point, "frequency_hz"))
 
         tx_spec_dict = getattr(realization, "transformer_spec")
@@ -340,93 +238,74 @@ class ATPCaseBuilder:
         noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
         imag_pct = float(tx_spec_dict["imag_pct"])
 
-        z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
+        z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
         losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
-        phase_v = operating_point.phase_voltages_v[target_tx]
-        phase_ang = operating_point.phase_angles_deg[target_tx]
-
-        phase_shift_hv = float(phase_ang[0])
-        phase_shift_lv = float(phase_ang[0])
+        from src.transient.models import TransformerWinding, ShortCircuitTest
 
         transformer = TransformerSpec(
             name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
-                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Delta", 0.0),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Wye", -30.0),
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+                ShortCircuitTest(
+                    1,
+                    2,
+                    z_pos_pu=float(np.sqrt((r_pct / 100.0) ** 2 + (xhl_pct / 100.0) ** 2)),
+                    losses_pos_kw=(r_pct / 100.0) * float(kvas[0]),
+                    z_zero_pu=z0_pu,
+                    losses_zero_kw=losses_zero_kw,
+                )
             ],
             excitation_current_percent=imag_pct,
-            excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])
+            excitation_loss_kw=max((noloadloss_pct / 100.0) * float(kvas[0]), 25.0),
         )
 
-        source = SourceModel(
-            name="GRID",
-            frequency_hz=freq_hz,
-            pre_event=ThreePhaseState(
-                voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
-                voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-            )
+        from src.transient.bctran_generator import BCTRANGenerator
+
+        punch = BCTRANGenerator().generate(transformer)
+
+        target_tx = getattr(event, "target", "trans1")
+        phase_v = operating_point.phase_voltages_v[target_tx]
+        phase_ang = operating_point.phase_angles_deg[target_tx]
+
+        v_pre = np.array(
+            [
+                phase_v[0] * np.exp(1j * np.deg2rad(phase_ang[0])),
+                phase_v[1] * np.exp(1j * np.deg2rad(phase_ang[1])),
+                phase_v[2] * np.exp(1j * np.deg2rad(phase_ang[2])),
+            ],
+            dtype=complex,
         )
 
-        line_params = getattr(realization, "line_parameters")
-        line = LineModel(
-            name=f"line_{feeder_idx}",
-            from_bus="main_bus",
-            to_bus=f"feeder{feeder_idx}_head",
-            length_km=float(line_params["length_km"]),
-            r1_ohm_per_km=float(line_params["r1"]),
-            x1_ohm_per_km=float(line_params["x1"]),
-            c1_f_per_km=float(line_params["c1"])
+        # Default diagonal Thévenin equivalents for legacy call
+        z_hv = np.diag([0.01 + 0.05j, 0.01 + 0.05j, 0.01 + 0.05j])
+        z_lv = np.diag([0.002 + 0.01j, 0.002 + 0.01j, 0.002 + 0.01j])
+
+        upstream = ThreePhaseThevenin(
+            v_th=v_pre * 80.0, z_th=z_hv, v_pre=v_pre * 80.0, i_pre=np.zeros(3, dtype=complex), frequency_hz=freq_hz
+        )
+        downstream = ThreePhaseThevenin(
+            v_th=v_pre, z_th=z_lv, v_pre=v_pre, i_pre=np.zeros(3, dtype=complex), frequency_hz=freq_hz
         )
 
-        raw_loads = getattr(realization, "loads")
-        loads = [
-            LoadModel(
-                name=ld["name"],
-                bus=ld["bus"],
-                p_kw=float(ld["p_kw"]),
-                q_kvar=float(ld["q_kvar"]),
-                r_ohm=float(ld["r_ohm"]),
-                l_h=float(ld["l_h"])
-            )
-            for ld in raw_loads
-        ]
+        if hasattr(event, "to_test_branches"):
+            branches = event.to_test_branches(freq_hz)
+        else:
+            branches = []
 
-        start_s = float(getattr(event, "start_time_s"))
-        dur_s = float(getattr(event, "duration_s"))
-        ev_class = str(getattr(event, "event_class"))
-        f_type = getattr(event, "fault_type")
-        f_phases = getattr(event, "faulted_phases")
-        f_res = float(getattr(event, "fault_resistance"))
-
-        transient_ev = TransientEvent(
-            event_class=ev_class,
-            start_time_s=start_s,
-            duration_s=dur_s,
-            location=target_tx,
-            fault_type=f_type,
-            faulted_phases=tuple(f_phases),
-            fault_resistance_ohm=f_res,
-            equipment_type=getattr(event, "equipment_type"),
-            event_1=getattr(event, "event_1"),
-            event_2=getattr(event, "event_2")
-        )
-
-        t_start_s = 0.0
-        t_stop_s = max(start_s + dur_s + 0.05)
-        sim_config = SimulationConfig(t_start_s=t_start_s, t_stop_s=t_stop_s, time_step_s=1e-4)
+        sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
 
         return self.build_explicit(
             transformer=transformer,
-            source=source,
-            line=line,
-            loads=loads,
-            event=transient_ev,
+            upstream=upstream,
+            downstream=downstream,
+            events=branches,
             simulation=sim_config,
+            bctran_punch=punch,
             output_path=output_path,
-            scenario_id=scenario_id
+            scenario_id=scenario_id,
         )
