@@ -10,8 +10,7 @@ from pathlib import Path
 import src.power_plant.plant as plant
 from src.transient.atp_case_builder import (
     ATPCaseBuilder, TransformerSpec, TransformerWinding, ShortCircuitTest,
-    SourceModel, ThreePhaseState, TransientEvent, SimulationConfig,
-    NetworkEquivalent, TestBranchModel
+    ThreePhaseThevenin, TransientEvent, SimulationConfig
 )
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
@@ -56,6 +55,99 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
     }
 
     return json.dumps(fault_info)
+
+
+def extract_upstream_thevenin(dss_instance: Any, feeder_idx: int = 1) -> ThreePhaseThevenin:
+    """
+    Extracts the upstream HV Thévenin source representation (Vth_HV, Zth_HV) looking into the MV feeder.
+    """
+    head_bus = f"feeder{feeder_idx}_head"
+    if not dss_instance.Circuit.SetActiveBus(head_bus):
+        raise ValueError(f"Could not set active bus '{head_bus}' in OpenDSS for upstream Thévenin extraction")
+
+    v_mag_angle = dss_instance.Bus.VMagAngle()
+    v_hv_complex = (
+        float(v_mag_angle[0]) * np.exp(1j * np.radians(float(v_mag_angle[1]))),
+        float(v_mag_angle[2]) * np.exp(1j * np.radians(float(v_mag_angle[3]))),
+        float(v_mag_angle[4]) * np.exp(1j * np.radians(float(v_mag_angle[5])))
+    )
+
+    line_name = f"Line.mv_feeder_{feeder_idx}"
+    if dss_instance.Circuit.SetActiveElement(line_name):
+        try:
+            length_km = float(dss_instance.Properties.Value("length"))
+            r1 = float(dss_instance.Properties.Value("r1")) * length_km
+            x1 = float(dss_instance.Properties.Value("x1")) * length_km
+        except Exception:
+            r1 = 0.25 * 4.5
+            x1 = 0.35 * 4.5
+    else:
+        r1 = 0.25 * 4.5
+        x1 = 0.35 * 4.5
+
+    z_hv_diag = [r1 + 1j * x1, r1 + 1j * x1, r1 + 1j * x1]
+    z_hv_matrix = np.diag(z_hv_diag)
+
+    return ThreePhaseThevenin(
+        name=f"upstream_hv_feeder_{feeder_idx}",
+        v_th=v_hv_complex,
+        z_th=z_hv_matrix,
+        v_pre=v_hv_complex,
+        i_pre=(0j, 0j, 0j)
+    )
+
+
+def extract_downstream_thevenin(dss_instance: Any, feeder_idx: int = 1) -> ThreePhaseThevenin:
+    """
+    Extracts the downstream passive LV base network Thévenin representation (Zth_LV)
+    looking into the passive LV network from the LV test bus.
+    For a passive base load network, Vth_LV = (0j, 0j, 0j) and Zth_LV = Vpre / Ipre.
+    """
+    sec_bus = f"feeder{feeder_idx}_sec"
+    if not dss_instance.Circuit.SetActiveBus(sec_bus):
+        raise ValueError(f"Could not set active bus '{sec_bus}' in OpenDSS for downstream Thévenin extraction")
+
+    tx_elem = f"Transformer.trans{feeder_idx}"
+    if not dss_instance.Circuit.SetActiveElement(tx_elem):
+        raise ValueError(f"Could not set active element '{tx_elem}' in OpenDSS for downstream Thévenin extraction")
+
+    powers = dss_instance.CktElement.Powers()
+
+    p_kw_sec = [abs(float(powers[6])), abs(float(powers[8])), abs(float(powers[10]))]
+    q_kvar_sec = [abs(float(powers[7])), abs(float(powers[9])), abs(float(powers[11]))]
+
+    v_mag_angle = dss_instance.Bus.VMagAngle()
+    v_pre_complex = (
+        float(v_mag_angle[0]) * np.exp(1j * np.radians(float(v_mag_angle[1]))),
+        float(v_mag_angle[2]) * np.exp(1j * np.radians(float(v_mag_angle[3]))),
+        float(v_mag_angle[4]) * np.exp(1j * np.radians(float(v_mag_angle[5])))
+    )
+
+    zth_diag = []
+    for idx in range(3):
+        v = float(v_mag_angle[2 * idx])
+        p = p_kw_sec[idx] * 1000.0
+        q = q_kvar_sec[idx] * 1000.0
+        s_sq = p**2 + q**2
+        if s_sq > 0:
+            r = (v**2 * p) / s_sq
+            x = (v**2 * q) / s_sq
+        else:
+            r = 100.0
+            x = 10.0
+        z_val = r + 1j * x
+        zth_diag.append(z_val)
+
+    zth_matrix = np.diag(zth_diag)
+
+    # For passive downstream LV load networks, open-circuit Vth is zero
+    return ThreePhaseThevenin(
+        name=f"base_lv_network_feeder{feeder_idx}",
+        v_th=(0j, 0j, 0j),
+        z_th=zth_matrix,
+        v_pre=v_pre_complex,
+        i_pre=(0j, 0j, 0j)
+    )
 
 
 class CoSimulationRunner:
@@ -105,14 +197,15 @@ class CoSimulationRunner:
         op: Any,
         event: Any,
         scenario_id: str,
-        equivalent: Optional[NetworkEquivalent] = None,
-        test_branches: Optional[List[TestBranchModel]] = None,
+        upstream: Optional[ThreePhaseThevenin] = None,
+        downstream: Optional[ThreePhaseThevenin] = None,
         feeder_idx: int = 1,
         use_baseline_feeder: bool = True
     ) -> tuple[np.ndarray, dict, dict, dict]:
         """
-        Exclusively executes ATP transient simulation cases using reduced-order NetworkEquivalent
-        and BCTRAN transformer models.
+        Exclusively executes ATP transient simulation cases using two-port Thévenin reductions
+        (upstream HV source and downstream LV base-network equivalent) alongside BCTRAN models.
+        Target test branches are constructed entirely inside ATPCaseBuilder from the event object.
         """
         if event is None:
             err_msg = f"Cannot measure transients for None event in scenario {scenario_id}"
@@ -170,9 +263,6 @@ class CoSimulationRunner:
             z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
             losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
-            phase_v = op.phase_voltages_v[target_tx_key]
-            phase_ang = op.phase_angles_deg[target_tx_key]
-
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
@@ -188,19 +278,11 @@ class CoSimulationRunner:
                 vector_group="Yy0"
             )
 
-            source = SourceModel(
-                name="GRID",
-                bus="HV_A",
-                frequency_hz=float(op.frequency_hz),
-                voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
-                voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-            )
+            if upstream is None:
+                upstream = extract_upstream_thevenin(self.dss, feeder_idx=feeder_idx)
 
-            if equivalent is None:
-                equivalent = plant.extract_network_equivalent(self.dss, feeder_idx=feeder_idx)
-
-            if test_branches is None:
-                test_branches = plant.build_test_branches(event, frequency_hz=float(op.frequency_hz))
+            if downstream is None:
+                downstream = extract_downstream_thevenin(self.dss, feeder_idx=feeder_idx)
 
             if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
                 ev_class = "co_event"
@@ -232,9 +314,8 @@ class CoSimulationRunner:
 
             self.atp_builder.build_explicit(
                 transformer=transformer,
-                source=source,
-                base_equivalent=equivalent,
-                test_branches=test_branches,
+                upstream=upstream,
+                downstream=downstream,
                 event=transient_ev,
                 simulation=sim_config,
                 output_path=atp_case_path,
@@ -322,8 +403,8 @@ class CoSimulationRunner:
 def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     """
     Worker function executed in parallel across process workers.
-    Solves pre-event operating state ONLY in OpenDSS, extracts reduced network equivalent,
-    and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event.
+    Solves pre-event operating state ONLY in OpenDSS, extracts upstream and downstream Thévenin equivalents,
+    and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event without adding test elements to OpenDSS.
     """
     co_ev, use_baseline_feeder, seed, task_idx = args_tuple
 
@@ -348,20 +429,17 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.dss.run_command("disable Fault.*")
     op0 = plant.solve_operating_point(runner.dss)
 
-    # --- Step 2: Extract reduced base network equivalent ---
-    network_eq = plant.extract_network_equivalent(runner.dss, feeder_idx=feeder_idx)
+    # --- Step 2: Extract two-port Thévenin reductions (Upstream HV & Downstream LV) ---
+    upstream_th = extract_upstream_thevenin(runner.dss, feeder_idx=feeder_idx)
+    downstream_th = extract_downstream_thevenin(runner.dss, feeder_idx=feeder_idx)
 
-    # --- Step 3: Construct test branches and run ATP simulations ---
-    test_branches_joint = plant.build_test_branches(co_ev, frequency_hz=op0.frequency_hz)
-    test_branches_ev1 = plant.build_test_branches(ev1, frequency_hz=op0.frequency_hz)
-    test_branches_ev2 = plant.build_test_branches(ev2, frequency_hz=op0.frequency_hz)
-
+    # --- Step 3: Run ATP simulations directly passing events ---
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
         op=op0,
         event=co_ev,
         scenario_id=f"p{os.getpid()}_{task_idx}_joint",
-        equivalent=network_eq,
-        test_branches=test_branches_joint,
+        upstream=upstream_th,
+        downstream=downstream_th,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
@@ -370,8 +448,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         op=op0,
         event=ev1,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
-        equivalent=network_eq,
-        test_branches=test_branches_ev1,
+        upstream=upstream_th,
+        downstream=downstream_th,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
@@ -380,8 +458,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         op=op0,
         event=ev2,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
-        equivalent=network_eq,
-        test_branches=test_branches_ev2,
+        upstream=upstream_th,
+        downstream=downstream_th,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )

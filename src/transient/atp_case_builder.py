@@ -37,11 +37,20 @@ class TransformerSpec:
 
 
 @dataclass(frozen=True)
+class ThreePhaseThevenin:
+    name: str
+    v_th: Tuple[complex, complex, complex]  # RMS complex phasors
+    z_th: np.ndarray                        # 3x3 complex impedance matrix in Ohms
+    v_pre: Tuple[complex, complex, complex] = (0j, 0j, 0j)
+    i_pre: Tuple[complex, complex, complex] = (0j, 0j, 0j)
+
+
+@dataclass(frozen=True)
 class NetworkEquivalent:
     name: str
     side: Literal["hv", "lv"]
     vth_v: Tuple[complex, complex, complex]
-    zth_ohm: np.ndarray  # 3x3 complex terminal impedance
+    zth_ohm: np.ndarray
     reference_bus: str = ""
 
 
@@ -54,14 +63,6 @@ class TestBranchModel:
     l_h: float
     c_f: float = 0.0
     initial_closed: bool = True
-
-
-@dataclass(frozen=True)
-class FaultBranch:
-    name: str
-    bus: str
-    fault_resistance_ohm: float
-    faulted_phases: Tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ class SimulationConfig:
 
 def bctran_vrat_kv(rated_kv_ll: float, connection: str) -> float:
     conn = connection.upper()
-    if conn in {"Y", "A", "WYE"}:
+    if conn in {"Y", "WYE"}:
         return rated_kv_ll / np.sqrt(3.0)
     if conn in {"D", "DELTA"}:
         return rated_kv_ll
@@ -136,7 +137,7 @@ def bctran_vrat_kv(rated_kv_ll: float, connection: str) -> float:
 
 class BCTRANBuilder:
     """
-    Builder for BCTRAN transformer supporting routine cards and punched matrix models.
+    Builder for BCTRAN transformer supporting routine cards and coupled transformer representations.
     """
 
     def build_input(self, transformer: TransformerSpec, node_map: Optional[dict] = None) -> str:
@@ -191,7 +192,10 @@ class BCTRANBuilder:
             "BLANK"
         ])
 
-    def build_pch_content(self, transformer: TransformerSpec, node_map: Optional[dict] = None) -> str:
+    def build_branch_cards(self, transformer: TransformerSpec, node_map: Optional[dict] = None) -> List[str]:
+        """
+        Builds standard 3-phase distribution transformer branch representation with correct LV impedance.
+        """
         if node_map is None:
             node_map = {
                 "hv_a": "HV_A", "hv_b": "HV_B", "hv_c": "HV_C",
@@ -204,40 +208,32 @@ class BCTRANBuilder:
 
         freq = transformer.frequency_hz
         mva = hv.rated_mva if hv.rated_mva > 0 else 1.5
-
-        v_hv_kv = hv.rated_kv
         v_lv_kv = lv.rated_kv
 
-        z_base_hv = (v_hv_kv ** 2) / mva
         z_base_lv = (v_lv_kv ** 2) / mva
 
         z_pu = sc.z_pos_pu
         r_pu = sc.losses_pos_kw / (mva * 1000.0) if mva > 0 else 0.01
         x_pu = np.sqrt(max(0.0, z_pu ** 2 - r_pu ** 2))
 
-        # Half impedance allocated to primary and secondary
-        r_hv = 0.5 * r_pu * z_base_hv
-        x_hv = 0.5 * x_pu * z_base_hv
-        l_hv_mH = (x_hv / (2.0 * np.pi * freq)) * 1000.0
-
-        r_lv = 0.5 * r_pu * z_base_lv
-        x_lv = 0.5 * x_pu * z_base_lv
+        r_lv = r_pu * z_base_lv
+        x_lv = x_pu * z_base_lv
         l_lv_mH = (x_lv / (2.0 * np.pi * freq)) * 1000.0
 
-        pch_lines = [
-            "C BCTRAN Transformer Model",
-            "$VINTAGE, 1,",
-            "$UNITS, -1., -1.",
-            "USE RL",
-            f"  {node_map['hv_a']:<6}{node_map['lv_a']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
-            f"  {node_map['hv_b']:<6}{node_map['lv_b']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
-            f"  {node_map['hv_c']:<6}{node_map['lv_c']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
-            f"  {node_map['lv_a']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
-            f"  {node_map['lv_b']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
-            f"  {node_map['lv_c']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
-            "$VINTAGE, 0,"
+        def fmt_branch(n1: str, n2: str, r: float, l_mH: float) -> str:
+            n1_s = f"{n1:<6}"[:6]
+            n2_s = f"{n2:<6}"[:6]
+            r_s = f"{r:10.4f}"
+            l_s = f"{l_mH:10.4f}"
+            return f"  {n1_s}{n2_s}{'':<12}{r_s[:10]:>10}{l_s[:10]:>10}{'0.0':>10}".rstrip()
+
+        cards = [
+            "C BCTRAN Transformer Model (LV Equivalent Series Branch)",
+            fmt_branch(node_map["hv_a"], node_map["lv_a"], r_lv, l_lv_mH),
+            fmt_branch(node_map["hv_b"], node_map["lv_b"], r_lv, l_lv_mH),
+            fmt_branch(node_map["hv_c"], node_map["lv_c"], r_lv, l_lv_mH),
         ]
-        return "\n".join(pch_lines)
+        return cards
 
 
 class ATPCaseBuilder:
@@ -248,24 +244,24 @@ class ATPCaseBuilder:
     def build_explicit(
         self,
         transformer: TransformerSpec,
-        source: SourceModel,
-        base_equivalent: NetworkEquivalent,
-        test_branches: List[TestBranchModel],
+        upstream: ThreePhaseThevenin,
+        downstream: ThreePhaseThevenin,
         event: TransientEvent,
         simulation: SimulationConfig,
+        test_branches: Optional[List[TestBranchModel]] = None,
         output_path: Optional[str] = None,
         scenario_id: str = "transient_scenario"
     ) -> str:
         """
-        Generates a valid ATP-EMTP card file for reduced-order EMT transients:
-        (Type-14 Source -> BCTRAN Transformer -> Base LV Equivalent // Test Branch / Fault).
+        Generates a valid ATP-EMTP card file for reduced-order two-port Thévenin EMT transients:
+        Upstream Thévenin (HV) -> BCTRAN Transformer -> Downstream Base LV Thévenin // Test Branch(es)/Fault.
         """
         if transformer is None:
             raise ValueError("TransformerSpec must be provided")
-        if source is None:
-            raise ValueError("SourceModel must be provided")
-        if base_equivalent is None:
-            raise ValueError("NetworkEquivalent must be provided")
+        if upstream is None:
+            raise ValueError("Upstream ThreePhaseThevenin must be provided")
+        if downstream is None:
+            raise ValueError("Downstream ThreePhaseThevenin must be provided")
         if event is None:
             raise ValueError("TransientEvent must be provided")
         if simulation is None:
@@ -273,22 +269,15 @@ class ATPCaseBuilder:
 
         freq_hz = transformer.frequency_hz
 
-        # Type-14 voltage source amplitudes (peak voltage = sqrt(2) * RMS phase voltage)
-        amp_a = source.voltage_rms_v[0] * np.sqrt(2.0)
-        amp_b = source.voltage_rms_v[1] * np.sqrt(2.0)
-        amp_c = source.voltage_rms_v[2] * np.sqrt(2.0)
-
-        ang_a = source.voltage_angle_deg[0]
-        ang_b = source.voltage_angle_deg[1]
-        ang_c = source.voltage_angle_deg[2]
-
-        def _type14_source(node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float) -> str:
+        def _type14_source(node: str, v_complex: complex, frequency: float, t_start: float, t_stop: float) -> str:
+            amp = np.abs(v_complex) * np.sqrt(2.0)
+            phase_deg = np.degrees(np.angle(v_complex))
             n_s = f"{node:<6}"[:6]
-            return f"14{n_s}{'0':>6}{amplitude:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
+            return f"14{n_s}{'0':>6}{amp:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
 
-        src_a = _type14_source("HV_A", amp_a, freq_hz, ang_a, -1.0, 1.0e3)
-        src_b = _type14_source("HV_B", amp_b, freq_hz, ang_b, -1.0, 1.0e3)
-        src_c = _type14_source("HV_C", amp_c, freq_hz, ang_c, -1.0, 1.0e3)
+        src_hv_a = _type14_source("SRC_HA", upstream.v_th[0], freq_hz, -1.0, 1.0e3)
+        src_hv_b = _type14_source("SRC_HB", upstream.v_th[1], freq_hz, -1.0, 1.0e3)
+        src_hv_c = _type14_source("SRC_HC", upstream.v_th[2], freq_hz, -1.0, 1.0e3)
 
         branch_cards = []
         switch_cards = []
@@ -308,27 +297,44 @@ class ATPCaseBuilder:
             to_s = f"{t_open:10.4f}"
             return f"  {n1_s}{n2_s}{tc_s}{to_s}"
 
-        # 1. Base LV Network Equivalent (Shunt impedances to ground)
-        zth = base_equivalent.zth_ohm
+        # 1. Upstream HV Impedance Zth_HV
+        for idx, ph in enumerate(["A", "B", "C"]):
+            src_node = f"SRC_H{ph}"
+            hv_node = f"HV_{ph}"
+            r_h = float(np.real(upstream.z_th[idx, idx]))
+            x_h = float(np.imag(upstream.z_th[idx, idx]))
+            l_h_mH = (x_h / (2.0 * np.pi * freq_hz)) * 1000.0 if freq_hz > 0 else 0.0
+            branch_cards.append(fmt_branch(src_node, hv_node, r_h, l_h_mH, 0.0))
+
+        # 2. BCTRAN Transformer Branch Model
+        tx_branch_cards = self.bctran_builder.build_branch_cards(transformer)
+        branch_cards.extend(tx_branch_cards)
+
+        # 3. Downstream Base LV Thévenin Equivalent (Shunt impedance Zth_LV at TEST BUS / LV)
+        has_vth_lv = any(np.abs(v) > 1e-3 for v in downstream.v_th)
+        source_cards = [src_hv_a, src_hv_b, src_hv_c]
+
         for idx, ph in enumerate(["A", "B", "C"]):
             lv_node = f"LV_{ph}"
-            r_eq = float(np.real(zth[idx, idx]))
-            x_eq = float(np.imag(zth[idx, idx]))
-            l_eq_mH = (x_eq / (2.0 * np.pi * freq_hz)) * 1000.0 if freq_hz > 0 else 0.0
-            branch_cards.append(fmt_branch(lv_node, "", r_eq, l_eq_mH, 0.0))
+            r_l = float(np.real(downstream.z_th[idx, idx]))
+            x_l = float(np.imag(downstream.z_th[idx, idx]))
+            l_l_mH = (x_l / (2.0 * np.pi * freq_hz)) * 1000.0 if freq_hz > 0 else 0.0
 
-        # 2. BCTRAN Transformer Model
-        bctran_pch = self.bctran_builder.build_pch_content(transformer)
-        branch_cards.append(bctran_pch)
+            if has_vth_lv:
+                src_lv_node = f"SRC_L{ph}"
+                branch_cards.append(fmt_branch(lv_node, src_lv_node, r_l, l_l_mH, 0.0))
+                source_cards.append(_type14_source(src_lv_node, downstream.v_th[idx], freq_hz, -1.0, 1.0e3))
+            else:
+                branch_cards.append(fmt_branch(lv_node, "", r_l, l_l_mH, 0.0))
 
-        # 3. Test Branches
+        # 4. Explicit Test Branches from parameters or event
         if test_branches:
             for tb in test_branches:
                 l_mH = tb.l_h * 1000.0
                 c_uF = tb.c_f * 1e6
                 branch_cards.append(fmt_branch(tb.from_bus, tb.to_bus, tb.r_ohm, l_mH, c_uF))
 
-        # 4. Transient Events & Switches
+        # 5. Transient Events & Switches
         events_to_card = []
         if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
             events_to_card = [event.event_1, event.event_2]
@@ -408,9 +414,7 @@ class ATPCaseBuilder:
         ] + switch_cards + [
             "/SOURCE",
             "C < n 1><>< Ampl.  >< Freq.  ><Phase/T0><   A1   ><   T1   >< TSTART >< TSTOP  >",
-            src_a,
-            src_b,
-            src_c,
+        ] + source_cards + [
             "/OUTPUT",
             "  LV_A  LV_B  LV_C",
             "BLANK BRANCH",
@@ -441,7 +445,6 @@ class ATPCaseBuilder:
             raise ValueError("Event must be provided to ATPCaseBuilder")
 
         target_tx = getattr(event, "target", "trans1")
-        feeder_idx = getattr(realization, "feeder_idx", 1)
 
         if not operating_point:
             raise ValueError("Operating point must be provided to ATPCaseBuilder")
@@ -479,23 +482,23 @@ class ATPCaseBuilder:
             vector_group="Yy0"
         )
 
-        source = SourceModel(
-            name="GRID",
-            bus="HV_A",
-            frequency_hz=freq_hz,
-            voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
-            voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
+        v_hv_complex = (
+            phase_v[0] * np.exp(1j * np.radians(phase_ang[0])),
+            phase_v[1] * np.exp(1j * np.radians(phase_ang[1])),
+            phase_v[2] * np.exp(1j * np.radians(phase_ang[2]))
         )
 
-        zth_matrix = np.diag([10.0 + 1j * 2.0, 10.0 + 1j * 2.0, 10.0 + 1j * 2.0])
-        base_eq = NetworkEquivalent(
+        upstream_th = ThreePhaseThevenin(
+            name="hv_upstream_grid",
+            v_th=v_hv_complex,
+            z_th=np.diag([0.01 + 1j * 0.05, 0.01 + 1j * 0.05, 0.01 + 1j * 0.05])
+        )
+
+        downstream_th = ThreePhaseThevenin(
             name="lv_base_network",
-            side="lv",
-            vth_v=(0j, 0j, 0j),
-            zth_ohm=zth_matrix
+            v_th=(0j, 0j, 0j),
+            z_th=np.diag([10.0 + 1j * 2.0, 10.0 + 1j * 2.0, 10.0 + 1j * 2.0])
         )
-
-        test_branches = []
 
         start_s = float(getattr(event, "start_time_s", 0.02))
         dur_s = float(getattr(event, "duration_s", 0.5))
@@ -523,9 +526,8 @@ class ATPCaseBuilder:
 
         return self.build_explicit(
             transformer=transformer,
-            source=source,
-            base_equivalent=base_eq,
-            test_branches=test_branches,
+            upstream=upstream_th,
+            downstream=downstream_th,
             event=transient_ev,
             simulation=sim_config,
             output_path=output_path,
