@@ -108,12 +108,15 @@ class CoSimulationRunner:
     def initialize_plant_session(
         self,
         use_baseline_feeder: bool = True,
+        use_baseline_transformers: Optional[bool] = None,
         seed: int = 42,
         verbose: bool = False
     ) -> dict:
         """
         Initializes a single constant OpenDSS DSS instance for a dataset generation loop.
         """
+        if use_baseline_transformers is not None:
+            use_baseline_feeder = use_baseline_transformers
         try:
             if use_baseline_feeder:
                 self.plant_data = plant.build_single_lv_network_composition(
