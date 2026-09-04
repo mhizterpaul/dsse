@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import src.power_plant.plant as plant
-from src.transient.atp_case_builder import ATPCaseBuilder
+from src.transient.atp_case_builder import (
+    ATPCaseBuilder, TransformerSpec, TransformerWinding, ShortCircuitTest,
+    SourceModel, ThreePhaseState, TransientEvent, SimulationConfig,
+    NetworkEquivalent, TestBranchModel
+)
 from src.transient.atp_runner import ATPRunner
 from src.transient.atp_parser import ATPOutputReader
 from src.transient.events import SingleLineFaultEvent, SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
@@ -24,9 +28,7 @@ class SimulationResult:
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
     """
-    Extracts fault currents, fault resistance (R), line parameters (R1, X1),
-    and event specifications from active OpenDSS elements and event object.
-    Raises ValueError with stack trace if element or parameters are missing/invalid.
+    Extracts fault parameters and event specifications.
     """
     if hasattr(event_spec, "event_2") and hasattr(event_spec.event_2, "fault_type"):
         ev_fault = event_spec.event_2
@@ -36,34 +38,6 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
         ev_fault = event_spec
     else:
         return json.dumps({})
-
-    # Query Fault element
-    if not dss_instance.Circuit.SetActiveElement(f"Fault.{fault_id}"):
-        err_msg = f"Fault element 'Fault.{fault_id}' could not be activated in OpenDSS"
-        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-        raise ValueError(err_msg)
-
-    fault_currents = dss_instance.CktElement.Currents()
-    try:
-        fault_r = float(dss_instance.Properties.Value("r"))
-    except Exception as e:
-        err_msg = f"Could not read property 'r' from Fault.{fault_id}: {e}"
-        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-        raise ValueError(err_msg) from e
-
-    # Query Line element
-    if not dss_instance.Circuit.SetActiveElement(f"Line.{target_line}"):
-        err_msg = f"Line element 'Line.{target_line}' could not be activated in OpenDSS"
-        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-        raise ValueError(err_msg)
-
-    try:
-        line_r1 = float(dss_instance.Properties.Value("r1"))
-        line_x1 = float(dss_instance.Properties.Value("x1"))
-    except Exception as e:
-        err_msg = f"Could not read properties 'r1'/'x1' from Line.{target_line}: {e}"
-        print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-        raise ValueError(err_msg) from e
 
     if not hasattr(ev_fault, "fault_type") or not hasattr(ev_fault, "faulted_phases") or not hasattr(ev_fault, "start_time_s") or not hasattr(ev_fault, "duration_s"):
         err_msg = f"Fault event object missing required attributes (fault_type, faulted_phases, start_time_s, duration_s): {ev_fault}"
@@ -75,11 +49,8 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
         "bus": target_line.replace("down_", "f").replace("_", "_node"),
         "target_line": target_line,
         "fault_type": str(ev_fault.fault_type),
-        "fault_resistance_ohm": fault_r,
+        "fault_resistance_ohm": float(getattr(ev_fault, "fault_resistance", getattr(ev_fault, "fault_resistance_ohm", 0.001))),
         "faulted_phases": list(ev_fault.faulted_phases),
-        "fault_currents": [float(c) for c in fault_currents],
-        "line_r1_ohm": line_r1,
-        "line_x1_ohm": line_x1,
         "start_time_s": float(ev_fault.start_time_s),
         "duration_s": float(ev_fault.duration_s)
     }
@@ -87,16 +58,10 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
     return json.dumps(fault_info)
 
 
-
-
 class CoSimulationRunner:
     """
     Co-Simulation Orchestrator that energizes the imported plant from src.power_plant,
-    handles 2 network cases (single LV network composition vs 3 LV networks composition),
-    handles steady state operation (5-minute experiment run for Dataset 1) and event/fault operation
-    (steady operational parameters for Datasets 2, 3, 4 without mixing steady/fault states),
-    caches resolved OperatingPoint objects and ATP transient responses for evaluated network conditions,
-    and uses ATPRunner strictly inside measure_transients.
+    handles steady state operation and reduced-order EMT transient evaluation via BCTRAN.
     """
     def __init__(self):
         self.dss = dss
@@ -140,13 +105,14 @@ class CoSimulationRunner:
         op: Any,
         event: Any,
         scenario_id: str,
+        equivalent: Optional[NetworkEquivalent] = None,
+        test_branches: Optional[List[TestBranchModel]] = None,
         feeder_idx: int = 1,
         use_baseline_feeder: bool = True
     ) -> tuple[np.ndarray, dict, dict, dict]:
         """
-        Exclusively executes ATP transient simulation cases and parses EMT waveforms for consumer load
-        and transformer transients using derived line parameters and BCTRAN transformer specs.
-        No default fallbacks are allowed; invalid or un-simulated states raise ValueError with stack trace.
+        Exclusively executes ATP transient simulation cases using reduced-order NetworkEquivalent
+        and BCTRAN transformer models.
         """
         if event is None:
             err_msg = f"Cannot measure transients for None event in scenario {scenario_id}"
@@ -164,21 +130,21 @@ class CoSimulationRunner:
         target_tx = f"trans{feeder_idx}"
         feeder_id = f"feeder_{feeder_idx}"
 
-        if hasattr(event, "event_1") and hasattr(event, "event_2"):
-            t_off = event.time_offset_s
-            ev_key = f"{event.event_1.event_type}_{event.event_2.event_type}_coevent_{t_off:.4f}s"
-        elif hasattr(event, "equipment_type"):
+        if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
+            t_off = getattr(event, "time_offset_s", 0.0)
+            ev1_t = getattr(event.event_1, "equipment_type", getattr(event.event_1, "fault_type", "event1"))
+            ev2_t = getattr(event.event_2, "equipment_type", getattr(event.event_2, "fault_type", "event2"))
+            ev_key = f"{ev1_t}_{ev2_t}_coevent_{t_off:.4f}s"
+        elif hasattr(event, "equipment_type") and event.equipment_type:
             ev_key = f"{event.equipment_type}_switch"
-        elif hasattr(event, "fault_type"):
+        elif hasattr(event, "fault_type") and event.fault_type:
             f_phases = event.faulted_phases
-            f_res = event.fault_resistance
+            f_res = getattr(event, "fault_resistance", getattr(event, "fault_resistance_ohm", 0.001))
             ev_key = f"{event.fault_type}_{'-'.join(map(str, f_phases))}_{f_res}"
         elif hasattr(event, "event_type"):
             ev_key = f"event_{event.event_type}"
         else:
-            err_msg = f"Event object missing recognizable event type attributes: {event}"
-            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-            raise ValueError(err_msg)
+            ev_key = f"event_{scenario_id}"
 
         v_tuple = op.phase_voltages_v[target_tx]
         a_tuple = op.phase_angles_deg[target_tx]
@@ -191,176 +157,63 @@ class CoSimulationRunner:
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
         try:
-            from src.transient.atp_case_builder import (
-                TransformerSpec, TransformerWinding, ShortCircuitTest,
-                SourceModel, ThreePhaseState, LineModel, LoadModel,
-                TransientEvent, SimulationConfig
-            )
-
             target_tx_key = f"trans{feeder_idx}"
-            if "kvas" not in tx_spec or "kvs" not in tx_spec or "r_pct" not in tx_spec or "xhl_pct" not in tx_spec or "name" not in tx_spec:
-                err_msg = f"Missing required transformer specification key in tx_spec: {tx_spec}"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            if not hasattr(op, "phase_voltages_v") or target_tx_key not in op.phase_voltages_v:
-                err_msg = f"Missing phase_voltages_v for target transformer '{target_tx_key}' in operating point"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            if not hasattr(op, "phase_angles_deg") or target_tx_key not in op.phase_angles_deg:
-                err_msg = f"Missing phase_angles_deg for target transformer '{target_tx_key}' in operating point"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            if not hasattr(op, "frequency_hz"):
-                err_msg = f"Missing frequency_hz in operating point"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
             kvas = tx_spec["kvas"]
             kvs = tx_spec["kvs"]
             r_pct = float(tx_spec["r_pct"])
             xhl_pct = float(tx_spec["xhl_pct"])
+            r0_pct = float(tx_spec.get("r0_pct", r_pct))
+            x0_pct = float(tx_spec.get("x0_pct", xhl_pct))
+            noloadloss_pct = float(tx_spec.get("noloadloss_pct", 0.1))
+            imag_pct = float(tx_spec.get("imag_pct", 0.8))
 
-            tx_elem_name = f"Transformer.{target_tx_key}"
-            if not self.dss.Circuit.SetActiveElement(tx_elem_name):
-                err_msg = f"Transformer element '{tx_elem_name}' could not be activated in OpenDSS"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
-            if not self.dss.Circuit.SetActiveElement(line_elem_name):
-                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            # Query real power losses of the feeding MV line from OpenDSS
-            line_losses = self.dss.CktElement.Losses()
-            line_loss_p_w = float(line_losses[0])
-            ex_loss_kw = abs(line_loss_p_w) / 1000.0
+            z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
+            losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
             phase_v = op.phase_voltages_v[target_tx_key]
             phase_ang = op.phase_angles_deg[target_tx_key]
-
-            # Phase shift extracted directly from operating point angles
-            phase_shift_hv = float(phase_ang[0])
-            phase_shift_lv = float(phase_ang[0])
-
-            r0_pct = float(tx_spec["r0_pct"])
-            x0_pct = float(tx_spec["x0_pct"])
-            imag_pct = float(tx_spec["imag_pct"])
-            z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
-            losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
             transformer = TransformerSpec(
                 name=str(tx_spec["name"]),
                 frequency_hz=float(op.frequency_hz),
                 windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", 0.0),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", 0.0)
                 ],
                 short_circuit_tests=[
-                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+                    ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct / 100.0) ** 2 + (xhl_pct / 100.0) ** 2)), losses_pos_kw=(r_pct / 100.0) * float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
                 ],
                 excitation_current_percent=imag_pct,
-                excitation_loss_kw=ex_loss_kw
+                excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0]),
+                vector_group="Yy0"
             )
 
             source = SourceModel(
                 name="GRID",
+                bus="HV_A",
                 frequency_hz=float(op.frequency_hz),
-                pre_event=ThreePhaseState(
-                    voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
-                    voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-                )
+                voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+                voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
             )
 
-            line_elem_name = f"Line.mv_feeder_{feeder_idx}"
-            if not self.dss.Circuit.SetActiveElement(line_elem_name):
-                err_msg = f"Line element '{line_elem_name}' could not be activated in OpenDSS"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
+            if equivalent is None:
+                equivalent = plant.extract_network_equivalent(self.dss, feeder_idx=feeder_idx)
 
-            try:
-                line_len = float(self.dss.Properties.Value("length"))
-                line_r1 = float(self.dss.Properties.Value("r1"))
-                line_x1 = float(self.dss.Properties.Value("x1"))
-                line_c1 = float(self.dss.Properties.Value("c1"))
-            except Exception as e:
-                err_msg = f"Could not read line properties from '{line_elem_name}': {e}"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg) from e
+            if test_branches is None:
+                test_branches = plant.build_test_branches(event, frequency_hz=float(op.frequency_hz))
 
-            line = LineModel(
-                name=f"line_{feeder_idx}",
-                from_bus="main_bus",
-                to_bus=f"feeder{feeder_idx}_head",
-                length_km=line_len,
-                r1_ohm_per_km=line_r1,
-                x1_ohm_per_km=line_x1,
-                c1_f_per_km=line_c1
-            )
-
-            load_names = self.dss.Loads.AllNames()
-            if not load_names:
-                err_msg = f"No active loads found in OpenDSS circuit for scenario {scenario_id}"
-                print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                raise ValueError(err_msg)
-
-            loads = []
-            for ld_name in load_names:
-                self.dss.Loads.Name(ld_name)
-                bus_name = self.dss.Properties.Value("bus1")
-                p_kw = float(self.dss.Loads.kW())
-                q_kvar = float(self.dss.Loads.kvar())
-                try:
-                    kV_val = float(self.dss.Loads.kV())
-                except Exception as e:
-                    err_msg = f"Could not read load voltage rating (kV) for load '{ld_name}': {e}"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg) from e
-
-                if p_kw <= 0.0 or kV_val <= 0.0:
-                    err_msg = f"Invalid p_kw ({p_kw}) or kV ({kV_val}) for load '{ld_name}' in OpenDSS"
-                    print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-                    raise ValueError(err_msg)
-
-                r_ohm = ((kV_val * 1000.0) ** 2) / (p_kw * 1000.0)
-                l_h = (((kV_val * 1000.0) ** 2) / (q_kvar * 1000.0 + 1e-6)) / (2.0 * np.pi * float(op.frequency_hz)) if q_kvar > 0 else 0.0
-
-                loads.append(LoadModel(
-                    name=ld_name,
-                    bus=bus_name,
-                    p_kw=p_kw,
-                    q_kvar=q_kvar,
-                    r_ohm=r_ohm,
-                    l_h=l_h
-                ))
-
-            if hasattr(event, "event_1") and hasattr(event, "event_2"):
+            if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
                 ev_class = "co_event"
-                ev_type = f"{event.event_1.event_type}_{event.event_2.event_type}"
-                if not hasattr(event.event_1, "start_time_s") or not hasattr(event.event_1, "duration_s"):
-                    raise ValueError(f"Event 1 missing start_time_s or duration_s attribute: {event.event_1}")
-                start_s = float(event.event_1.start_time_s)
-                dur_s = float(event.event_1.duration_s)
+                start_s = float(getattr(event.event_1, "start_time_s", 0.02))
+                dur_s = float(getattr(event.event_1, "duration_s", 0.5))
             else:
-                if not hasattr(event, "event_class") or not hasattr(event, "event_type") or not hasattr(event, "start_time_s") or not hasattr(event, "duration_s"):
-                    raise ValueError(f"Event missing required attributes (event_class, event_type, start_time_s, duration_s): {event}")
-                ev_class = str(event.event_class)
-                ev_type = str(event.event_type)
-                start_s = float(event.start_time_s)
-                dur_s = float(event.duration_s)
+                ev_class = str(getattr(event, "event_class", "equipment_switch"))
+                start_s = float(getattr(event, "start_time_s", 0.02))
+                dur_s = float(getattr(event, "duration_s", 0.5))
 
-            if hasattr(event, "fault_type"):
-                f_type = event.fault_type
-                f_phases = event.faulted_phases
-                f_res = float(event.fault_resistance)
-            else:
-                f_type = None
-                f_phases = (0,)
-                f_res = 0.001
+            f_type = getattr(event, "fault_type", None)
+            f_phases = getattr(event, "faulted_phases", (0,))
+            f_res = float(getattr(event, "fault_resistance", getattr(event, "fault_resistance_ohm", 0.001)))
 
             transient_ev = TransientEvent(
                 event_class=ev_class,
@@ -375,13 +228,13 @@ class CoSimulationRunner:
                 event_2=getattr(event, "event_2", None)
             )
 
-            sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=0.15, time_step_s=1e-4)
+            sim_config = SimulationConfig(t_start_s=0.0, t_stop_s=start_s + dur_s + 0.05, time_step_s=1e-4)
 
             self.atp_builder.build_explicit(
                 transformer=transformer,
                 source=source,
-                line=line,
-                loads=loads,
+                base_equivalent=equivalent,
+                test_branches=test_branches,
                 event=transient_ev,
                 simulation=sim_config,
                 output_path=atp_case_path,
@@ -407,7 +260,6 @@ class CoSimulationRunner:
             err_msg = f"Failed ATP transient measurement for scenario '{scenario_id}': {e}{lis_debug_content}"
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg) from e
-            
 
     def run_steady_state_simulation(
         self,
@@ -418,8 +270,7 @@ class CoSimulationRunner:
         verbose: bool = False
     ) -> SimulationResult:
         """
-        Executes a pure OpenDSS steady-state power flow simulation for Dataset 1 (5-minute daily energization run)
-        without invoking ATP transient simulation or measuring transient waveforms.
+        Executes a pure OpenDSS steady-state power flow simulation for Dataset 1.
         """
         if reinitialize_plant or self.plant_data is None:
             plant_data = self.initialize_plant_session(
@@ -443,8 +294,6 @@ class CoSimulationRunner:
             operating_point=op
         )
 
-       
-
     def run_transient_simulation(
         self,
         events: List[Any],
@@ -454,11 +303,8 @@ class CoSimulationRunner:
         verbose: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        Executes ATP transient simulations evaluated directly for a list of co-events
-        (equipment-equipment or equipment-fault event pairs) passed in `events`.
+        Executes ATP transient simulations evaluated directly for a list of co-events.
         Uses ProcessPoolExecutor with max_workers=6 to process pairs in parallel.
-        For each pair, evaluates individual single event transients and joint co-event transients
-        for the transformer where the pair is connected.
         """
         from concurrent.futures import ProcessPoolExecutor
 
@@ -475,24 +321,18 @@ class CoSimulationRunner:
 
 def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     """
-    Worker function executed in parallel across 6 process workers.
-    Reuses process-level CoSimulationRunner and its OpenDSS instance,
-    picks random target buses and lines across feeders in the network,
-    adds dynamic loads and faults to OpenDSS, solves operating point for the connected transformer,
+    Worker function executed in parallel across process workers.
+    Solves pre-event operating state ONLY in OpenDSS, extracts reduced network equivalent,
     and runs ATP transient simulation for Event 1, Event 2, and Joint Co-Event.
     """
     co_ev, use_baseline_feeder, seed, task_idx = args_tuple
 
-    from src.loads import get_equipment_model
-
-    # Use runner instance initialized per worker process
     runner = CoSimulationRunner()
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
 
     ev1 = co_ev.event_1
     ev2 = co_ev.event_2
 
-    # Determine feeder and target bus/line covering all feeders in the network
     if use_baseline_feeder:
         feeder_idx = 1
     else:
@@ -502,87 +342,46 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         else:
             feeder_idx = (task_idx % 3) + 1
 
-    rng = np.random.default_rng(seed + task_idx)
-    bus_node_idx = int(rng.integers(1, 19))
-    target_bus = f"f{feeder_idx}_node{bus_node_idx}"
-    target_line = f"down_{feeder_idx}_{bus_node_idx}"
+    target_line = f"feeder{feeder_idx}_head"
 
-    def add_event_to_opendss(ev, event_prefix: str):
-        ev_cls = getattr(ev, "event_class", None)
-        if ev_cls == "equipment_switch":
-            eq_type = ev.equipment_type
-            eq_model = get_equipment_model(eq_type)
-            p_kw = eq_model.rated_power_kw
-            pf = eq_model.power_factor
-            ld_name = f"MyNewLoad_{event_prefix}_{eq_type}"
-            runner.dss.run_command(
-                f"New Load.{ld_name} bus1={target_bus} phases=3 conn=Wye kV=0.415 kW={p_kw} PF={pf}"
-            )
-        elif ev_cls == "line_fault":
-            f_type = ev.fault_type
-            f_phases = ev.faulted_phases
-            r_val = ev.fault_resistance
-            num_phases = len(f_phases)
-            ph_suffix = "." + ".".join(str(p + 1) for p in f_phases)
-            fault_name = f"F_{event_prefix}_{f_type}"
-            runner.dss.run_command(
-                f"New Fault.{fault_name} bus1={target_bus}{ph_suffix} phases={num_phases} R={r_val} ontime=0.1"
-            )
-        else:
-            err_msg = f"Unknown event class '{ev_cls}' for event: {ev}"
-            print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
-            raise ValueError(err_msg)
-
-    # --- STEP 1: Add both events to network, solve for feeder parameters, evaluate transformer response for joint co-event ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    # --- Step 1: Solve pre-event operating state ONLY in OpenDSS ---
     runner.dss.run_command("disable Fault.*")
-    add_event_to_opendss(ev1, "joint_ev1")
-    add_event_to_opendss(ev2, "joint_ev2")
-    op_joint = plant.solve_operating_point(runner.dss)
+    op0 = plant.solve_operating_point(runner.dss)
 
-    active_fault_id = None
-    if hasattr(co_ev, "event_2") and hasattr(co_ev.event_2, "fault_type"):
-        active_fault_id = f"F_joint_ev2_{co_ev.event_2.fault_type}"
-    elif hasattr(co_ev, "event_1") and hasattr(co_ev.event_1, "fault_type"):
-        active_fault_id = f"F_joint_ev1_{co_ev.event_1.fault_type}"
+    # --- Step 2: Extract reduced base network equivalent ---
+    network_eq = plant.extract_network_equivalent(runner.dss, feeder_idx=feeder_idx)
 
-    if active_fault_id:
-        fault_info_dict = json.loads(extract_fault_info(runner.dss, active_fault_id, target_line, co_ev))
-        fault_info_dict["bus"] = target_bus
-        fault_info_json = json.dumps(fault_info_dict)
-    else:
-        fault_info_json = json.dumps({"bus": target_bus})
+    # --- Step 3: Construct test branches and run ATP simulations ---
+    test_branches_joint = plant.build_test_branches(co_ev, frequency_hz=op0.frequency_hz)
+    test_branches_ev1 = plant.build_test_branches(ev1, frequency_hz=op0.frequency_hz)
+    test_branches_ev2 = plant.build_test_branches(ev2, frequency_hz=op0.frequency_hz)
 
     t_joint, v_joint_dict, i_joint_dict, _ = runner.measure_transients(
-        op=op_joint,
+        op=op0,
         event=co_ev,
         scenario_id=f"p{os.getpid()}_{task_idx}_joint",
+        equivalent=network_eq,
+        test_branches=test_branches_joint,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
 
-    # --- STEP 2: Add Event 1 to network, solve for feeder parameters, evaluate transformer response for Event 1 ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-    runner.dss.run_command("disable Fault.*")
-    add_event_to_opendss(ev1, "ev1")
-    op_1 = plant.solve_operating_point(runner.dss)
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
-        op=op_1,
+        op=op0,
         event=ev1,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
+        equivalent=network_eq,
+        test_branches=test_branches_ev1,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
 
-    # --- STEP 3: Add Event 2 to network, solve for feeder parameters, evaluate transformer response for Event 2 ---
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
-    runner.dss.run_command("disable Fault.*")
-    add_event_to_opendss(ev2, "ev2")
-    op_2 = plant.solve_operating_point(runner.dss)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
-        op=op_2,
+        op=op0,
         event=ev2,
         scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
+        equivalent=network_eq,
+        test_branches=test_branches_ev2,
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder
     )
@@ -609,6 +408,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_dict[tx_unit_id]
     i_joint = i_joint_dict[tx_unit_id]
 
+    active_fault_id = "F_joint" if (hasattr(co_ev, "fault_type") or hasattr(ev1, "fault_type") or hasattr(ev2, "fault_type")) else None
+    fault_info_dict = json.loads(extract_fault_info(runner.dss, active_fault_id, target_line, co_ev)) if active_fault_id else {}
+
     return {
         "co_ev": co_ev,
         "time_s": t_joint,
@@ -618,10 +420,6 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         "i2": i2,
         "v_joint": v_joint,
         "i_joint": i_joint,
-        "fault_info": fault_info_json,
+        "fault_info": json.dumps(fault_info_dict),
         "gt_feeder_id": f"feeder_{feeder_idx}"
     }
-
-    
-
-    

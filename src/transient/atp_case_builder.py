@@ -8,10 +8,11 @@ import numpy as np
 @dataclass(frozen=True)
 class TransformerWinding:
     name: str
-    rated_kv: float
+    rated_kv: float  # Line-to-line voltage rating in kV
     rated_mva: float
-    connection: str
-    phase_shift_deg: float 
+    connection: str = "Y"  # "Y", "D", "A"
+    phase_shift_deg: float = 0.0
+    grounded: bool = True
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,8 @@ class ShortCircuitTest:
     winding_j: int
     z_pos_pu: float
     losses_pos_kw: float
-    z_zero_pu: Optional[float] 
-    losses_zero_kw: Optional[float]
+    z_zero_pu: Optional[float] = None
+    losses_zero_kw: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -30,8 +31,37 @@ class TransformerSpec:
     frequency_hz: float
     windings: List[TransformerWinding]
     short_circuit_tests: List[ShortCircuitTest]
-    excitation_current_percent: Optional[float] 
-    excitation_loss_kw: Optional[float] 
+    excitation_current_percent: Optional[float] = None
+    excitation_loss_kw: Optional[float] = None
+    vector_group: str = "Yy0"
+
+
+@dataclass(frozen=True)
+class NetworkEquivalent:
+    name: str
+    side: Literal["hv", "lv"]
+    vth_v: Tuple[complex, complex, complex]
+    zth_ohm: np.ndarray  # 3x3 complex terminal impedance
+    reference_bus: str = ""
+
+
+@dataclass(frozen=True)
+class TestBranchModel:
+    name: str
+    from_bus: str
+    to_bus: str
+    r_ohm: float
+    l_h: float
+    c_f: float = 0.0
+    initial_closed: bool = True
+
+
+@dataclass(frozen=True)
+class FaultBranch:
+    name: str
+    bus: str
+    fault_resistance_ohm: float
+    faulted_phases: Tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -43,8 +73,10 @@ class ThreePhaseState:
 @dataclass(frozen=True)
 class SourceModel:
     name: str
+    bus: str
     frequency_hz: float
-    pre_event: ThreePhaseState
+    voltage_rms_v: Tuple[float, float, float]
+    voltage_angle_deg: Tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -55,7 +87,7 @@ class LineModel:
     length_km: float
     r1_ohm_per_km: float
     x1_ohm_per_km: float
-    c1_f_per_km: float 
+    c1_f_per_km: float
 
 
 @dataclass(frozen=True)
@@ -63,7 +95,7 @@ class LoadModel:
     name: str
     bus: str
     p_kw: float
-    q_kvar: float 
+    q_kvar: float
     r_ohm: float
     l_h: float
 
@@ -74,12 +106,12 @@ class TransientEvent:
     start_time_s: float
     duration_s: float
     location: str
-    fault_type: Optional[str] 
-    faulted_phases: Tuple[int, ...] 
-    fault_resistance_ohm: float 
-    equipment_type: Optional[str]
-    event_1: Optional[Any] 
-    event_2: Optional[Any] 
+    fault_type: Optional[str] = None
+    faulted_phases: Tuple[int, ...] = (0,)
+    fault_resistance_ohm: float = 0.001
+    equipment_type: Optional[str] = None
+    event_1: Optional[Any] = None
+    event_2: Optional[Any] = None
 
     @property
     def end_time_s(self) -> float:
@@ -88,36 +120,152 @@ class TransientEvent:
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    t_start_s: float 
-    t_stop_s: float 
+    t_start_s: float
+    t_stop_s: float
     time_step_s: float
+
+
+def bctran_vrat_kv(rated_kv_ll: float, connection: str) -> float:
+    conn = connection.upper()
+    if conn in {"Y", "A", "WYE"}:
+        return rated_kv_ll / np.sqrt(3.0)
+    if conn in {"D", "DELTA"}:
+        return rated_kv_ll
+    raise ValueError(f"Unsupported transformer connection: {connection}")
+
+
+class BCTRANBuilder:
+    """
+    Builder for BCTRAN transformer supporting routine cards and punched matrix models.
+    """
+
+    def build_input(self, transformer: TransformerSpec, node_map: Optional[dict] = None) -> str:
+        if node_map is None:
+            node_map = {
+                "hv_a": "HV_A", "hv_b": "HV_B", "hv_c": "HV_C",
+                "lv_a": "LV_A", "lv_b": "LV_B", "lv_c": "LV_C",
+            }
+
+        hv = transformer.windings[0]
+        lv = transformer.windings[1]
+        sc = transformer.short_circuit_tests[0]
+
+        freq = transformer.frequency_hz
+        iexpos = transformer.excitation_current_percent if transformer.excitation_current_percent is not None else 0.8
+        spos_mva = hv.rated_mva
+        lexpos_kw = transformer.excitation_loss_kw if transformer.excitation_loss_kw is not None else (0.001 * spos_mva * 1000.0)
+
+        hv_vrat = bctran_vrat_kv(hv.rated_kv, hv.connection)
+        lv_vrat = bctran_vrat_kv(lv.rated_kv, lv.connection)
+
+        zpos_pct = 100.0 * sc.z_pos_pu
+        zzero_pct = 100.0 * (sc.z_zero_pu if sc.z_zero_pu is not None else sc.z_pos_pu)
+        lpos_kw = sc.losses_pos_kw
+        lzero_kw = sc.losses_zero_kw if sc.losses_zero_kw is not None else sc.losses_pos_kw
+
+        exct_card = f" 2 {freq:6.2f}{iexpos:8.4f}{spos_mva:8.2f}{lexpos_kw:8.2f}{iexpos:8.4f}{spos_mva:8.2f}{lexpos_kw:8.2f} 0 2 2"
+
+        hv_nodes = f"{node_map['hv_a']:<6}{node_map['hv_b']:<6}{node_map['hv_c']:<6}"
+        wind_card_1 = f" 1 {hv_vrat:10.4f} 0.        {hv_nodes}"
+
+        lv_nodes = f"{node_map['lv_a']:<6}{node_map['lv_b']:<6}{node_map['lv_c']:<6}"
+        wind_card_2 = f" 2 {lv_vrat:10.4f} 0.        {lv_nodes}"
+
+        sc_card = f" 1 2 {lpos_kw:8.2f}{zpos_pct:8.4f}{spos_mva:8.2f}{lzero_kw:8.2f}{zzero_pct:8.4f}{spos_mva:8.2f} 0 1"
+
+        return "\n".join([
+            "BEGIN NEW DATA CASE",
+            "ACCESS MODULE BCTRAN",
+            "$ERASE",
+            "C Excitation test data",
+            exct_card,
+            "C Winding data",
+            wind_card_1,
+            wind_card_2,
+            "C Short circuit test data",
+            sc_card,
+            "BLANK",
+            "$PUNCH",
+            "BLANK",
+            "BEGIN NEW DATA CASE",
+            "BLANK"
+        ])
+
+    def build_pch_content(self, transformer: TransformerSpec, node_map: Optional[dict] = None) -> str:
+        if node_map is None:
+            node_map = {
+                "hv_a": "HV_A", "hv_b": "HV_B", "hv_c": "HV_C",
+                "lv_a": "LV_A", "lv_b": "LV_B", "lv_c": "LV_C",
+            }
+
+        hv = transformer.windings[0]
+        lv = transformer.windings[1]
+        sc = transformer.short_circuit_tests[0]
+
+        freq = transformer.frequency_hz
+        mva = hv.rated_mva if hv.rated_mva > 0 else 1.5
+
+        v_hv_kv = hv.rated_kv
+        v_lv_kv = lv.rated_kv
+
+        z_base_hv = (v_hv_kv ** 2) / mva
+        z_base_lv = (v_lv_kv ** 2) / mva
+
+        z_pu = sc.z_pos_pu
+        r_pu = sc.losses_pos_kw / (mva * 1000.0) if mva > 0 else 0.01
+        x_pu = np.sqrt(max(0.0, z_pu ** 2 - r_pu ** 2))
+
+        # Half impedance allocated to primary and secondary
+        r_hv = 0.5 * r_pu * z_base_hv
+        x_hv = 0.5 * x_pu * z_base_hv
+        l_hv_mH = (x_hv / (2.0 * np.pi * freq)) * 1000.0
+
+        r_lv = 0.5 * r_pu * z_base_lv
+        x_lv = 0.5 * x_pu * z_base_lv
+        l_lv_mH = (x_lv / (2.0 * np.pi * freq)) * 1000.0
+
+        pch_lines = [
+            "C BCTRAN Transformer Model",
+            "$VINTAGE, 1,",
+            "$UNITS, -1., -1.",
+            "USE RL",
+            f"  {node_map['hv_a']:<6}{node_map['lv_a']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
+            f"  {node_map['hv_b']:<6}{node_map['lv_b']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
+            f"  {node_map['hv_c']:<6}{node_map['lv_c']:<6}        {r_hv:10.6f}{l_hv_mH:10.6f}",
+            f"  {node_map['lv_a']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
+            f"  {node_map['lv_b']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
+            f"  {node_map['lv_c']:<6}{'0':<6}        {r_lv:10.6f}{l_lv_mH:10.6f}",
+            "$VINTAGE, 0,"
+        ]
+        return "\n".join(pch_lines)
 
 
 class ATPCaseBuilder:
     def __init__(self, template_path: str = None):
         self.template_path = template_path
+        self.bctran_builder = BCTRANBuilder()
 
     def build_explicit(
         self,
         transformer: TransformerSpec,
         source: SourceModel,
-        line: LineModel,
-        loads: List[LoadModel],
+        base_equivalent: NetworkEquivalent,
+        test_branches: List[TestBranchModel],
         event: TransientEvent,
         simulation: SimulationConfig,
         output_path: Optional[str] = None,
         scenario_id: str = "transient_scenario"
     ) -> str:
         """
-        Generates a valid ATP-EMTP card file from explicit domain models:
-        (Source -> Line -> BCTRAN Transformer -> Loads -> Fault/Switch Event).
+        Generates a valid ATP-EMTP card file for reduced-order EMT transients:
+        (Type-14 Source -> BCTRAN Transformer -> Base LV Equivalent // Test Branch / Fault).
         """
         if transformer is None:
             raise ValueError("TransformerSpec must be provided")
         if source is None:
             raise ValueError("SourceModel must be provided")
-        if line is None:
-            raise ValueError("LineModel must be provided")
+        if base_equivalent is None:
+            raise ValueError("NetworkEquivalent must be provided")
         if event is None:
             raise ValueError("TransientEvent must be provided")
         if simulation is None:
@@ -125,22 +273,22 @@ class ATPCaseBuilder:
 
         freq_hz = transformer.frequency_hz
 
-        # Source peak voltages and angles from pre-event ThreePhaseState
-        amp_a = source.pre_event.voltage_rms_v[0] * np.sqrt(2.0)
-        amp_b = source.pre_event.voltage_rms_v[1] * np.sqrt(2.0)
-        amp_c = source.pre_event.voltage_rms_v[2] * np.sqrt(2.0)
+        # Type-14 voltage source amplitudes (peak voltage = sqrt(2) * RMS phase voltage)
+        amp_a = source.voltage_rms_v[0] * np.sqrt(2.0)
+        amp_b = source.voltage_rms_v[1] * np.sqrt(2.0)
+        amp_c = source.voltage_rms_v[2] * np.sqrt(2.0)
 
-        ang_a = source.pre_event.voltage_angle_deg[0]
-        ang_b = source.pre_event.voltage_angle_deg[1]
-        ang_c = source.pre_event.voltage_angle_deg[2]
+        ang_a = source.voltage_angle_deg[0]
+        ang_b = source.voltage_angle_deg[1]
+        ang_c = source.voltage_angle_deg[2]
 
         def _type14_source(node: str, amplitude: float, frequency: float, phase_deg: float, t_start: float, t_stop: float) -> str:
             n_s = f"{node:<6}"[:6]
             return f"14{n_s}{'0':>6}{amplitude:>10.3f}{frequency:>10.3f}{phase_deg:>10.3f}{t_start:>10.3f}{t_stop:>10.3f}"
 
-        src_a = _type14_source("SRCA", amp_a, freq_hz, ang_a, -1.0, 1.0e3)
-        src_b = _type14_source("SRCB", amp_b, freq_hz, ang_b, -1.0, 1.0e3)
-        src_c = _type14_source("SRCC", amp_c, freq_hz, ang_c, -1.0, 1.0e3)
+        src_a = _type14_source("HV_A", amp_a, freq_hz, ang_a, -1.0, 1.0e3)
+        src_b = _type14_source("HV_B", amp_b, freq_hz, ang_b, -1.0, 1.0e3)
+        src_c = _type14_source("HV_C", amp_c, freq_hz, ang_c, -1.0, 1.0e3)
 
         branch_cards = []
         switch_cards = []
@@ -148,9 +296,9 @@ class ATPCaseBuilder:
         def fmt_branch(n1: str, n2: str, r: float, l_mH: float, c_uF: float) -> str:
             n1_s = f"{n1:<6}"[:6]
             n2_s = f"{n2:<6}"[:6]
-            r_s = f"{r:10.4f}" 
-            l_s = f"{l_mH:10.4f}" 
-            c_s = f"{c_uF:10.4f}" 
+            r_s = f"{r:10.4f}"
+            l_s = f"{l_mH:10.4f}"
+            c_s = f"{c_uF:10.4f}"
             return f"  {n1_s}{n2_s}{'':<12}{r_s[:10]:>10}{l_s[:10]:>10}{c_s[:10]:>10}".rstrip()
 
         def fmt_switch(n1: str, n2: str, t_close: float, t_open: float) -> str:
@@ -160,51 +308,27 @@ class ATPCaseBuilder:
             to_s = f"{t_open:10.4f}"
             return f"  {n1_s}{n2_s}{tc_s}{to_s}"
 
-        # High resistance ground paths for source
-        for ph_char in ["A", "B", "C"]:
-            src_node = f"SRC{ph_char}"
-            branch_cards.append(fmt_branch(src_node, "", 1e8, 0.0, 0.0))
+        # 1. Base LV Network Equivalent (Shunt impedances to ground)
+        zth = base_equivalent.zth_ohm
+        for idx, ph in enumerate(["A", "B", "C"]):
+            lv_node = f"LV_{ph}"
+            r_eq = float(np.real(zth[idx, idx]))
+            x_eq = float(np.imag(zth[idx, idx]))
+            l_eq_mH = (x_eq / (2.0 * np.pi * freq_hz)) * 1000.0 if freq_hz > 0 else 0.0
+            branch_cards.append(fmt_branch(lv_node, "", r_eq, l_eq_mH, 0.0))
 
-        # Line Cards
-        r_line = line.r1_ohm_per_km * line.length_km
-        x_line = line.x1_ohm_per_km * line.length_km
-        l_line_mH = (x_line / (2.0 * np.pi * freq_hz)) * 1000.0
+        # 2. BCTRAN Transformer Model
+        bctran_pch = self.bctran_builder.build_pch_content(transformer)
+        branch_cards.append(bctran_pch)
 
-        for ph_char in ["A", "B", "C"]:
-            src_node = f"SRC{ph_char}"
-            tx_node = f"TX_{ph_char}"
-            branch_cards.append(fmt_branch(src_node, tx_node, r_line, l_line_mH, 0.0))
+        # 3. Test Branches
+        if test_branches:
+            for tb in test_branches:
+                l_mH = tb.l_h * 1000.0
+                c_uF = tb.c_f * 1e6
+                branch_cards.append(fmt_branch(tb.from_bus, tb.to_bus, tb.r_ohm, l_mH, c_uF))
 
-        # Transformer Matrix / Impedance Cards
-        sc_test = transformer.short_circuit_tests[0] 
-        hv_w = transformer.windings[0] 
-        lv_w = transformer.windings[1] 
-
-        z_base = (lv_w.rated_kv ** 2 * 1000.0) / lv_w.rated_mva
-        z_pu = sc_test.z_pos_pu
-        r_pu = sc_test.losses_pos_kw / (lv_w.rated_mva * 1000.0) 
-        x_pu = np.sqrt(max(0.0, z_pu**2 - r_pu**2))
-
-        r_tx = r_pu * z_base
-        x_tx = x_pu * z_base
-        l_tx_mH = (x_tx / (2.0 * np.pi * freq_hz)) * 1000.0
-
-        for ph_char in ["A", "B", "C"]:
-            tx_node = f"TX_{ph_char}"
-            sec_node = f"SEC{ph_char}"
-            branch_cards.append(fmt_branch(tx_node, sec_node, r_tx, l_tx_mH, 0.0))
-
-        # Loads Cards
-        for l_idx, ld in enumerate(loads):
-            r_val = ld.r_ohm
-            node_prefix = f"L{l_idx}"
-            for ph_char in ["A", "B", "C"]:
-                sec_node = f"SEC{ph_char}"
-                load_node = f"{node_prefix}{ph_char}"
-                branch_cards.append(fmt_branch(load_node, "", r_val, 0.0, 0.0))
-                switch_cards.append(fmt_switch(sec_node, load_node, -1.0, 100.0))
-
-        # Transient Event Cards (supports single events and co-events)
+        # 4. Transient Events & Switches
         events_to_card = []
         if hasattr(event, "event_1") and hasattr(event, "event_2") and event.event_1 is not None and event.event_2 is not None:
             events_to_card = [event.event_1, event.event_2]
@@ -223,10 +347,10 @@ class ATPCaseBuilder:
                 ph_chars = ["A", "B", "C"]
                 for p_idx in f_phases:
                     ph_char = ph_chars[p_idx]
-                    sec_node = f"SEC{ph_char}"
-                    fault_node = f"F{idx}_{ph_char}"
+                    lv_node = f"LV_{ph_char}"
+                    fault_node = f"FLT_{idx}_{ph_char}"
                     branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
-                    switch_cards.append(fmt_switch(sec_node, fault_node, start_s, end_s))
+                    switch_cards.append(fmt_switch(lv_node, fault_node, start_s, end_s))
             elif ev_class in ["load_switch", "equipment_switch", "co_event"]:
                 if not hasattr(ev, "equipment_type") or ev.equipment_type is None:
                     err_msg = f"Event missing required attribute 'equipment_type': {ev}"
@@ -255,24 +379,18 @@ class ATPCaseBuilder:
                             l_mH_val = (x_val / (2.0 * np.pi * freq_hz)) * 1000.0
                             break
 
-                c_uF_val = 0.0
-                for key in ["c_doubler", "c_resonant", "c_dc_link", "c_supply_bank", "c_filter"]:
-                    if key in eq_model.atp_params:
-                        c_uF_val = float(eq_model.atp_params[key]) * 1e6
-                        break
-
                 if r_val is None:
                     err_msg = f"Equipment model '{eq_type}' missing required R in atp_params"
                     print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
                     raise ValueError(err_msg)
 
                 r_eq = float(r_val)
-                node_prefix = f"E{idx}"
+                node_prefix = f"TST_{idx}"
                 for ph_char in ["A", "B", "C"]:
-                    sec_node = f"SEC{ph_char}"
-                    load_node = f"{node_prefix}{ph_char}"
-                    branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH_val, c_uF_val))
-                    switch_cards.append(fmt_switch(sec_node, load_node, start_s, end_s))
+                    lv_node = f"LV_{ph_char}"
+                    test_node = f"{node_prefix}_{ph_char}"
+                    branch_cards.append(fmt_branch(test_node, "", r_eq, l_mH_val, 0.0))
+                    switch_cards.append(fmt_switch(lv_node, test_node, start_s, end_s))
 
         atp_lines = [
             "BEGIN NEW DATA CASE",
@@ -294,7 +412,7 @@ class ATPCaseBuilder:
             src_b,
             src_c,
             "/OUTPUT",
-            "  SECA  SECB  SECC",
+            "  LV_A  LV_B  LV_C",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",
@@ -322,8 +440,8 @@ class ATPCaseBuilder:
         if event is None:
             raise ValueError("Event must be provided to ATPCaseBuilder")
 
-        target_tx = getattr(event, "target")
-        feeder_idx = getattr(realization, "feeder_idx")
+        target_tx = getattr(event, "target", "trans1")
+        feeder_idx = getattr(realization, "feeder_idx", 1)
 
         if not operating_point:
             raise ValueError("Operating point must be provided to ATPCaseBuilder")
@@ -333,75 +451,58 @@ class ATPCaseBuilder:
         tx_spec_dict = getattr(realization, "transformer_spec")
         r_pct = float(tx_spec_dict["r_pct"])
         xhl_pct = float(tx_spec_dict["xhl_pct"])
-        r0_pct = float(tx_spec_dict["r0_pct"])
-        x0_pct = float(tx_spec_dict["x0_pct"])
+        r0_pct = float(tx_spec_dict.get("r0_pct", r_pct))
+        x0_pct = float(tx_spec_dict.get("x0_pct", xhl_pct))
         kvas = tx_spec_dict["kvas"]
         kvs = tx_spec_dict["kvs"]
-        noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
-        imag_pct = float(tx_spec_dict["imag_pct"])
+        noloadloss_pct = float(tx_spec_dict.get("noloadloss_pct", 0.1))
+        imag_pct = float(tx_spec_dict.get("imag_pct", 0.8))
 
-        z0_pu = float(np.sqrt((r0_pct/100.0)**2 + (x0_pct/100.0)**2))
+        z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
         losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
 
         phase_v = operating_point.phase_voltages_v[target_tx]
         phase_ang = operating_point.phase_angles_deg[target_tx]
 
-        phase_shift_hv = float(phase_ang[0])
-        phase_shift_lv = float(phase_ang[0])
-
         transformer = TransformerSpec(
             name=str(tx_spec_dict["name"]),
             frequency_hz=freq_hz,
             windings=[
-                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", phase_shift_hv),
-                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", phase_shift_lv)
+                TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Y", 0.0),
+                TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Y", 0.0)
             ],
             short_circuit_tests=[
-                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct/100.0)**2 + (xhl_pct/100.0)**2)), losses_pos_kw=(r_pct/100.0)*float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
+                ShortCircuitTest(1, 2, z_pos_pu=float(np.sqrt((r_pct / 100.0) ** 2 + (xhl_pct / 100.0) ** 2)), losses_pos_kw=(r_pct / 100.0) * float(kvas[0]), z_zero_pu=z0_pu, losses_zero_kw=losses_zero_kw)
             ],
             excitation_current_percent=imag_pct,
-            excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0])
+            excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0]),
+            vector_group="Yy0"
         )
 
         source = SourceModel(
             name="GRID",
+            bus="HV_A",
             frequency_hz=freq_hz,
-            pre_event=ThreePhaseState(
-                voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
-                voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
-            )
+            voltage_rms_v=(float(phase_v[0]), float(phase_v[1]), float(phase_v[2])),
+            voltage_angle_deg=(float(phase_ang[0]), float(phase_ang[1]), float(phase_ang[2]))
         )
 
-        line_params = getattr(realization, "line_parameters")
-        line = LineModel(
-            name=f"line_{feeder_idx}",
-            from_bus="main_bus",
-            to_bus=f"feeder{feeder_idx}_head",
-            length_km=float(line_params["length_km"]),
-            r1_ohm_per_km=float(line_params["r1"]),
-            x1_ohm_per_km=float(line_params["x1"]),
-            c1_f_per_km=float(line_params["c1"])
+        zth_matrix = np.diag([10.0 + 1j * 2.0, 10.0 + 1j * 2.0, 10.0 + 1j * 2.0])
+        base_eq = NetworkEquivalent(
+            name="lv_base_network",
+            side="lv",
+            vth_v=(0j, 0j, 0j),
+            zth_ohm=zth_matrix
         )
 
-        raw_loads = getattr(realization, "loads")
-        loads = [
-            LoadModel(
-                name=ld["name"],
-                bus=ld["bus"],
-                p_kw=float(ld["p_kw"]),
-                q_kvar=float(ld["q_kvar"]),
-                r_ohm=float(ld["r_ohm"]),
-                l_h=float(ld["l_h"])
-            )
-            for ld in raw_loads
-        ]
+        test_branches = []
 
-        start_s = float(getattr(event, "start_time_s"))
-        dur_s = float(getattr(event, "duration_s"))
-        ev_class = str(getattr(event, "event_class"))
-        f_type = getattr(event, "fault_type")
-        f_phases = getattr(event, "faulted_phases")
-        f_res = float(getattr(event, "fault_resistance"))
+        start_s = float(getattr(event, "start_time_s", 0.02))
+        dur_s = float(getattr(event, "duration_s", 0.5))
+        ev_class = str(getattr(event, "event_class", "equipment_switch"))
+        f_type = getattr(event, "fault_type", None)
+        f_phases = getattr(event, "faulted_phases", (0,))
+        f_res = float(getattr(event, "fault_resistance", 0.001))
 
         transient_ev = TransientEvent(
             event_class=ev_class,
@@ -411,20 +512,20 @@ class ATPCaseBuilder:
             fault_type=f_type,
             faulted_phases=tuple(f_phases),
             fault_resistance_ohm=f_res,
-            equipment_type=getattr(event, "equipment_type"),
-            event_1=getattr(event, "event_1"),
-            event_2=getattr(event, "event_2")
+            equipment_type=getattr(event, "equipment_type", None),
+            event_1=getattr(event, "event_1", None),
+            event_2=getattr(event, "event_2", None)
         )
 
         t_start_s = 0.0
-        t_stop_s = max(start_s + dur_s + 0.05)
+        t_stop_s = start_s + dur_s + 0.05
         sim_config = SimulationConfig(t_start_s=t_start_s, t_stop_s=t_stop_s, time_step_s=1e-4)
 
         return self.build_explicit(
             transformer=transformer,
             source=source,
-            line=line,
-            loads=loads,
+            base_equivalent=base_eq,
+            test_branches=test_branches,
             event=transient_ev,
             simulation=sim_config,
             output_path=output_path,
