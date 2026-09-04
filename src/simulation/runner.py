@@ -151,6 +151,7 @@ class CoSimulationRunner:
         scenario_id: str,
         feeder_idx: int = 1,
         use_baseline_feeder: bool = True,
+        t_stop_override: Optional[float] = None,
     ) -> tuple[np.ndarray, dict, dict, dict]:
         """
         Executes ATP transient simulation cases using reduced OpenDSS Thévenin equivalents,
@@ -212,6 +213,7 @@ class CoSimulationRunner:
             xhl_pct = float(tx_spec_dict["xhl_pct"])
             noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
             imag_pct = float(tx_spec_dict["imag_pct"])
+            conns = tx_spec_dict.get("conns", ["delta", "wye"])
 
             r0_pct = float(tx_spec_dict.get("r0_pct", r_pct))
             x0_pct = float(tx_spec_dict.get("x0_pct", xhl_pct))
@@ -222,8 +224,8 @@ class CoSimulationRunner:
                 name=str(tx_spec_dict["name"]),
                 frequency_hz=float(freq),
                 windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, "Delta", 0.0),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, "Wye", -30.0),
+                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, str(conns[0]), 0.0),
+                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, str(conns[1]), -30.0),
                 ],
                 short_circuit_tests=[
                     ShortCircuitTest(
@@ -250,8 +252,10 @@ class CoSimulationRunner:
             else:
                 test_branches = []
 
-            # Determine simulation duration based on max event end time
-            if test_branches:
+            # Determine simulation duration based on max event end time or override
+            if t_stop_override is not None:
+                t_stop = float(t_stop_override)
+            elif test_branches:
                 max_end = max(b.end_time_s for b in test_branches)
                 t_stop = max(max_end + 0.05, 0.15)
             else:
@@ -388,6 +392,11 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     target_bus = f"feeder{feeder_idx}_sec"
     target_line = f"mv_feeder_{feeder_idx}"
 
+    # Calculate uniform t_stop based on co-event max branch duration
+    branches_co = co_ev.to_test_branches(50.0)
+    co_max_end = max(b.end_time_s for b in branches_co) if branches_co else 0.15
+    uniform_t_stop = max(co_max_end + 0.05, 0.15)
+
     # --- STEP 1: Pre-event base network operating point & joint co-event ATP simulation ---
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
@@ -401,6 +410,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         scenario_id=f"p{os.getpid()}_{task_idx}_joint",
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder,
+        t_stop_override=uniform_t_stop,
     )
 
     # --- STEP 2: Pre-event base network operating point & Event 1 ATP simulation ---
@@ -413,6 +423,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         scenario_id=f"p{os.getpid()}_{task_idx}_ev1",
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder,
+        t_stop_override=uniform_t_stop,
     )
 
     # --- STEP 3: Pre-event base network operating point & Event 2 ATP simulation ---
@@ -425,6 +436,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         scenario_id=f"p{os.getpid()}_{task_idx}_ev2",
         feeder_idx=feeder_idx,
         use_baseline_feeder=use_baseline_feeder,
+        t_stop_override=uniform_t_stop,
     )
 
     tx_unit_id = f"trans{feeder_idx}_lv_boundary"

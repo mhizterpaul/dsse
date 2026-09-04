@@ -123,14 +123,19 @@ class OpenDSSReducer:
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
             raise ValueError(f"Transformer element '{tx_elem}' could not be activated")
         i_raw = dss_instance.CktElement.Currents()
-        n_cond1 = dss_instance.CktElement.NConducts()
+        # NumConductors per terminal: for 3-phase Delta-Wye tx, terminal 1 has 3 conductors (0, 1, 2), terminal 2 starts at offset index 3
+        # Terminal 2 (LV) conductors start at index 3 or 4
+        # Query NodeOrder to locate terminal 2 phase 1, 2, 3 indices
+        nodes = dss_instance.CktElement.NodeOrder()
+        # Find terminal 2 start index (second occurrence of node 1 in NodeOrder)
+        t2_indices = [idx for idx, n in enumerate(nodes) if n == 1]
+        t2_start = t2_indices[1] if len(t2_indices) > 1 else 3
 
-        # Terminal 2 (LV) phase indices start dynamically at n_cond1
         i_pre_lv = -1.0 * np.array(
             [
-                complex(i_raw[2 * n_cond1], i_raw[2 * n_cond1 + 1]),
-                complex(i_raw[2 * (n_cond1 + 1)], i_raw[2 * (n_cond1 + 1) + 1]),
-                complex(i_raw[2 * (n_cond1 + 2)], i_raw[2 * (n_cond1 + 2) + 1]),
+                complex(i_raw[2 * t2_start], i_raw[2 * t2_start + 1]),
+                complex(i_raw[2 * (t2_start + 1)], i_raw[2 * (t2_start + 1) + 1]),
+                complex(i_raw[2 * (t2_start + 2)], i_raw[2 * (t2_start + 2) + 1]),
             ],
             dtype=complex,
         )
