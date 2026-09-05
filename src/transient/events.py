@@ -21,7 +21,7 @@ class SingleEquipmentSwitchEvent:
     def event_type(self) -> str:
         return self.equipment_type
 
-    def to_test_branches(self, frequency_hz: float = 50.0) -> List[TestBranch]:
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
         from src.loads import get_equipment_model
 
         eq_model = get_equipment_model(self.equipment_type)
@@ -105,7 +105,7 @@ class SingleLineFaultEvent:
     def event_type(self) -> str:
         return self.fault_type
 
-    def to_test_branches(self, frequency_hz: float = 50.0) -> List[TestBranch]:
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
         model_dict = {
             "fault_type": self.fault_type,
             "fault_resistance_ohm": float(self.fault_resistance),
@@ -150,7 +150,7 @@ class EquipmentEquipmentCoEvent:
         )
         return EquipmentEquipmentCoEvent(event_1=self.event_1, event_2=ev2_shifted)
 
-    def to_test_branches(self, frequency_hz: float = 50.0) -> List[TestBranch]:
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
         branches = []
         branches.extend(self.event_1.to_test_branches(frequency_hz))
         branches.extend(self.event_2.to_test_branches(frequency_hz))
@@ -184,7 +184,7 @@ class EquipmentLineFaultCoEvent:
         )
         return EquipmentLineFaultCoEvent(event_1=self.event_1, event_2=ev2_shifted)
 
-    def to_test_branches(self, frequency_hz: float = 50.0) -> List[TestBranch]:
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
         branches = []
         branches.extend(self.event_1.to_test_branches(frequency_hz))
         branches.extend(self.event_2.to_test_branches(frequency_hz))

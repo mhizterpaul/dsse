@@ -50,12 +50,12 @@ class ATPOutputReader:
                 return None
 
             best_arr = None
-            min_t_start = float("inf")
+            max_peak = -1.0
 
-            # Probe channels and byte offsets (ATP groups variables in blocks of 4: t, V1, V2, V3, t, I1, I2, I3 -> 8 cols)
+            # Probe channels and byte offsets (ATP groups variables in blocks: t, V1, V2, V3, t, I1, I2, I3 -> 8 cols)
             for nc in [8, 7, 6, 9, 10, 12, 4]:
                 rec_size = nc * 4
-                for offset in range(16, min(2048, len(raw) - rec_size * 2), 4):
+                for offset in range(16, min(4096, len(raw) - rec_size * 2), 4):
                     try:
                         t0 = np.frombuffer(raw[offset : offset + 4], dtype=np.float32)[0]
                         t1 = np.frombuffer(
@@ -69,8 +69,9 @@ class ATPOutputReader:
                                 ).reshape(-1, nc)
                                 t = data[:, 0]
                                 if np.all(np.diff(t) >= 0):  # Monotonically non-decreasing time
-                                    if t0 < min_t_start:
-                                        min_t_start = t0
+                                    val_peak = float(np.max(np.abs(data[:, 1:])))
+                                    if val_peak > max_peak:
+                                        max_peak = val_peak
                                         best_arr = data
                     except Exception:
                         pass

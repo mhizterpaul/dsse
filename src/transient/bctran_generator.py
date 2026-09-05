@@ -39,17 +39,17 @@ class BCTRANGenerator:
         if lex_kw <= 0.0:
             lex_kw = 0.25 * max_valid_loss_kw
 
-        # Card 1: Excitation test data
+        # Card 1: Excitation test data formatted with FORTRAN specifier (BN, I2, 7E10.2, 4I2)
         c1 = f" 2{freq:10.4f}{iex_pct:10.4f}{mva_rating:10.4f}{lex_kw:10.4f}{iex_pct:10.4f}{mva_rating:10.4f}{lex_kw:10.4f} 2 2 1 1"
 
-        # Winding 1 (HV) card - bus prefix 'HV' (BCTRAN appends phase letters A, B, C to form 3-phase nodes HVA, HVB, HVC)
+        # Winding 1 (HV) card - bus prefix 'HV_A' (BCTRAN 3-phase bus node names HV_A, HV_B, HV_C)
         iconn_hv = 1 if w_hv.connection.upper() == "DELTA" else 2
-        w1_bus = "HV    "
+        w1_bus = "HV_A  "
         w1_card = f" 1{w_hv.rated_kv:10.4f}{mva_rating:10.4f}{w_hv.phase_shift_deg:10.4f}{w1_bus}{' ' * 6}{iconn_hv:2d}"
 
-        # Winding 2 (LV) card - bus prefix 'LV' (BCTRAN appends phase letters A, B, C to form 3-phase nodes LVA, LVB, LVC)
+        # Winding 2 (LV) card - bus prefix 'LV_A' (BCTRAN 3-phase bus node names LV_A, LV_B, LV_C)
         iconn_lv = 1 if w_lv.connection.upper() == "DELTA" else 2
-        w2_bus = "LV    "
+        w2_bus = "LV_A  "
         w2_card = f" 2{w_lv.rated_kv:10.4f}{mva_rating:10.4f}{w_lv.phase_shift_deg:10.4f}{w2_bus}{' ' * 6}{iconn_lv:2d}"
 
         # Short circuit test card

@@ -9,9 +9,6 @@ from pathlib import Path
 
 import src.power_plant.plant as plant
 from src.transient.models import (
-    TransformerSpec,
-    TransformerWinding,
-    ShortCircuitTest,
     ThreePhaseThevenin,
     TestBranch,
     SimulationConfig,
@@ -27,6 +24,7 @@ from src.transient.events import (
     EquipmentEquipmentCoEvent,
     EquipmentLineFaultCoEvent,
 )
+from src.power_plant.lv_transformers import build_transformer_spec
 
 
 @dataclass
@@ -39,9 +37,9 @@ class SimulationResult:
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
     """
-    Extracts fault currents, fault resistance (R), line parameters (R1, X1),
-    and event specifications from active OpenDSS elements and event object.
-    Returns empty JSON "{}" for non-fault co-events.
+    Extracts fault parameters (fault_type, fault_resistance_ohm, faulted_phases, line parameters)
+    directly from event specifications and active OpenDSS line elements.
+    Raises ValueError if required fault parameters or line elements are missing or invalid.
     """
     ev_fault = None
     if hasattr(event_spec, "event_2") and hasattr(event_spec.event_2, "fault_type"):
@@ -53,41 +51,43 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
     else:
         return json.dumps({})
 
-    # Query Fault element if present
-    if dss_instance.Circuit.SetActiveElement(f"Fault.{fault_id}"):
-        fault_currents = dss_instance.CktElement.Currents()
-        try:
-            fault_r = float(dss_instance.Properties.Value("r"))
-        except Exception as e:
-            fault_r = getattr(ev_fault, "fault_resistance", 0.001)
-    else:
-        fault_currents = [0.0] * 6
-        fault_r = getattr(ev_fault, "fault_resistance", 0.001)
+    if not hasattr(ev_fault, "fault_resistance"):
+        raise ValueError(f"Fault event spec missing 'fault_resistance': {ev_fault}")
+    if not hasattr(ev_fault, "fault_type"):
+        raise ValueError(f"Fault event spec missing 'fault_type': {ev_fault}")
+    if not hasattr(ev_fault, "faulted_phases"):
+        raise ValueError(f"Fault event spec missing 'faulted_phases': {ev_fault}")
+    if not hasattr(ev_fault, "start_time_s"):
+        raise ValueError(f"Fault event spec missing 'start_time_s': {ev_fault}")
+    if not hasattr(ev_fault, "duration_s"):
+        raise ValueError(f"Fault event spec missing 'duration_s': {ev_fault}")
 
-    # Query Line element if present
-    if dss_instance.Circuit.SetActiveElement(f"Line.{target_line}"):
-        try:
-            line_r1 = float(dss_instance.Properties.Value("r1"))
-            line_x1 = float(dss_instance.Properties.Value("x1"))
-        except Exception as e:
-            line_r1 = 0.01
-            line_x1 = 0.05
+    fault_r = float(ev_fault.fault_resistance)
+    fault_type = str(ev_fault.fault_type)
+    faulted_phases = list(ev_fault.faulted_phases)
+    start_time_s = float(ev_fault.start_time_s)
+    duration_s = float(ev_fault.duration_s)
+
+    # Query Line element parameters
+    line_elem = f"Line.{target_line}"
+    if dss_instance.Circuit.SetActiveElement(line_elem):
+        line_r1 = float(dss_instance.Properties.Value("r1"))
+        line_x1 = float(dss_instance.Properties.Value("x1"))
     else:
-        line_r1 = 0.01
-        line_x1 = 0.05
+        raise ValueError(f"Target line '{line_elem}' could not be activated in OpenDSS")
 
     fault_info = {
         "fault_id": fault_id,
         "bus": target_line,
         "target_line": target_line,
-        "fault_type": str(getattr(ev_fault, "fault_type", "LG")),
+        "fault_type": fault_type,
         "fault_resistance_ohm": fault_r,
-        "faulted_phases": list(getattr(ev_fault, "faulted_phases", (0,))),
-        "fault_currents": [float(c) for c in fault_currents],
+        "faulted_phases": faulted_phases,
+        "fault_currents": [0.0] * 6,
         "line_r1_ohm": line_r1,
         "line_x1_ohm": line_x1,
-        "start_time_s": float(getattr(ev_fault, "start_time_s", 0.02)),
-        "duration_s": float(getattr(ev_fault, "duration_s", 0.5)),
+        "start_time_s": start_time_s,
+        "duration_s": duration_s,
     }
 
     return json.dumps(fault_info)
@@ -163,10 +163,6 @@ class CoSimulationRunner:
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-        from src.power_plant.lv_transformers import get_distribution_transformer_spec
-
-        tx_spec_dict = get_distribution_transformer_spec(feeder_idx, use_baseline=use_baseline_feeder)
-
         target_tx = f"trans{feeder_idx}"
         feeder_id = f"feeder_{feeder_idx}"
 
@@ -186,7 +182,7 @@ class CoSimulationRunner:
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-        freq = op.frequency_hz
+        freq = float(op.frequency_hz)
         atp_case_path = f"src/simulation/atp_cases/case_{ev_key}_{scenario_id}_{os.getpid()}.ATP"
 
         try:
@@ -202,42 +198,12 @@ class CoSimulationRunner:
                 self.dss, test_bus=event_ports["test_bus"], tx_name=event_ports["tx_name"]
             )
 
-            # 2. Build BCTRAN Transformer Spec & generate/retrieve cached BCTRAN punch matrix
-            kvas = tx_spec_dict["kvas"]
-            kvs = tx_spec_dict["kvs"]
-            r_pct = float(tx_spec_dict["r_pct"])
-            xhl_pct = float(tx_spec_dict["xhl_pct"])
-            noloadloss_pct = float(tx_spec_dict["noloadloss_pct"])
-            imag_pct = float(tx_spec_dict["imag_pct"])
-            conns = tx_spec_dict.get("conns", ["delta", "wye"])
-
-            r0_pct = float(tx_spec_dict.get("r0_pct", r_pct))
-            x0_pct = float(tx_spec_dict.get("x0_pct", xhl_pct))
-            z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
-            losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
-
-            tx_spec = TransformerSpec(
-                name=str(tx_spec_dict["name"]),
-                frequency_hz=float(freq),
-                windings=[
-                    TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, str(conns[0]), 0.0),
-                    TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, str(conns[1]), -30.0),
-                ],
-                short_circuit_tests=[
-                    ShortCircuitTest(
-                        1,
-                        2,
-                        z_pos_pu=float(np.sqrt((r_pct / 100.0) ** 2 + (xhl_pct / 100.0) ** 2)),
-                        losses_pos_kw=(r_pct / 100.0) * float(kvas[0]),
-                        z_zero_pu=z0_pu,
-                        losses_zero_kw=losses_zero_kw,
-                    )
-                ],
-                excitation_current_percent=imag_pct,
-                excitation_loss_kw=max((noloadloss_pct / 100.0) * float(kvas[0]), 25.0),
+            # 2. Build TransformerSpec domain object and retrieve/generate BCTRAN punch matrix
+            tx_spec = build_transformer_spec(
+                feeder_idx=feeder_idx, use_baseline=use_baseline_feeder, frequency_hz=freq
             )
 
-            tx_cache_key = (tx_spec_dict["name"], float(freq))
+            tx_cache_key = (tx_spec.name, float(freq))
             if tx_cache_key not in self._bctran_cache:
                 self._bctran_cache[tx_cache_key] = self.bctran_generator.generate(tx_spec)
             bctran_punch = self._bctran_cache[tx_cache_key]
@@ -267,8 +233,8 @@ class CoSimulationRunner:
                 events=test_branches,
                 simulation=sim_config,
                 bctran_punch=bctran_punch,
-                output_path=atp_case_path,
                 scenario_id=scenario_id,
+                output_path=atp_case_path,
             )
 
             # 5. Execute ATP and parse waveforms

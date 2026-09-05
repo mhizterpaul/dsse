@@ -1,6 +1,7 @@
 import numpy as np
 import traceback
 from typing import Dict, Any, List, Optional, Tuple
+import src.power_plant.plant as plant
 from src.transient.models import ThreePhaseThevenin
 
 
@@ -68,15 +69,15 @@ class OpenDSSReducer:
 
         freq = float(dss_instance.Solution.Frequency())
 
-        # Pre-event solve to get V_pre and I_pre
+        # 1. Reset mode to snap and solve steady-state operating point to extract V_pre and I_pre
         dss_instance.Text.Command("solve mode=snap")
+        dss_instance.Solution.Solve()
         v_pre_hv = self._extract_bus_complex_voltages(dss_instance, hv_bus)
 
-        # Query transformer HV terminal currents (terminal 1)
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
             raise ValueError(f"Transformer element '{tx_elem}' could not be activated")
         i_raw = dss_instance.CktElement.Currents()
-        # Terminal 1 phases 1, 2, 3 currents (indices 0, 1, 2)
+
         i_pre_hv = np.array(
             [
                 complex(i_raw[0], i_raw[1]),
@@ -86,6 +87,7 @@ class OpenDSSReducer:
             dtype=complex,
         )
 
+        # 2. Extract Z_sc matrix in faultstudy mode
         z_th_hv = self._extract_bus_zsc_matrix(dss_instance, hv_bus)
         v_th_hv = v_pre_hv + (z_th_hv @ i_pre_hv)
 
@@ -115,20 +117,20 @@ class OpenDSSReducer:
 
         freq = float(dss_instance.Solution.Frequency())
 
-        # Pre-event solve
+        # 1. Reset OpenDSS to power flow snap mode to solve steady-state V_pre and I_pre
         dss_instance.Text.Command("solve mode=snap")
+        dss_instance.Solution.Solve()
         v_pre_lv = self._extract_bus_complex_voltages(dss_instance, test_bus)
 
-        # Query currents leaving transformer LV terminal (terminal 2) into downstream network
+        # Query currents leaving transformer LV terminal (terminal 2) into downstream load network
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
             raise ValueError(f"Transformer element '{tx_elem}' could not be activated")
         i_raw = dss_instance.CktElement.Currents()
         num_cond = dss_instance.CktElement.NumConductors()
 
-        # Terminal 2 currents start after Terminal 1 conductors (2 * num_cond complex values = index 2 * num_cond)
         t2_start = 2 * num_cond
 
-        i_pre_lv = -1.0 * np.array(
+        i_pre_lv = np.array(
             [
                 complex(i_raw[t2_start], i_raw[t2_start + 1]),
                 complex(i_raw[t2_start + 2], i_raw[t2_start + 3]),
@@ -137,9 +139,19 @@ class OpenDSSReducer:
             dtype=complex,
         )
 
-        # Downstream base network short-circuit matrix Z_th_LV extracted from OpenDSS ZscMatrix
-        z_th_lv = self._extract_bus_zsc_matrix(dss_instance, test_bus)
-        v_th_lv = v_pre_lv + (z_th_lv @ i_pre_lv)
+        # Calculate downstream base LV network load impedance matrix Z_th_LV = V_pre_LV / I_pre_LV
+        z_th_lv = np.zeros((3, 3), dtype=complex)
+        for i in range(3):
+            if abs(i_pre_lv[i]) <= 1e-6:
+                raise ValueError(
+                    f"Transformer LV terminal phase {i} current is zero ({i_pre_lv[i]} A), cannot compute downstream Thévenin load impedance"
+                )
+            z_val = v_pre_lv[i] / i_pre_lv[i]
+            r_val = abs(float(np.real(z_val)))
+            x_val = abs(float(np.imag(z_val)))
+            z_th_lv[i, i] = complex(r_val, x_val)
+
+        v_th_lv = v_pre_lv
 
         thevenin = ThreePhaseThevenin(
             v_th=v_th_lv,
