@@ -112,25 +112,33 @@ class ATPCaseBuilder:
         for ph in ph_chars:
             branch_cards.append(fmt_branch(f"SRC{ph}", "", 1e8, 0.0, 0.0))
 
-        # Upstream Thévenin Z_th_HV Branches (SRCA, B, C to HV_A, HV_B, HV_C)
+        # Upstream Thévenin Z_th_HV Branches (SRCA, B, C to HVA, HVB, HVC)
         for i, ph in enumerate(ph_chars):
             r_hv = float(np.real(upstream.z_th[i, i]))
             x_hv = float(np.imag(upstream.z_th[i, i]))
             if r_hv <= 0.0 or x_hv <= 0.0:
                 raise ValueError(f"Upstream Z_th[{i},{i}] must have positive resistance and reactance, got R={r_hv}, X={x_hv}")
             l_hv_mH = (x_hv / (2.0 * np.pi * freq_hz)) * 1000.0
-            branch_cards.append(fmt_branch(f"SRC{ph}", f"HV_{ph}", r_hv, l_hv_mH, 0.0))
+            branch_cards.append(fmt_branch(f"SRC{ph}", f"HV{ph}", r_hv, l_hv_mH, 0.0))
 
-        # 2. Downstream Base LV Network Load Impedance Branches (LV_A, LV_B, LV_C to Ground reference '0')
+        # 2. Downstream Base LV Network Active Thévenin (VTHA, VTHB, VTHC and Z_th_LV connecting to LVA, LVB, LVC)
+        amp_dn = np.abs(downstream.v_th) * np.sqrt(2.0)
+        ang_dn = np.rad2deg(np.angle(downstream.v_th))
+
+        src_dn_a = _type14_source("VTHA", amp_dn[0], freq_hz, ang_dn[0], 0.0, 1.0e3)
+        src_dn_b = _type14_source("VTHB", amp_dn[1], freq_hz, ang_dn[1], 0.0, 1.0e3)
+        src_dn_c = _type14_source("VTHC", amp_dn[2], freq_hz, ang_dn[2], 0.0, 1.0e3)
+
         for i, ph in enumerate(ph_chars):
+            branch_cards.append(fmt_branch(f"VTH{ph}", "", 1e8, 0.0, 0.0))
             r_lv = float(np.real(downstream.z_th[i, i]))
             x_lv = float(np.imag(downstream.z_th[i, i]))
             if r_lv <= 0.0 or x_lv <= 0.0:
                 raise ValueError(f"Downstream Z_th[{i},{i}] must have positive resistance and reactance, got R={r_lv}, X={x_lv}")
             l_lv_mH = (x_lv / (2.0 * np.pi * freq_hz)) * 1000.0
-            branch_cards.append(fmt_branch(f"LV_{ph}", "", r_lv, l_lv_mH, 0.0))
+            branch_cards.append(fmt_branch(f"LV{ph}", f"VTH{ph}", r_lv, l_lv_mH, 0.0))
 
-        # 3. Test Event Branches & Switches attached at transformer LV port (LV_A, LV_B, LV_C)
+        # 3. Test Event Branches & Switches attached at transformer LV port (LVA, LVB, LVC)
         for idx, ev in enumerate(events):
             t_close = float(ev.start_time_s)
             t_open = float(ev.end_time_s)
@@ -145,7 +153,7 @@ class ATPCaseBuilder:
                 node_prefix = f"E{idx}"
                 for p_idx in ev.phases:
                     ph = ph_chars[p_idx]
-                    sec_node = f"LV_{ph}"
+                    sec_node = f"LV{ph}"
                     load_node = f"{node_prefix}{ph}"
                     branch_cards.append(fmt_branch(load_node, "", r_eq, l_mH, c_uF))
                     switch_cards.append(fmt_switch(sec_node, load_node, t_close, t_open))
@@ -159,15 +167,15 @@ class ATPCaseBuilder:
                 if f_type in ["LG", "LLG", "LLL"]:
                     for p_idx in ev.phases:
                         ph = ph_chars[p_idx]
-                        sec_node = f"LV_{ph}"
+                        sec_node = f"LV{ph}"
                         fault_node = f"F{idx}_{ph}"
                         branch_cards.append(fmt_branch(fault_node, "", f_res, 0.0, 0.0))
                         switch_cards.append(fmt_switch(sec_node, fault_node, t_close, t_open))
                 elif f_type in ["LL"]:
                     if len(ev.phases) >= 2:
                         p1, p2 = ev.phases[0], ev.phases[1]
-                        node1 = f"LV_{ph_chars[p1]}"
-                        node2 = f"LV_{ph_chars[p2]}"
+                        node1 = f"LV{ph_chars[p1]}"
+                        node2 = f"LV{ph_chars[p2]}"
                         f_node = f"F{idx}_LL"
                         branch_cards.append(fmt_branch(f_node, "", f_res, 0.0, 0.0))
                         switch_cards.append(fmt_switch(node1, f_node, t_close, t_open))
@@ -194,8 +202,12 @@ class ATPCaseBuilder:
             src_up_a,
             src_up_b,
             src_up_c,
+            src_dn_a,
+            src_dn_b,
+            src_dn_c,
             "/OUTPUT",
-            "  LV_A  LV_B  LV_C",
+            "  LVA   LVB   LVC",
+            "  LVA   VTHA  LVB   VTHB  LVC   VTHC",
             "BLANK BRANCH",
             "BLANK SWITCH",
             "BLANK SOURCE",

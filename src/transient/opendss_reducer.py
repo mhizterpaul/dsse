@@ -8,7 +8,7 @@ from src.transient.models import ThreePhaseThevenin
 class OpenDSSReducer:
     """
     OpenDSS Network Reducer that extracts multi-phase Thévenin equivalents (V_th, Z_th)
-    at transformer HV ports and downstream LV test buses.
+    at transformer HV ports and downstream LV test buses using OpenDSS fault study mode.
     Ensures that test equipment and faults are strictly EXCLUDED from OpenDSS pre-event steady-state
     and network reduction, leaving ATP as the sole EMT model of test branches.
     """
@@ -55,7 +55,7 @@ class OpenDSSReducer:
         return z_mat
 
     def reduce_upstream_thevenin(
-        self, dss_instance: Any, tx_name: str = "trans1"
+        self, dss_instance: Any, tx_name: str
     ) -> ThreePhaseThevenin:
         """
         Calculates 3-phase Thévenin equivalent (V_th_HV, Z_th_HV) looking upstream of the transformer HV bus.
@@ -71,7 +71,7 @@ class OpenDSSReducer:
 
         # 1. Reset mode to snap and solve steady-state operating point to extract V_pre and I_pre
         dss_instance.Text.Command("solve mode=snap")
-        dss_instance.Solution.Solve()
+        plant.solve_operating_point(dss_instance)
         v_pre_hv = self._extract_bus_complex_voltages(dss_instance, hv_bus)
 
         if not dss_instance.Circuit.SetActiveElement(tx_elem):
@@ -102,11 +102,11 @@ class OpenDSSReducer:
         return thevenin
 
     def reduce_downstream_thevenin(
-        self, dss_instance: Any, test_bus: str, tx_name: str = "trans1"
+        self, dss_instance: Any, test_bus: str, tx_name: str
     ) -> ThreePhaseThevenin:
         """
         Calculates 3-phase Thévenin equivalent (V_th_LV, Z_th_LV) looking downstream into the base LV network
-        at test_bus, explicitly excluding test load/fault elements.
+        at test_bus using OpenDSS faultstudy short-circuit impedance matrix reduction.
         """
         # Ensure test fault elements are disabled in OpenDSS during reduction
         dss_instance.run_command("disable Fault.*")
@@ -119,7 +119,7 @@ class OpenDSSReducer:
 
         # 1. Reset OpenDSS to power flow snap mode to solve steady-state V_pre and I_pre
         dss_instance.Text.Command("solve mode=snap")
-        dss_instance.Solution.Solve()
+        plant.solve_operating_point(dss_instance)
         v_pre_lv = self._extract_bus_complex_voltages(dss_instance, test_bus)
 
         # Query currents leaving transformer LV terminal (terminal 2) into downstream load network
@@ -139,19 +139,9 @@ class OpenDSSReducer:
             dtype=complex,
         )
 
-        # Calculate downstream base LV network load impedance matrix Z_th_LV = V_pre_LV / I_pre_LV
-        z_th_lv = np.zeros((3, 3), dtype=complex)
-        for i in range(3):
-            if abs(i_pre_lv[i]) <= 1e-6:
-                raise ValueError(
-                    f"Transformer LV terminal phase {i} current is zero ({i_pre_lv[i]} A), cannot compute downstream Thévenin load impedance"
-                )
-            z_val = v_pre_lv[i] / i_pre_lv[i]
-            r_val = abs(float(np.real(z_val)))
-            x_val = abs(float(np.imag(z_val)))
-            z_th_lv[i, i] = complex(r_val, x_val)
-
-        v_th_lv = v_pre_lv
+        # 2. Extract downstream 3x3 short-circuit matrix Z_th_LV from OpenDSS faultstudy mode
+        z_th_lv = self._extract_bus_zsc_matrix(dss_instance, test_bus)
+        v_th_lv = v_pre_lv + (z_th_lv @ i_pre_lv)
 
         thevenin = ThreePhaseThevenin(
             v_th=v_th_lv,
@@ -163,7 +153,7 @@ class OpenDSSReducer:
         return thevenin
 
     def resolve_event_ports(
-        self, dss_instance: Any, event: Any, feeder_idx: int = 1
+        self, dss_instance: Any, event: Any, feeder_idx: int
     ) -> dict:
         """
         Resolves event targets into physical transformer HV/LV buses and LV test port.
