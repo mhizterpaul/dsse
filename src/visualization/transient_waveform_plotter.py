@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.simulation.runner import CoSimulationRunner
 from src.transient.events import SingleEquipmentSwitchEvent
-from src.simulation.filter import remove_low_frequency_components
+from src.simulation.filter import apply_bandpass_filter
 
 
 def simulate_and_plot_equipment_group(group_id: int = 1):
@@ -54,13 +54,13 @@ def simulate_and_plot_equipment_group(group_id: int = 1):
             feeder_idx=1
         )
 
-        v_raw = v_dict["trans1"]
-        i_raw = i_dict["trans1"]
+        v_raw = v_dict["trans1_lv_boundary"]
+        i_raw = i_dict["trans1_lv_boundary"]
 
-        v_high = remove_low_frequency_components(v_raw)
-        i_high = remove_low_frequency_components(i_raw)
+        v_filt = apply_bandpass_filter(data=v_raw, fundamental_hz=50.0, bandwidth_hz=10.0, fs=10000.0, order=4)
+        i_filt = apply_bandpass_filter(data=i_raw, fundamental_hz=50.0, bandwidth_hz=10.0, fs=10000.0, order=4)
 
-        waveforms[eq] = {"time": t, "voltage": v_high, "current": i_high}
+        waveforms[eq] = {"time": t, "voltage": v_filt, "current": i_filt}
 
     fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
     for idx, eq in enumerate(equipment_types):
