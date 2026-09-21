@@ -37,8 +37,8 @@ class SimulationResult:
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
     """
-    Extracts fault parameters (fault_type, fault_resistance_ohm, faulted_phases, line parameters)
-    directly from event specifications and active OpenDSS line elements.
+    Extracts fault parameters (fault_type, fault_resistance_ohm, faulted_phases, line parameters,
+    phase and neutral line currents) directly from event specifications and active OpenDSS line elements.
     Raises ValueError if required fault parameters or line elements are missing or invalid.
     """
     ev_fault = None
@@ -68,13 +68,33 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
     start_time_s = float(ev_fault.start_time_s)
     duration_s = float(ev_fault.duration_s)
 
-    # Query Line element parameters
+    # Query Line element parameters and conductor currents
     line_elem = f"Line.{target_line}"
     if dss_instance.Circuit.SetActiveElement(line_elem):
         line_r1 = float(dss_instance.Properties.Value("r1"))
         line_x1 = float(dss_instance.Properties.Value("x1"))
+        c_raw = dss_instance.CktElement.Currents()
+        f_currents = [float(c) for c in c_raw]
     else:
         raise ValueError(f"Target line '{line_elem}' could not be activated in OpenDSS")
+
+    # Query Fault element if present
+    fault_elem = f"Fault.{fault_id}"
+    if dss_instance.Circuit.SetActiveElement(fault_elem):
+        c_fault_raw = dss_instance.CktElement.Currents()
+        if len(c_fault_raw) > 0:
+            f_currents = [float(c) for c in c_fault_raw]
+
+    # Compute neutral line current (conductor 4 or sum of 3 phase currents)
+    if len(f_currents) >= 8:
+        i_n = complex(f_currents[6], f_currents[7])
+    elif len(f_currents) >= 6:
+        i_a = complex(f_currents[0], f_currents[1])
+        i_b = complex(f_currents[2], f_currents[3])
+        i_c = complex(f_currents[4], f_currents[5])
+        i_n = i_a + i_b + i_c
+    else:
+        i_n = complex(0.0, 0.0)
 
     fault_info = {
         "fault_id": fault_id,
@@ -83,7 +103,8 @@ def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event
         "fault_type": fault_type,
         "fault_resistance_ohm": fault_r,
         "faulted_phases": faulted_phases,
-        "fault_currents": [0.0] * 6,
+        "fault_currents": f_currents,
+        "neutral_current_a": float(abs(i_n)),
         "line_r1_ohm": line_r1,
         "line_x1_ohm": line_x1,
         "start_time_s": start_time_s,
