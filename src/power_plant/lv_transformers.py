@@ -3,6 +3,13 @@ Explicit Physical 11/0.415 kV LV Distribution Transformer Models.
 Contains 3 distinct transformer models for feeder edge interfaces.
 """
 
+import numpy as np
+from src.transient.models import (
+    TransformerSpec,
+    TransformerWinding,
+    ShortCircuitTest,
+)
+
 # Explicit LV Distribution Transformer Specifications Matrix
 TRANSFORMER_MODELS = {
     "trans1": {
@@ -66,6 +73,7 @@ TRANSFORMER_MODELS = {
 # Single Baseline Transformer Model for Datasets 2 and 3
 BASELINE_TRANSFORMER_MODEL = TRANSFORMER_MODELS["trans1"]
 
+
 def get_distribution_transformer_spec(feeder_idx: int, use_baseline: bool = False) -> dict:
     """
     Returns the physical specifications of the 11/0.415 kV distribution step-down transformer.
@@ -86,3 +94,45 @@ def get_distribution_transformer_spec(feeder_idx: int, use_baseline: bool = Fals
     spec["name"] = tx_key
     spec["buses"] = [f"feeder{feeder_idx}_head", f"feeder{feeder_idx}_sec"]
     return spec
+
+
+def build_transformer_spec(
+    feeder_idx: int, use_baseline: bool = False, frequency_hz: float = 50.0
+) -> TransformerSpec:
+    """
+    Constructs and returns the domain TransformerSpec object for a given feeder.
+    """
+    spec_dict = get_distribution_transformer_spec(feeder_idx, use_baseline=use_baseline)
+    kvas = spec_dict["kvas"]
+    kvs = spec_dict["kvs"]
+    r_pct = float(spec_dict["r_pct"])
+    xhl_pct = float(spec_dict["xhl_pct"])
+    noloadloss_pct = float(spec_dict["noloadloss_pct"])
+    imag_pct = float(spec_dict["imag_pct"])
+    conns = spec_dict.get("conns", ["delta", "wye"])
+
+    r0_pct = float(spec_dict.get("r0_pct", r_pct))
+    x0_pct = float(spec_dict.get("x0_pct", xhl_pct))
+    z0_pu = float(np.sqrt((r0_pct / 100.0) ** 2 + (x0_pct / 100.0) ** 2))
+    losses_zero_kw = (r0_pct / 100.0) * float(kvas[0])
+
+    return TransformerSpec(
+        name=str(spec_dict["name"]),
+        frequency_hz=float(frequency_hz),
+        windings=[
+            TransformerWinding("HV", float(kvs[0]), float(kvas[0]) / 1000.0, str(conns[0]), 0.0),
+            TransformerWinding("LV", float(kvs[1]), float(kvas[1]) / 1000.0, str(conns[1]), -30.0),
+        ],
+        short_circuit_tests=[
+            ShortCircuitTest(
+                1,
+                2,
+                z_pos_pu=float(np.sqrt((r_pct / 100.0) ** 2 + (xhl_pct / 100.0) ** 2)),
+                losses_pos_kw=(r_pct / 100.0) * float(kvas[0]),
+                z_zero_pu=z0_pu,
+                losses_zero_kw=losses_zero_kw,
+            )
+        ],
+        excitation_current_percent=imag_pct,
+        excitation_loss_kw=(noloadloss_pct / 100.0) * float(kvas[0]),
+    )

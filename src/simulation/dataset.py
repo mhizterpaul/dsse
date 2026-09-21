@@ -322,7 +322,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             4
         )
 
-        
+
 
         metered_consumer_energies = {
             u.consumer_id: consumer_energies[u.consumer_id]
@@ -340,14 +340,14 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             sampled_consumer_energy_kwh=gt_sampled_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             registry=registry
-        ) 
+        )
 
         time_cla_res = time_cla_estimator.estimate(
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             metered_consumer_energies=metered_consumer_energies,
             registry=registry
-        ) 
+        )
 
         unmetered_units = [u for u in feeder_units if not u.is_metered]
         weights_map = cla_estimator.weighting_function(unmetered_units)
@@ -401,7 +401,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
 
             unit_weight = round(float(weights_map.get(u.consumer_id)), 6) if not is_metered else np.nan
 
-            assigned_class = u.assigned_load_class 
+            assigned_class = u.assigned_load_class
             consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
             # Registered consumer unit (consumer_type includes assigned class and status type)
