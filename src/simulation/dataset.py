@@ -110,12 +110,12 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         i_joint = item["i_joint"]
 
         # Apply low frequency filter to waveforms
-        v1_filt = remove_low_frequency_components(v1)
-        i1_filt = remove_low_frequency_components(i1)
-        v2_filt = remove_low_frequency_components(v2)
-        i2_filt = remove_low_frequency_components(i2)
-        v_joint_filt = remove_low_frequency_components(v_joint)
-        i_joint_filt = remove_low_frequency_components(i_joint)
+        v1_filt = remove_low_frequency_components(v1, cutoff_hz=50.0, fs=10000.0, order=4)
+        i1_filt = remove_low_frequency_components(i1, cutoff_hz=50.0, fs=10000.0, order=4)
+        v2_filt = remove_low_frequency_components(v2, cutoff_hz=50.0, fs=10000.0, order=4)
+        i2_filt = remove_low_frequency_components(i2, cutoff_hz=50.0, fs=10000.0, order=4)
+        v_joint_filt = remove_low_frequency_components(v_joint, cutoff_hz=50.0, fs=10000.0, order=4)
+        i_joint_filt = remove_low_frequency_components(i_joint, cutoff_hz=50.0, fs=10000.0, order=4)
 
         v_comp = v1_filt + v2_filt
         i_comp = i1_filt + i2_filt
