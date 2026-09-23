@@ -39,7 +39,7 @@ def simulate_and_plot_equipment_group(group_id: int = 1):
     }
 
     runner = CoSimulationRunner()
-    runner.initialize_plant_session(use_baseline_transformers=True, seed=42)
+    runner.initialize_plant_session(use_baseline_feeder=True, seed=42)
 
     waveforms = {}
 

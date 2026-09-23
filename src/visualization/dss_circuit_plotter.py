@@ -28,7 +28,7 @@ def plot_opendss_circuit(
     runner = CoSimulationRunner()
     if dss is None:
         dss = runner.dss
-    runner.initialize_plant_session(use_baseline_transformers=use_baseline_transformers, seed=42)
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_transformers, seed=42)
 
     # Set Voltagebases and solve so network solution is valid
     dss.run_command("Set Voltagebases=[33.0, 11.0, 0.415]")

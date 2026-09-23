@@ -332,8 +332,18 @@ class CoSimulationRunner:
         """
         from concurrent.futures import ProcessPoolExecutor
 
+        bctran_cache = dict(self._bctran_cache)
+        for f_idx in (1, 2, 3):
+            tx_spec = build_transformer_spec(
+                feeder_idx=f_idx, use_baseline=use_baseline_feeder, frequency_hz=50.0
+            )
+            tx_key = (tx_spec.name, 50.0)
+            if tx_key not in bctran_cache:
+                bctran_cache[tx_key] = self.bctran_generator.generate(tx_spec)
+        self._bctran_cache.update(bctran_cache)
+
         tasks = [
-            (ev, use_baseline_feeder, seed + idx, idx)
+            (ev, use_baseline_feeder, seed + idx, idx, bctran_cache)
             for idx, ev in enumerate(events)
         ]
 
@@ -350,9 +360,10 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     OpenDSS solves pre-event steady-state operating points of the base network.
     Test loads and faults are instantiated exclusively in ATP.
     """
-    co_ev, use_baseline_feeder, seed, task_idx = args_tuple
+    co_ev, use_baseline_feeder, seed, task_idx, bctran_cache = args_tuple
 
     runner = CoSimulationRunner()
+    runner._bctran_cache.update(bctran_cache)
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
 
     ev1 = co_ev.event_1
