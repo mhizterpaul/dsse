@@ -1,0 +1,13 @@
+numpy
+scipy
+PyWavelets
+pandas
+xarray
+matplotlib
+ipython
+OpenDSSDirect.py[extras]
+altdss
+dss-python
+fortranformat
+git+https://github.com/pdb5627/text_data_cards.git
+git+https://github.com/pdb5627/pyATP.git#egg=atp-utils
