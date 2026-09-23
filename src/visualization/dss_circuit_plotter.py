@@ -1,6 +1,8 @@
 import os
 import sys
+import math
 from pathlib import Path
+from typing import Optional, Union, Dict, Any
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
@@ -12,73 +14,115 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.simulation.runner import CoSimulationRunner
 
 
-def assign_bus_coordinates(dss_instance) -> dict:
+def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) -> Dict[str, tuple[float, float]]:
     """
-    Assigns spatial coordinates (X, Y) to all buses in the active OpenDSS circuit
-    so that OpenDSS graphics/plot elements can render the distribution network layout.
+    Dynamically computes and assigns spatial coordinates (X, Y) to all buses
+    in the active OpenDSS circuit based on the plant topology parameters from plant_data and active OpenDSS lines.
+    Uses MV feeder line lengths and LV network branch line lengths/radial tree structures directly from plant.py.
     """
-    buses = dss_instance.Circuit.AllBusNames()
+    buses = [b.lower() for b in dss_instance.Circuit.AllBusNames()]
     coords = {}
 
-    for b in buses:
-        b_lower = b.lower()
-        if b_lower == "sourcebus":
-            c = (0.0, 0.0)
-        elif b_lower == "main_bus":
-            c = (0.0, 100.0)
-        elif b_lower == "feeder1_head":
-            c = (-250.0, 250.0)
-        elif b_lower == "feeder1_sec":
-            c = (-250.0, 300.0)
-        elif b_lower == "feeder2_head":
-            c = (0.0, 250.0)
-        elif b_lower == "feeder2_sec":
-            c = (0.0, 300.0)
-        elif b_lower == "feeder3_head":
-            c = (250.0, 250.0)
-        elif b_lower == "feeder3_sec":
-            c = (250.0, 300.0)
-        elif b_lower.startswith("f1_node"):
-            try:
-                node_num = int(b_lower.replace("f1_node", ""))
-            except ValueError:
-                node_num = 1
-            dx = ((node_num % 5) - 2) * 45.0
-            dy = 300.0 + node_num * 35.0
-            c = (-250.0 + dx, dy)
-        elif b_lower.startswith("f2_node"):
-            try:
-                node_num = int(b_lower.replace("f2_node", ""))
-            except ValueError:
-                node_num = 1
-            dx = ((node_num % 5) - 2) * 45.0
-            dy = 300.0 + node_num * 35.0
-            c = (0.0 + dx, dy)
-        elif b_lower.startswith("f3_node"):
-            try:
-                node_num = int(b_lower.replace("f3_node", ""))
-            except ValueError:
-                node_num = 1
-            dx = ((node_num % 5) - 2) * 45.0
-            dy = 300.0 + node_num * 35.0
-            c = (250.0 + dx, dy)
-        else:
-            err_msg = f"Bus '{b}' missing coordinate mapping in assign_bus_coordinates"
-            raise ValueError(err_msg)
+    # 1. Base Substation & Main Bus Coordinates
+    coords["sourcebus"] = (0.0, 0.0)
+    coords["main_bus"] = (0.0, 100.0)
 
-        coords[b_lower] = c
-        dss_instance.run_command(f"SetBusXY Bus={b} x={c[0]} y={c[1]}")
+    # Dynamically extract MV feeder lengths from active OpenDSS Line elements or plant_data
+    mv_feeder_lengths = {}
+    for f_id in [1, 2, 3]:
+        line_name = f"Line.mv_feeder_{f_id}"
+        if dss_instance.Circuit.SetActiveElement(line_name):
+            try:
+                length = float(dss_instance.Properties.Value("length"))
+            except Exception:
+                length = 5.0
+        else:
+            length = 5.0
+        mv_feeder_lengths[f_id] = length
+
+    # Compute MV feeder angles based on the number of feeders to distribute evenly
+    num_feeders = len(mv_feeder_lengths)
+    feeder_angles = {}
+    for idx, f_id in enumerate(sorted(mv_feeder_lengths.keys())):
+        # Distribute angles evenly across 180 degrees arc (e.g. 150, 90, 30 for 3 feeders)
+        if num_feeders > 1:
+            ang = 150.0 - idx * (120.0 / (num_feeders - 1))
+        else:
+            ang = 90.0
+        feeder_angles[f_id] = ang
+
+    for f_id, length in mv_feeder_lengths.items():
+        ang_rad = math.radians(feeder_angles[f_id])
+        dist = length * 30.0
+        hx = coords["main_bus"][0] + dist * math.cos(ang_rad)
+        hy = coords["main_bus"][1] + dist * math.sin(ang_rad)
+        head_bus = f"feeder{f_id}_head"
+        sec_bus = f"feeder{f_id}_sec"
+        if head_bus in buses:
+            coords[head_bus] = (hx, hy)
+        if sec_bus in buses:
+            coords[sec_bus] = (hx, hy + 30.0)
+
+    # 2. Traverse LV Network Radial Topologies dynamically from plant_data
+    topologies = plant_data.get("topology", {}).get("topologies", {})
+    for f_id, sub_topo in topologies.items():
+        sec_bus = f"feeder{f_id}_sec"
+        if sec_bus not in coords:
+            coords[sec_bus] = (0.0, 300.0)
+
+        # Build adjacency graph from topology line parameters
+        adj = {}
+        for ln in sub_topo.get("lines", []):
+            p = str(ln["bus1"]).lower()
+            c = str(ln["bus2"]).lower()
+            l = float(ln.get("length", 0.05))
+            adj.setdefault(p, []).append((c, l))
+
+        # BFS/DFS traversal to calculate spatial coordinates along tree
+        queue = [sec_bus]
+        node_angles = {sec_bus: feeder_angles.get(f_id, 90.0)}
+
+        while queue:
+            parent = queue.pop(0)
+            px, py = coords[parent]
+            p_ang = node_angles[parent]
+            children = adj.get(parent, [])
+            num_c = len(children)
+            for i, (child, line_len) in enumerate(children):
+                if num_c == 1:
+                    c_ang = p_ang
+                else:
+                    spread = 60.0
+                    c_ang = p_ang - (spread / 2.0) + i * (spread / max(num_c - 1.0, 1.0))
+
+                c_rad = math.radians(c_ang)
+                scale = max(line_len * 1000.0, 30.0)
+                cx = px + scale * math.cos(c_rad)
+                cy = py + scale * math.sin(c_rad)
+                coords[child] = (cx, cy)
+                node_angles[child] = c_ang
+                queue.append(child)
+
+    # 3. Apply SetBusXY to OpenDSS for all circuit buses with graceful fallback for unmapped buses
+    default_x, default_y = 0.0, 200.0
+    for idx, b in enumerate(dss_instance.Circuit.AllBusNames()):
+        b_lower = b.lower()
+        if b_lower in coords:
+            x, y = coords[b_lower]
+        else:
+            # Graceful fallback position for auxiliary/internal buses
+            x, y = default_x + (idx * 20.0), default_y
+            coords[b_lower] = (x, y)
+        dss_instance.run_command(f"SetBusXY Bus={b} x={x} y={y}")
 
     return coords
 
-
-from typing import Optional, Union
 
 def validate_network_plot(fig: plt.Figure, save_path: Optional[Union[str, Path]] = None):
     """
     Validates that the generated OpenDSS distribution network plot is not empty.
     Checks axes collections/lines/elements as well as rendered image pixels if saved.
-    Raises ValueError or RuntimeError if empty.
+    Raises ValueError if empty.
     """
     if not fig or not fig.axes:
         raise ValueError("Generated OpenDSS distribution network plot figure or axes is empty.")
@@ -117,7 +161,7 @@ def plot_opendss_circuit(
 ):
     """
     Initializes OpenDSS plant session and generates native OpenDSS circuit plot
-    using DSS-Extensions graphics/plot elements with proper labels for lines, loads, generator, and transformers.
+    using plant parameters directly from plant.py with proper labels for lines, loads, generator, and transformers.
     Validates that the resulting distribution network plot is not empty, throwing an error if empty.
     """
     import dss as dss_py
@@ -126,10 +170,10 @@ def plot_opendss_circuit(
     if dss is None:
         dss = runner.dss
 
-    runner.initialize_plant_session(use_baseline_feeder=use_baseline_transformers, seed=42)
+    plant_data = runner.initialize_plant_session(use_baseline_feeder=use_baseline_transformers, seed=42)
 
-    # 1. Assign spatial coordinates to all circuit buses for OpenDSS plotting
-    bus_coords = assign_bus_coordinates(dss)
+    # 1. Assign spatial coordinates dynamically from plant_data topology parameters
+    bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
     # 2. Enable DSS-Python plotting extension subsystem
     if hasattr(dss_py, "DSS") and hasattr(dss_py.DSS, "Plotting"):
@@ -161,8 +205,9 @@ def plot_opendss_circuit(
     fig = plt.figure(fignums[-1])
     ax = fig.axes[0]
 
-    # 4. Overlay specific network element markers and labels (lines, loads, generator, transformers)
-    # Generator
+    # 4. Overlay network element markers and labels using dynamic plant parameters
+    # Generator label from generator_info in plant_data
+    gen_kw = plant_data.get("generator_info", {}).get("generator_kw", 1500.0)
     gen_buses = set()
     for g in dss.Generators.AllNames():
         dss.Generators.Name(g)
@@ -172,7 +217,7 @@ def plot_opendss_circuit(
         if gbus in bus_coords:
             gx, gy = bus_coords[gbus]
             ax.plot(gx, gy, "^", color="darkgreen", markersize=13, label="Generator", zorder=20)
-            ax.text(gx + 15, gy, "Gen (1.5MW)", fontsize=9, fontweight="bold", color="darkgreen", zorder=21)
+            ax.text(gx + 15, gy, f"Gen ({gen_kw/1000.0:.1f}MW)", fontsize=9, fontweight="bold", color="darkgreen", zorder=21)
 
     # Transformers
     tx_buses = set()
@@ -197,7 +242,7 @@ def plot_opendss_circuit(
             lx, ly = bus_coords[lbus]
             ax.plot(lx, ly, "o", color="royalblue", markersize=7, label="Loads", zorder=16)
 
-    # Lines (dummy handle for legend representation)
+    # Lines (dummy handle for legend)
     ax.plot([], [], "-", color="black", linewidth=2, label="Distribution Lines")
 
     # Add clean legend
