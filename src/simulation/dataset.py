@@ -412,14 +412,11 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 "consumer_type": consumer_type_label,
                 "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
                 "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
-                "assigned_weight": cla_weight,
                 "cla_assigned_weight": cla_weight,
                 "time_adjusted_cla_assigned_weight": time_cla_weight,
                 "gt_consumed_energy_kwh": round(unit_consumed_energy_kwh, 4),
                 "consumer_line_losses": c_line_loss_kwh,
-                "cla_estimates": cla_est,
                 "cla_estimates_kwh": cla_est,
-                "time_adjusted_cla_estimates": time_cla_est,
                 "time_adjusted_cla_estimates_kwh": time_cla_est
             })
 
@@ -447,14 +444,11 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                     "consumer_type": "latent",
                     "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
                     "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
-                    "assigned_weight": np.nan,
                     "cla_assigned_weight": np.nan,
                     "time_adjusted_cla_assigned_weight": np.nan,
                     "gt_consumed_energy_kwh": np.nan,
                     "consumer_line_losses": latent_line_loss_kwh,
-                    "cla_estimates": np.nan,
                     "cla_estimates_kwh": np.nan,
-                    "time_adjusted_cla_estimates": np.nan,
                     "time_adjusted_cla_estimates_kwh": np.nan
                 })
 
