@@ -451,6 +451,9 @@ def plot_opendss_circuit(
                 if total_elements > 0:
                     fig = candidate
                     ax = candidate_ax
+                    # Clear any residual raw text node labels from native OpenDSS plot
+                    while ax.texts:
+                        ax.texts[0].remove()
 
     except Exception as exc:
         native_plot_error = exc
@@ -472,10 +475,6 @@ def plot_opendss_circuit(
         )
 
         ax = fig.axes[0]
-
-    # Clear any residual raw text node labels if any were added
-    while ax.texts:
-        ax.texts[0].remove()
 
     # 4. Overlay meaningful network component labels (Generator, Transformers, Representative Loads)
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
