@@ -64,7 +64,8 @@ class TimeAdjustedCLAEstimator:
         unmetered_units: List[object],
         metered_units: List[object],
         metered_consumer_energies: Dict[str, float],
-        cla_estimates: Optional[Dict[str, float]] = None
+        cla_estimates: Optional[Dict[str, float]] = None,
+        cla_weights: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
         Computes normalized time-adjusted weights w_i for unmetered consumer units,
@@ -83,6 +84,9 @@ class TimeAdjustedCLAEstimator:
         if cla_estimates is None:
             raise ValueError("cla_estimates dictionary must be provided to weighting_function")
 
+        if cla_weights is None:
+            raise ValueError("cla_weights dictionary must be provided to weighting_function")
+
         class_base_estimates: Dict[str, List[float]] = {}
         for u in unmetered_units:
             cid = getattr(u, "consumer_id", None)
@@ -93,6 +97,8 @@ class TimeAdjustedCLAEstimator:
                 raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
             if cid not in cla_estimates:
                 raise ValueError(f"Missing base CLA estimate for unmetered consumer unit '{cid}'")
+            if cid not in cla_weights:
+                raise ValueError(f"Missing base CLA assigned weight for unmetered consumer unit '{cid}'")
             class_base_estimates.setdefault(class_id, []).append(float(cla_estimates[cid]))
 
         class_base_avg = {
@@ -104,7 +110,7 @@ class TimeAdjustedCLAEstimator:
             cid = getattr(u, "consumer_id", None)
             class_id = getattr(u, "assigned_load_class", None)
 
-            base_w = ConsumerLoadClassModel.compute_expected_weight(u)
+            base_w = float(cla_weights[cid])
 
             if class_id not in class_base_avg or class_base_avg[class_id] <= 0:
                 raise ValueError(f"Missing or non-positive base CLA estimate for load class '{class_id}'")
@@ -132,7 +138,8 @@ class TimeAdjustedCLAEstimator:
         technical_loss_kwh: float,
         metered_consumer_energies: Dict[str, float],
         registry: Optional[object] = None,
-        cla_estimates: Optional[Dict[str, float]] = None
+        cla_estimates: Optional[Dict[str, float]] = None,
+        cla_weights: Optional[Dict[str, float]] = None
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
@@ -163,7 +170,7 @@ class TimeAdjustedCLAEstimator:
                 weights={}
             )
 
-        if cla_estimates is None and unmetered_units:
+        if (cla_estimates is None or cla_weights is None) and unmetered_units:
             from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
             cla_estimator = ClusterLoadAllocationEstimator()
             cla_res = cla_estimator.estimate(
@@ -172,13 +179,17 @@ class TimeAdjustedCLAEstimator:
                 technical_loss_kwh=technical_loss_kwh,
                 registry=registry
             )
-            cla_estimates = cla_res.allocated_unsampled_consumer_energy
+            if cla_estimates is None:
+                cla_estimates = cla_res.allocated_unsampled_consumer_energy
+            if cla_weights is None:
+                cla_weights = cla_res.weights
 
         weights = self.weighting_function(
             unmetered_units=unmetered_units,
             metered_units=metered_units,
             metered_consumer_energies=metered_consumer_energies,
-            cla_estimates=cla_estimates
+            cla_estimates=cla_estimates,
+            cla_weights=cla_weights
         )
 
         allocations = {}
