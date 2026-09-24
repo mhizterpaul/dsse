@@ -90,20 +90,22 @@ class TimeAdjustedCLAEstimator:
                 raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
 
             base_w = ConsumerLoadClassModel.compute_expected_weight(u)
+            base_estimate = base_w
 
             if class_id in class_metered_avg and class_metered_avg[class_id] > 0:
                 avg_metered_e = class_metered_avg[class_id]
-                adjusted_w = base_w * ((avg_metered_e / base_w) - 1.0)
+                adjusted_w = base_w * abs((avg_metered_e / base_estimate) - 1.0)
             else:
                 raise ValueError(f"missing metered energy observation for class '{class_id}'")
 
             raw_weights[cid] = float(adjusted_w)
 
-        sum_adj = sum(raw_weights.values())
-        residual = 1 - sum_adj 
-        n_units = len(unmetered_units)
+        sum_raw = sum(raw_weights.values())
+        if sum_raw <= 0:
+            n_units = len(unmetered_units)
+            return {getattr(p, "consumer_id", str(p)): 1.0 / n_units for p in unmetered_units}
 
-        normalized_weights = {cid: float(w - (residual / n_units)) for cid, w in raw_weights.items()}
+        normalized_weights = {cid: float(w / sum_raw) for cid, w in raw_weights.items()}
         return normalized_weights
 
     def estimate(
