@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import numpy as np
+from src.loads import get_equipment_model
+
 
 @dataclass
 class LoadDefinition:
     load_id: str
     circuit_id: str
-    load_type: str = "ac_motor"  # e.g., 'ac_motor', 'dc_motor_inverter', 'microwave', 'induction_plate', 'compressor', 'audio_amplifier', 'ups', 'industrial_fan'
+    load_type: str = "ac_motor"
     is_extra_load: bool = False
 
 
@@ -17,7 +19,7 @@ class ConsumerUnit:
     feeder_id: str
     service_line_resistance_ohm: float
     service_line_reactance_ohm: float
-    assigned_load_class: Optional[str] = None  # None for latent/unmetered hidden consumers
+    assigned_load_class: Optional[str] = None
     loads: List[LoadDefinition] = field(default_factory=list)
     is_metered: bool = False
     is_latent_unmetered: bool = False
@@ -34,18 +36,49 @@ class ConsumerUnit:
 class ConsumerRegistry:
     """
     Consumer Registry in power_plant module managing assigned load classes,
-    registered consumer units, and hidden/latent consumer units without assigned classes
-    for calculating non-technical losses as specified in paper.md.
+    class weights, extra load assignments dependent on load power rating, and consumer units.
     """
     LOAD_CLASSES = ["residential", "commercial", "industrial", "agricultural"]
+    CLASS_WEIGHTS = {
+        "residential": 1.0,
+        "commercial": 2.2,
+        "industrial": 3.5,
+        "agricultural": 1.5
+    }
+
     LOAD_CIRCUIT_TYPES = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
         "compressor", "audio_amplifier", "ups", "industrial_fan"
     ]
+
+    CLASS_PRIMARY_LOADS = {
+        "residential": ["microwave", "induction_plate", "audio_amplifier"],
+        "commercial": ["compressor", "ac_motor", "ups"],
+        "industrial": ["ac_motor", "industrial_fan", "dc_motor_inverter"],
+        "agricultural": ["ac_motor", "compressor"]
+    }
+
     def __init__(self, seed: int = 42):
         self.rng = np.random.default_rng(seed)
         self._registered_consumers: Dict[str, ConsumerUnit] = {}
         self._latent_consumers: Dict[str, ConsumerUnit] = {}
+
+    def get_assigned_weight(self, unit) -> float:
+        class_id = getattr(unit, "assigned_load_class", None)
+        if class_id is None or class_id not in self.CLASS_WEIGHTS:
+            raise ValueError(
+                f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' is missing or has invalid assigned_load_class: {class_id}"
+            )
+        base_w = self.CLASS_WEIGHTS[class_id]
+        loads = getattr(unit, "loads", [])
+
+        extra_weight = 0.0
+        for ld in loads:
+            if getattr(ld, "is_extra_load", False):
+                eq = get_equipment_model(ld.load_type)
+                extra_weight += float(eq.rated_power_kw * 0.05)
+
+        return float(base_w + extra_weight)
 
     def register_consumer(
         self,
@@ -64,7 +97,8 @@ class ConsumerRegistry:
         if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
             raise ValueError(f"Service line resistance and reactance must be provided for consumer {consumer_id}")
 
-        base_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
+        primary_types = self.CLASS_PRIMARY_LOADS.get(assigned_load_class, self.LOAD_CIRCUIT_TYPES)
+        base_type = str(self.rng.choice(primary_types))
         base_load = LoadDefinition(
             load_id=f"{consumer_id}_load_base",
             circuit_id=f"{consumer_id}_circuit_1",
@@ -73,7 +107,21 @@ class ConsumerRegistry:
         )
         loads = [base_load]
 
-        if self.rng.random() < extra_load_probability:
+        if not is_metered:
+            num_extra = int(self.rng.choice([0, 1, 2], p=[0.35, 0.45, 0.20]))
+            outside_types = [t for t in self.LOAD_CIRCUIT_TYPES if t not in primary_types]
+            if not outside_types:
+                outside_types = self.LOAD_CIRCUIT_TYPES
+            for k in range(num_extra):
+                extra_type = str(self.rng.choice(outside_types))
+                extra_load = LoadDefinition(
+                    load_id=f"{consumer_id}_extra_{k+1}_{extra_type}",
+                    circuit_id=f"{consumer_id}_circuit_extra_{k+1}",
+                    load_type=extra_type,
+                    is_extra_load=True
+                )
+                loads.append(extra_load)
+        elif self.rng.random() < extra_load_probability:
             extra_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
             extra_load = LoadDefinition(
                 load_id=f"{consumer_id}_{extra_type}",
@@ -106,10 +154,6 @@ class ConsumerRegistry:
         service_line_reactance_ohm: Optional[float] = None,
         load_type: str = "ac_motor"
     ) -> ConsumerUnit:
-        """
-        Registers a hidden/latent consumer unit without an assigned class in the LV network.
-        Used for evaluating non-technical losses (NTL) and theft estimation error.
-        """
         if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
             raise ValueError(f"Service line resistance and reactance must be provided for latent consumer {consumer_id}")
 
@@ -123,7 +167,7 @@ class ConsumerRegistry:
             consumer_id=consumer_id,
             bus_id=bus_id,
             feeder_id=feeder_id,
-            assigned_load_class=None,  # No assigned class for latent/unmetered units
+            assigned_load_class=None,
             loads=[load],
             is_latent_unmetered=True,
             service_line_resistance_ohm=service_line_resistance_ohm,
@@ -142,15 +186,9 @@ class ConsumerRegistry:
         return list(self._registered_consumers.values())
 
     def get_metered_consumers(self) -> List[ConsumerUnit]:
-        """
-        Returns the subset of registered consumer units that are designated as metered/sampled.
-        """
         return [c for c in self._registered_consumers.values() if c.is_metered]
 
     def get_unmetered_consumers(self) -> List[ConsumerUnit]:
-        """
-        Returns the subset of registered consumer units that are unmetered.
-        """
         return [c for c in self._registered_consumers.values() if not c.is_metered]
 
     def get_latent_consumers(self) -> List[ConsumerUnit]:
@@ -163,10 +201,6 @@ class ConsumerRegistry:
         return [c for c in self.get_all_consumers() if c.has_extra_load]
 
     def build_registry_from_topology(self, topology: dict) -> Dict[str, ConsumerUnit]:
-        """
-        Builds and populates consumer registry for all consumer buses/load circuits in given LV topology,
-        including registered consumer units and hidden/latent consumer units for NTL evaluation.
-        """
         topologies = topology.get("topologies", {})
         if topologies:
             for feeder_idx, sub_topo in topologies.items():
@@ -223,6 +257,26 @@ class ConsumerRegistry:
                     )
 
         return self._registered_consumers
+
+
+class ConsumerLoadClassModel:
+    CLASS_WEIGHTS = ConsumerRegistry.CLASS_WEIGHTS
+
+    @classmethod
+    def compute_expected_weight(cls, unit, registry=None) -> float:
+        if registry is not None and hasattr(registry, "get_assigned_weight"):
+            return registry.get_assigned_weight(unit)
+        class_id = getattr(unit, "assigned_load_class", None)
+        if class_id is None or class_id not in cls.CLASS_WEIGHTS:
+            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' is missing or has invalid assigned_load_class: {class_id}")
+        base_w = cls.CLASS_WEIGHTS[class_id]
+        loads = getattr(unit, "loads", [])
+        extra_weight = 0.0
+        for ld in loads:
+            if getattr(ld, "is_extra_load", False):
+                eq = get_equipment_model(ld.load_type)
+                extra_weight += float(eq.rated_power_kw * 0.05)
+        return float(base_w + extra_weight)
 
 
 def create_default_consumer_registry(topology: dict, seed: int = 42) -> ConsumerRegistry:
