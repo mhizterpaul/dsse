@@ -14,13 +14,31 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.simulation.runner import CoSimulationRunner
 
 
+def get_bus_voltage_angle_deg(dss_instance, bus_name: str) -> float:
+    """
+    Queries OpenDSS directly for the active Phase-A voltage phase angle (in degrees) of a specified bus.
+    Raises ValueError if the bus cannot be activated or has no voltage solution data.
+    """
+    if not dss_instance.Circuit.SetActiveBus(bus_name):
+        raise ValueError(f"Could not set active bus '{bus_name}' in OpenDSS circuit.")
+    v_mag_ang = dss_instance.Bus.VMagAngle()
+    if not v_mag_ang or len(v_mag_ang) < 2:
+        raise ValueError(f"Bus '{bus_name}' in OpenDSS circuit has no solved voltage angle data.")
+    return float(v_mag_ang[1])
+
+
 def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) -> Dict[str, tuple[float, float]]:
     """
-    Dynamically computes and assigns spatial coordinates (X, Y) to all buses
-    in the active OpenDSS circuit based on the plant topology parameters from plant_data and active OpenDSS lines.
-    Uses MV feeder line lengths and LV network branch line lengths/radial tree structures directly from plant.py.
+    Dynamically computes and assigns spatial coordinates (X, Y) to all buses in the active OpenDSS circuit.
+    Retrieves voltage phase angles directly from the solved OpenDSS model solution (dss_instance.Bus.VMagAngle())
+    and line lengths from active OpenDSS line elements and plant_data topology parameters.
     Raises KeyError or ValueError if required topology or element parameters are missing (no default fallbacks permitted).
     """
+    # Solve OpenDSS circuit first to populate voltage solution and phase angles
+    dss_instance.run_command("Set Voltagebases=[33.0, 11.0, 0.415]")
+    dss_instance.run_command("CalcVoltageBases")
+    dss_instance.run_command("solve")
+
     buses = [b.lower() for b in dss_instance.Circuit.AllBusNames()]
     coords = {}
 
@@ -28,8 +46,9 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
     coords["sourcebus"] = (0.0, 0.0)
     coords["main_bus"] = (0.0, 100.0)
 
-    # Dynamically extract MV feeder lengths from active OpenDSS Line elements
+    # Dynamically extract MV feeder lengths and voltage phase angles directly from OpenDSS
     mv_feeder_lengths = {}
+    feeder_angles = {}
     for f_id in [1, 2, 3]:
         line_name = f"Line.mv_feeder_{f_id}"
         if not dss_instance.Circuit.SetActiveElement(line_name):
@@ -39,18 +58,15 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
             raise ValueError(f"Line element '{line_name}' missing length property value.")
         mv_feeder_lengths[f_id] = float(val)
 
-    # Compute MV feeder angles based on the number of feeders to distribute evenly
-    num_feeders = len(mv_feeder_lengths)
-    feeder_angles = {}
-    for idx, f_id in enumerate(sorted(mv_feeder_lengths.keys())):
-        if num_feeders > 1:
-            ang = 150.0 - idx * (120.0 / (num_feeders - 1))
-        else:
-            ang = 90.0
-        feeder_angles[f_id] = ang
+        head_bus = f"feeder{f_id}_head"
+        # Query voltage phase angle directly from OpenDSS model
+        feeder_angles[f_id] = get_bus_voltage_angle_deg(dss_instance, head_bus)
 
+    # Calculate spatial position of feeder heads using line length and OpenDSS voltage phase angle
     for f_id, length in mv_feeder_lengths.items():
-        ang_rad = math.radians(feeder_angles[f_id])
+        # Retrieve angle directly from OpenDSS solved phase angle
+        ang_deg = feeder_angles[f_id]
+        ang_rad = math.radians(ang_deg)
         dist = length * 30.0
         hx = coords["main_bus"][0] + dist * math.cos(ang_rad)
         hy = coords["main_bus"][1] + dist * math.sin(ang_rad)
@@ -84,31 +100,22 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
             l = float(ln["length"])
             adj.setdefault(p, []).append((c, l))
 
-        # BFS/DFS traversal to calculate spatial coordinates along tree
+        # BFS/DFS traversal using OpenDSS voltage phase angles directly queried per bus
         queue = [sec_bus]
-        if f_id not in feeder_angles:
-            raise KeyError(f"Feeder angle for feeder {f_id} not found in computed feeder_angles.")
-        node_angles = {sec_bus: feeder_angles[f_id]}
 
         while queue:
             parent = queue.pop(0)
             px, py = coords[parent]
-            p_ang = node_angles[parent]
+            p_ang = get_bus_voltage_angle_deg(dss_instance, parent)
             children = adj.get(parent, [])
-            num_c = len(children)
-            for i, (child, line_len) in enumerate(children):
-                if num_c == 1:
-                    c_ang = p_ang
-                else:
-                    spread = 60.0
-                    c_ang = p_ang - (spread / 2.0) + i * (spread / max(num_c - 1.0, 1.0))
-
+            for child, line_len in children:
+                # Query child bus phase angle directly from OpenDSS model
+                c_ang = get_bus_voltage_angle_deg(dss_instance, child)
                 c_rad = math.radians(c_ang)
                 scale = max(line_len * 1000.0, 30.0)
                 cx = px + scale * math.cos(c_rad)
                 cy = py + scale * math.sin(c_rad)
                 coords[child] = (cx, cy)
-                node_angles[child] = c_ang
                 queue.append(child)
 
     # 3. Apply SetBusXY to OpenDSS for all circuit buses; raise KeyError if any bus lacks spatial coordinates
@@ -175,7 +182,7 @@ def plot_opendss_circuit(
 
     plant_data = runner.initialize_plant_session(use_baseline_feeder=use_baseline_transformers, seed=42)
 
-    # 1. Assign spatial coordinates dynamically from plant_data topology parameters
+    # 1. Assign spatial coordinates dynamically from plant_data topology parameters and OpenDSS model angles
     bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
     # 2. Enable DSS-Python plotting extension subsystem
