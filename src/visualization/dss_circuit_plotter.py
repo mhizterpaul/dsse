@@ -19,6 +19,7 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
     Dynamically computes and assigns spatial coordinates (X, Y) to all buses
     in the active OpenDSS circuit based on the plant topology parameters from plant_data and active OpenDSS lines.
     Uses MV feeder line lengths and LV network branch line lengths/radial tree structures directly from plant.py.
+    Raises KeyError or ValueError if required topology or element parameters are missing (no default fallbacks permitted).
     """
     buses = [b.lower() for b in dss_instance.Circuit.AllBusNames()]
     coords = {}
@@ -27,18 +28,16 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
     coords["sourcebus"] = (0.0, 0.0)
     coords["main_bus"] = (0.0, 100.0)
 
-    # Dynamically extract MV feeder lengths from active OpenDSS Line elements or plant_data
+    # Dynamically extract MV feeder lengths from active OpenDSS Line elements
     mv_feeder_lengths = {}
     for f_id in [1, 2, 3]:
         line_name = f"Line.mv_feeder_{f_id}"
-        if dss_instance.Circuit.SetActiveElement(line_name):
-            try:
-                length = float(dss_instance.Properties.Value("length"))
-            except Exception:
-                length = 5.0
-        else:
-            length = 5.0
-        mv_feeder_lengths[f_id] = length
+        if not dss_instance.Circuit.SetActiveElement(line_name):
+            raise ValueError(f"Required OpenDSS line element '{line_name}' not found in active circuit.")
+        val = dss_instance.Properties.Value("length")
+        if not val:
+            raise ValueError(f"Line element '{line_name}' missing length property value.")
+        mv_feeder_lengths[f_id] = float(val)
 
     # Compute MV feeder angles based on the number of feeders to distribute evenly
     num_feeders = len(mv_feeder_lengths)
@@ -63,23 +62,33 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
             coords[sec_bus] = (hx, hy + 30.0)
 
     # 2. Traverse LV Network Radial Topologies dynamically from plant_data
-    topologies = plant_data.get("topology", {}).get("topologies", {})
+    if "topology" not in plant_data or "topologies" not in plant_data["topology"]:
+        raise KeyError("Missing required 'topology.topologies' structure in plant_data.")
+    topologies = plant_data["topology"]["topologies"]
+
     for f_id, sub_topo in topologies.items():
         sec_bus = f"feeder{f_id}_sec"
         if sec_bus not in coords:
-            coords[sec_bus] = (0.0, 300.0)
+            raise KeyError(f"Secondary bus '{sec_bus}' not found in computed coordinates.")
 
         # Build adjacency graph from topology line parameters
         adj = {}
-        for ln in sub_topo.get("lines", []):
+        if "lines" not in sub_topo:
+            raise KeyError(f"Missing required 'lines' list in sub-topology for feeder {f_id}.")
+
+        for ln in sub_topo["lines"]:
+            if "bus1" not in ln or "bus2" not in ln or "length" not in ln:
+                raise KeyError(f"Missing 'bus1', 'bus2', or 'length' parameter in line record: {ln}.")
             p = str(ln["bus1"]).lower()
             c = str(ln["bus2"]).lower()
-            l = float(ln.get("length", 0.05))
+            l = float(ln["length"])
             adj.setdefault(p, []).append((c, l))
 
         # BFS/DFS traversal to calculate spatial coordinates along tree
         queue = [sec_bus]
-        node_angles = {sec_bus: feeder_angles.get(f_id, 90.0)}
+        if f_id not in feeder_angles:
+            raise KeyError(f"Feeder angle for feeder {f_id} not found in computed feeder_angles.")
+        node_angles = {sec_bus: feeder_angles[f_id]}
 
         while queue:
             parent = queue.pop(0)
@@ -102,15 +111,12 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
                 node_angles[child] = c_ang
                 queue.append(child)
 
-    # 3. Apply SetBusXY to OpenDSS for all circuit buses with graceful fallback for unmapped buses
-    default_x, default_y = 0.0, 200.0
-    for idx, b in enumerate(dss_instance.Circuit.AllBusNames()):
+    # 3. Apply SetBusXY to OpenDSS for all circuit buses; raise KeyError if any bus lacks spatial coordinates
+    for b in dss_instance.Circuit.AllBusNames():
         b_lower = b.lower()
-        if b_lower in coords:
-            x, y = coords[b_lower]
-        else:
-            x, y = default_x + (idx * 20.0), default_y
-            coords[b_lower] = (x, y)
+        if b_lower not in coords:
+            raise KeyError(f"Bus '{b}' in OpenDSS circuit has no computed spatial coordinates in topology.")
+        x, y = coords[b_lower]
         dss_instance.run_command(f"SetBusXY Bus={b} x={x} y={y}")
 
     return coords
@@ -195,18 +201,22 @@ def plot_opendss_circuit(
 
     fignums = plt.get_fignums()
     if not fignums:
-        # Fallback: create Matplotlib figure if plot command did not register in fignums
-        fig, ax = plt.subplots(figsize=(10, 8))
-    else:
-        fig = plt.figure(fignums[-1])
-        ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
+        raise RuntimeError("OpenDSS 'Plot Circuit' command failed to generate a Matplotlib figure.")
+
+    fig = plt.figure(fignums[-1])
+    if not fig.axes:
+        raise RuntimeError("OpenDSS generated figure contains no active axes.")
+    ax = fig.axes[0]
 
     # Clear any residual raw text node labels if any were added
     while ax.texts:
         ax.texts[0].remove()
 
     # 4. Overlay meaningful network component labels (Generator, Transformers, Representative Loads)
-    gen_kw = plant_data.get("generator_info", {}).get("generator_kw", 1500.0)
+    if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
+        raise KeyError("Missing required 'generator_info.generator_kw' in plant_data.")
+    gen_kw = plant_data["generator_info"]["generator_kw"]
+
     gen_buses = set()
     for g in dss.Generators.AllNames():
         dss.Generators.Name(g)
@@ -251,7 +261,10 @@ def plot_opendss_circuit(
             )
 
     # Consumer Loads
-    registry = plant_data.get("registry")
+    if "registry" not in plant_data:
+        raise KeyError("Missing required 'registry' in plant_data.")
+    registry = plant_data["registry"]
+
     all_load_buses = set()
     for l in dss.Loads.AllNames():
         dss.Loads.Name(l)
@@ -265,25 +278,24 @@ def plot_opendss_circuit(
     # Label exactly 1 representative load for each equipment type present in the consumer registry
     labeled_types = set()
     label_count = 0
-    if registry:
-        for unit in registry.get_all_consumers():
-            for ld in unit.loads:
-                ltype = ld.load_type
-                if ltype not in labeled_types and unit.bus_id.lower() in bus_coords:
-                    labeled_types.add(ltype)
-                    label_count += 1
-                    bx, by = bus_coords[unit.bus_id.lower()]
-                    formatted_label = ltype.replace("_", " ").title()
-                    # Offset position slightly based on label count to avoid overlapping text boxes
-                    dx = 15 if (label_count % 2 == 1) else -130
-                    dy = ((label_count - 1) % 4) * 18 - 15
-                    ax.text(
-                        bx + dx, by + dy,
-                        f"Load: {formatted_label}",
-                        fontsize=8, fontweight="bold", color="navy",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow", edgecolor="royalblue", alpha=0.85),
-                        zorder=22
-                    )
+    for unit in registry.get_all_consumers():
+        for ld in unit.loads:
+            ltype = ld.load_type
+            if ltype not in labeled_types and unit.bus_id.lower() in bus_coords:
+                labeled_types.add(ltype)
+                label_count += 1
+                bx, by = bus_coords[unit.bus_id.lower()]
+                formatted_label = ltype.replace("_", " ").title()
+                # Offset position slightly based on label count to avoid overlapping text boxes
+                dx = 15 if (label_count % 2 == 1) else -130
+                dy = ((label_count - 1) % 4) * 18 - 15
+                ax.text(
+                    bx + dx, by + dy,
+                    f"Load: {formatted_label}",
+                    fontsize=8, fontweight="bold", color="navy",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow", edgecolor="royalblue", alpha=0.85),
+                    zorder=22
+                )
 
     # Lines (dummy handle for legend)
     ax.plot([], [], "-", color="black", linewidth=2, label="Distribution Lines")
