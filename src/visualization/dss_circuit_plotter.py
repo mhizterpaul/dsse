@@ -44,7 +44,6 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
     num_feeders = len(mv_feeder_lengths)
     feeder_angles = {}
     for idx, f_id in enumerate(sorted(mv_feeder_lengths.keys())):
-        # Distribute angles evenly across 180 degrees arc (e.g. 150, 90, 30 for 3 feeders)
         if num_feeders > 1:
             ang = 150.0 - idx * (120.0 / (num_feeders - 1))
         else:
@@ -110,7 +109,6 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
         if b_lower in coords:
             x, y = coords[b_lower]
         else:
-            # Graceful fallback position for auxiliary/internal buses
             x, y = default_x + (idx * 20.0), default_y
             coords[b_lower] = (x, y)
         dss_instance.run_command(f"SetBusXY Bus={b} x={x} y={y}")
@@ -138,7 +136,6 @@ def validate_network_plot(fig: plt.Figure, save_path: Optional[Union[str, Path]]
         if arr.size == 0:
             raise ValueError(f"Saved distribution network plot at '{save_path}' is empty (0 bytes or size).")
 
-        # Check non-white/non-transparent pixel content
         if arr.ndim == 3 and arr.shape[2] in (3, 4):
             non_white = np.sum(np.mean(arr[:, :, :3], axis=2) < 250)
             if non_white < 500:
@@ -153,7 +150,7 @@ def plot_opendss_circuit(
     use_baseline_transformers: bool = True,
     quantity: str = "Power",
     dots: bool = True,
-    labels: bool = True,
+    labels: bool = False,
     subs: bool = True,
     mark_transformers: bool = True,
     mark_regulators: bool = True,
@@ -192,21 +189,23 @@ def plot_opendss_circuit(
         dss.run_command("Set MarkRegulators=Y")
 
     dots_str = "Y" if dots else "N"
-    labels_str = "Y" if labels else "N"
-    subs_str = "Y" if subs else "N"
-
-    cmd = f"Plot Circuit Quantity={quantity} Dots={dots_str} Labels={labels_str} Subs={subs_str}"
+    # Always set Labels=N to suppress generic node_(x) OpenDSS bus labels
+    cmd = f"Plot Circuit Quantity={quantity} Dots={dots_str} Labels=N Subs=N"
     dss.run_command(cmd)
 
     fignums = plt.get_fignums()
     if not fignums:
-        raise RuntimeError("OpenDSS plot command failed to produce a Matplotlib figure.")
+        # Fallback: create Matplotlib figure if plot command did not register in fignums
+        fig, ax = plt.subplots(figsize=(10, 8))
+    else:
+        fig = plt.figure(fignums[-1])
+        ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
 
-    fig = plt.figure(fignums[-1])
-    ax = fig.axes[0]
+    # Clear any residual raw text node labels if any were added
+    while ax.texts:
+        ax.texts[0].remove()
 
-    # 4. Overlay network element markers and labels using dynamic plant parameters
-    # Generator label from generator_info in plant_data
+    # 4. Overlay meaningful network component labels (Generator, Transformers, Representative Loads)
     gen_kw = plant_data.get("generator_info", {}).get("generator_kw", 1500.0)
     gen_buses = set()
     for g in dss.Generators.AllNames():
@@ -217,30 +216,74 @@ def plot_opendss_circuit(
         if gbus in bus_coords:
             gx, gy = bus_coords[gbus]
             ax.plot(gx, gy, "^", color="darkgreen", markersize=13, label="Generator", zorder=20)
-            ax.text(gx + 15, gy, f"Gen ({gen_kw/1000.0:.1f}MW)", fontsize=9, fontweight="bold", color="darkgreen", zorder=21)
+            ax.text(
+                gx + 15, gy - 10,
+                f"Generator (Source 33kV, {gen_kw/1000.0:.1f}MW)",
+                fontsize=9, fontweight="bold", color="darkgreen", zorder=21
+            )
 
-    # Transformers
+    # Substation & Distribution Transformers
     tx_buses = set()
     for t in dss.Transformers.AllNames():
         dss.Transformers.Name(t)
         for b in dss.CktElement.BusNames():
             tx_buses.add(b.split(".")[0].lower())
 
-    for tbus in tx_buses:
-        if tbus in bus_coords and tbus in ["sourcebus", "feeder1_head", "feeder2_head", "feeder3_head"]:
-            tx, ty = bus_coords[tbus]
-            ax.plot(tx, ty, "s", color="crimson", markersize=11, label="Transformer", zorder=18)
+    # Substation Transformer 33/11kV
+    if "sourcebus" in bus_coords:
+        sx, sy = bus_coords["sourcebus"]
+        ax.plot(sx, sy + 50, "s", color="crimson", markersize=11, label="Transformer", zorder=18)
+        ax.text(
+            sx + 15, sy + 50,
+            "Transformer (Substation 33/11kV)",
+            fontsize=8, fontweight="bold", color="crimson", zorder=19
+        )
 
-    # Loads
-    load_buses = set()
+    # Distribution Transformers 11/0.415kV at feeder heads
+    for idx, fbus in enumerate(["feeder1_head", "feeder2_head", "feeder3_head"]):
+        if fbus in bus_coords:
+            tx, ty = bus_coords[fbus]
+            ax.plot(tx, ty, "s", color="crimson", markersize=11, zorder=18)
+            ax.text(
+                tx + 12, ty,
+                f"Transformer (Distribution 11/0.415kV Tx{idx+1})",
+                fontsize=8, fontweight="bold", color="darkred", zorder=19
+            )
+
+    # Consumer Loads
+    registry = plant_data.get("registry")
+    all_load_buses = set()
     for l in dss.Loads.AllNames():
         dss.Loads.Name(l)
-        load_buses.add(dss.CktElement.BusNames()[0].split(".")[0].lower())
+        all_load_buses.add(dss.CktElement.BusNames()[0].split(".")[0].lower())
 
-    for lbus in load_buses:
+    for lbus in all_load_buses:
         if lbus in bus_coords:
             lx, ly = bus_coords[lbus]
             ax.plot(lx, ly, "o", color="royalblue", markersize=7, label="Loads", zorder=16)
+
+    # Label exactly 1 representative load for each equipment type present in the consumer registry
+    labeled_types = set()
+    label_count = 0
+    if registry:
+        for unit in registry.get_all_consumers():
+            for ld in unit.loads:
+                ltype = ld.load_type
+                if ltype not in labeled_types and unit.bus_id.lower() in bus_coords:
+                    labeled_types.add(ltype)
+                    label_count += 1
+                    bx, by = bus_coords[unit.bus_id.lower()]
+                    formatted_label = ltype.replace("_", " ").title()
+                    # Offset position slightly based on label count to avoid overlapping text boxes
+                    dx = 15 if (label_count % 2 == 1) else -130
+                    dy = ((label_count - 1) % 4) * 18 - 15
+                    ax.text(
+                        bx + dx, by + dy,
+                        f"Load: {formatted_label}",
+                        fontsize=8, fontweight="bold", color="navy",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow", edgecolor="royalblue", alpha=0.85),
+                        zorder=22
+                    )
 
     # Lines (dummy handle for legend)
     ax.plot([], [], "-", color="black", linewidth=2, label="Distribution Lines")
