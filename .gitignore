@@ -13,6 +13,9 @@ atpmingw_2024/*.bin
 atpmingw_2024/*.tmp
 atpmingw_2024/*.dbg
 atpmingw_2024/fort.*
+atpmingw_2024/work_*
+bctran_scratch_*
+src/simulation/bctran_scratch_*
 fort.*
 
 # ATP outputs, generated CSV datasets, time-series JSON dumps, and plots
