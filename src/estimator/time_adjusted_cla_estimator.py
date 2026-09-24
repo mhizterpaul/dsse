@@ -63,7 +63,8 @@ class TimeAdjustedCLAEstimator:
         self,
         unmetered_units: List[object],
         metered_units: List[object],
-        metered_consumer_energies: Dict[str, float]
+        metered_consumer_energies: Dict[str, float],
+        cla_estimates: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
         Computes normalized time-adjusted weights w_i for unmetered consumer units,
@@ -79,28 +80,46 @@ class TimeAdjustedCLAEstimator:
             metered_units=metered_units
         )
 
-        raw_weights = {}
+        if cla_estimates is None:
+            raise ValueError("cla_estimates dictionary must be provided to weighting_function")
+
+        class_base_estimates: Dict[str, List[float]] = {}
         for u in unmetered_units:
             cid = getattr(u, "consumer_id", None)
             if cid is None:
                 raise ValueError(f"Unmetered unit {u} missing consumer_id attribute")
-
             class_id = getattr(u, "assigned_load_class", None)
             if class_id is None:
                 raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
+            if cid not in cla_estimates:
+                raise ValueError(f"Missing base CLA estimate for unmetered consumer unit '{cid}'")
+            class_base_estimates.setdefault(class_id, []).append(float(cla_estimates[cid]))
+
+        class_base_avg = {
+            c_id: float(np.mean(e_list)) for c_id, e_list in class_base_estimates.items() if e_list
+        }
+
+        raw_weights = {}
+        for u in unmetered_units:
+            cid = getattr(u, "consumer_id", None)
+            class_id = getattr(u, "assigned_load_class", None)
 
             base_w = ConsumerLoadClassModel.compute_expected_weight(u)
 
+            if class_id not in class_base_avg or class_base_avg[class_id] <= 0:
+                raise ValueError(f"Missing or non-positive base CLA estimate for load class '{class_id}'")
+            base_estimate = class_base_avg[class_id]
+
             if class_id in class_metered_avg and class_metered_avg[class_id] > 0:
                 avg_metered_e = class_metered_avg[class_id]
-                adjusted_w = base_w * ((avg_metered_e / base_w) - 1.0)
+                adjusted_w = base_w * (avg_metered_e / base_estimate)
             else:
                 raise ValueError(f"missing metered energy observation for class '{class_id}'")
 
             raw_weights[cid] = float(adjusted_w)
 
         sum_adj = sum(raw_weights.values())
-        residual = 1 - sum_adj 
+        residual = 1 - sum_adj
         n_units = len(unmetered_units)
 
         normalized_weights = {cid: float(w - (residual / n_units)) for cid, w in raw_weights.items()}
@@ -111,7 +130,8 @@ class TimeAdjustedCLAEstimator:
         feeder_supply_energy_kwh: float,
         technical_loss_kwh: float,
         metered_consumer_energies: Dict[str, float],
-        registry: Optional[object] = None
+        registry: Optional[object] = None,
+        cla_estimates: Optional[Dict[str, float]] = None
     ) -> TimeAdjustedCLAEstimate:
         """
         Estimates unsampled customer energy allocations using Time-Adjusted CLA.
@@ -142,10 +162,22 @@ class TimeAdjustedCLAEstimator:
                 weights={}
             )
 
+        if cla_estimates is None and unmetered_units:
+            from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
+            cla_estimator = ClusterLoadAllocationEstimator()
+            cla_res = cla_estimator.estimate(
+                feeder_supply_energy_kwh=feeder_supply_energy_kwh,
+                sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
+                technical_loss_kwh=technical_loss_kwh,
+                registry=registry
+            )
+            cla_estimates = cla_res.allocated_unsampled_consumer_energy
+
         weights = self.weighting_function(
             unmetered_units=unmetered_units,
             metered_units=metered_units,
-            metered_consumer_energies=metered_consumer_energies
+            metered_consumer_energies=metered_consumer_energies,
+            cla_estimates=cla_estimates
         )
 
         allocations = {}
