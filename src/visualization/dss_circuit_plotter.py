@@ -129,6 +129,222 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
     return coords
 
 
+def plot_opendss_circuit_matplotlib_fallback(
+    dss,
+    bus_coords: Dict[str, tuple[float, float]],
+    dots: bool = True,
+    labels: bool = False,
+) -> plt.Figure:
+    """
+    Render the active OpenDSS circuit directly with Matplotlib.
+
+    This is used only when the DSS-Python/OpenDSS Plot Circuit backend
+    does not leave a usable Matplotlib figure behind.
+
+    Geometry comes from bus_coords, while connectivity comes directly
+    from the active OpenDSS Line and Transformer elements.
+    """
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+
+    missing = []
+
+    def bus_name(raw_bus: str) -> str:
+        # Convert e.g. feeder1_head.1.2.3 -> feeder1_head
+        return raw_bus.split(".")[0].strip().lower()
+
+    def get_element_buses(element_class, element_name):
+        element_class.Name(element_name)
+        return [
+            bus_name(bus)
+            for bus in dss.CktElement.BusNames()
+        ]
+
+    # ------------------------------------------------------------------
+    # 1. Distribution lines
+    # ------------------------------------------------------------------
+    for line_name in dss.Lines.AllNames():
+        buses = get_element_buses(dss.Lines, line_name)
+
+        if len(buses) < 2:
+            continue
+
+        b1, b2 = buses[0], buses[1]
+
+        if b1 not in bus_coords or b2 not in bus_coords:
+            missing.append(f"Line.{line_name}: {b1} -> {b2}")
+            continue
+
+        x1, y1 = bus_coords[b1]
+        x2, y2 = bus_coords[b2]
+
+        ax.plot(
+            [x1, x2],
+            [y1, y2],
+            linewidth=1.8,
+            solid_capstyle="round",
+            zorder=1,
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Transformers
+    # ------------------------------------------------------------------
+    for tx_name in dss.Transformers.AllNames():
+        buses = get_element_buses(dss.Transformers, tx_name)
+
+        if len(buses) < 2:
+            continue
+
+        b0 = buses[0]
+
+        if b0 not in bus_coords:
+            missing.append(f"Transformer.{tx_name}: {b0}")
+            continue
+
+        x0, y0 = bus_coords[b0]
+
+        # Two-winding transformer:
+        # directly connect winding 1 -> winding 2.
+        #
+        # For multi-winding transformers, draw each winding from the
+        # first winding bus as a simple star representation.
+        for b in buses[1:]:
+            if b not in bus_coords:
+                missing.append(f"Transformer.{tx_name}: {b}")
+                continue
+
+            x, y = bus_coords[b]
+
+            ax.plot(
+                [x0, x],
+                [y0, y],
+                linewidth=3.0,
+                zorder=2,
+            )
+
+    # ------------------------------------------------------------------
+    # 3. Bus dots
+    # ------------------------------------------------------------------
+    if dots:
+        xs = []
+        ys = []
+
+        for bus, (x, y) in bus_coords.items():
+            xs.append(x)
+            ys.append(y)
+
+        ax.scatter(
+            xs,
+            ys,
+            s=18,
+            zorder=5,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Generator buses
+    # ------------------------------------------------------------------
+    generator_buses = set()
+
+    for gen_name in dss.Generators.AllNames():
+        dss.Generators.Name(gen_name)
+
+        buses = dss.CktElement.BusNames()
+
+        if buses:
+            generator_buses.add(bus_name(buses[0]))
+
+    for bus in generator_buses:
+        if bus not in bus_coords:
+            continue
+
+        x, y = bus_coords[bus]
+
+        ax.scatter(
+            [x],
+            [y],
+            marker="^",
+            s=140,
+            zorder=10,
+            label="Generator",
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Load buses
+    # ------------------------------------------------------------------
+    load_buses = set()
+
+    for load_name in dss.Loads.AllNames():
+        dss.Loads.Name(load_name)
+
+        buses = dss.CktElement.BusNames()
+
+        if buses:
+            load_buses.add(bus_name(buses[0]))
+
+    for bus in load_buses:
+        if bus not in bus_coords:
+            continue
+
+        x, y = bus_coords[bus]
+
+        ax.scatter(
+            [x],
+            [y],
+            marker="o",
+            s=45,
+            zorder=8,
+            label="Load",
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Optional bus labels
+    # ------------------------------------------------------------------
+    if labels:
+        for bus, (x, y) in bus_coords.items():
+            ax.text(
+                x,
+                y,
+                bus,
+                fontsize=7,
+                ha="left",
+                va="bottom",
+                zorder=20,
+            )
+
+    # ------------------------------------------------------------------
+    # 7. Presentation
+    # ------------------------------------------------------------------
+    ax.set_title(
+        "OpenDSS Distribution Network Circuit Plot "
+        "(Matplotlib fallback)",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.grid(True, alpha=0.15)
+
+    handles, labels_found = ax.get_legend_handles_labels()
+
+    if handles:
+        unique = dict(zip(labels_found, handles))
+        ax.legend(
+            unique.values(),
+            unique.keys(),
+            loc="upper right",
+        )
+
+    if missing:
+        print(
+            f"Matplotlib fallback: skipped {len(missing)} "
+            "elements with missing bus coordinates."
+        )
+
+    fig.tight_layout()
+
+    return fig
+
+
 def validate_network_plot(fig: plt.Figure, save_path: Optional[Union[str, Path]] = None):
     """
     Validates that the generated OpenDSS distribution network plot is not empty.
@@ -174,7 +390,7 @@ def plot_opendss_circuit(
     using plant parameters directly from plant.py with proper labels for lines, loads, generator, and transformers.
     Validates that the resulting distribution network plot is not empty, throwing an error if empty.
     """
-    import dss as dss_py
+    from dss import plot as dss_plot
 
     runner = CoSimulationRunner()
     if dss is None:
@@ -185,11 +401,12 @@ def plot_opendss_circuit(
     # 1. Assign spatial coordinates dynamically from plant_data topology parameters and OpenDSS model angles
     bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
-    # 2. Enable DSS-Python plotting extension subsystem
-    if hasattr(dss_py, "DSS") and hasattr(dss_py.DSS, "Plotting"):
-        dss_py.DSS.Plotting.enable()
-    elif hasattr(dss_py, "Plotting"):
-        dss_py.Plotting.enable()
+    # 2. Enable DSS-Extensions plotting with show=False to preserve Matplotlib figure
+    dss_plot.enable(
+        plot2d=True,
+        plot3d=False,
+        show=False,
+    )
 
     # 3. Set Voltagebases and solve so network solution is valid
     dss.run_command("Set Voltagebases=[33.0, 11.0, 0.415]")
@@ -204,20 +421,60 @@ def plot_opendss_circuit(
     dots_str = "Y" if dots else "N"
     # Always set Labels=N to suppress generic node_(x) OpenDSS bus labels
     cmd = f"Plot Circuit Quantity={quantity} Dots={dots_str} Labels=N Subs=N"
-    dss.run_command(cmd)
 
-    fignums = plt.get_fignums()
-    if not fignums:
-        raise RuntimeError("OpenDSS 'Plot Circuit' command failed to generate a Matplotlib figure.")
+    # Native -> Fallback logic
+    fig = None
+    ax = None
+    native_plot_error = None
 
-    fig = plt.figure(fignums[-1])
-    if not fig.axes:
-        raise RuntimeError("OpenDSS generated figure contains no active axes.")
-    ax = fig.axes[0]
+    figs_before = set(plt.get_fignums())
 
-    # Clear any residual raw text node labels if any were added
-    while ax.texts:
-        ax.texts[0].remove()
+    try:
+        dss.run_command(cmd)
+
+        figs_after = set(plt.get_fignums())
+        new_figs = sorted(figs_after - figs_before)
+
+        if new_figs:
+            candidate = plt.figure(new_figs[-1])
+
+            if candidate.axes:
+                candidate_ax = candidate.axes[0]
+
+                total_elements = (
+                    len(candidate_ax.collections)
+                    + len(candidate_ax.lines)
+                    + len(candidate_ax.patches)
+                    + len(candidate_ax.texts)
+                )
+
+                if total_elements > 0:
+                    fig = candidate
+                    ax = candidate_ax
+                    # Clear any residual raw text node labels from native OpenDSS plot
+                    while ax.texts:
+                        ax.texts[0].remove()
+
+    except Exception as exc:
+        native_plot_error = exc
+
+    if fig is None or ax is None:
+        print(
+            "Native OpenDSS plotting unavailable or empty; "
+            "falling back to direct Matplotlib rendering."
+        )
+
+        if native_plot_error is not None:
+            print(f"Native plotting error: {native_plot_error}")
+
+        fig = plot_opendss_circuit_matplotlib_fallback(
+            dss=dss,
+            bus_coords=bus_coords,
+            dots=dots,
+            labels=labels,
+        )
+
+        ax = fig.axes[0]
 
     # 4. Overlay meaningful network component labels (Generator, Transformers, Representative Loads)
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
