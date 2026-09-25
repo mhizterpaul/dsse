@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Union, Optional
 import numpy as np
-from src.estimator.cla_estimator import ConsumerLoadClassModel
+from src.power_plant.consumer_registry import ConsumerLoadClassModel
 
 
 @dataclass
@@ -22,8 +22,9 @@ class TimeAdjustedCLAEstimate:
 class TimeAdjustedCLAEstimator:
     """
     Time-Adjusted Cluster Load Allocation Estimator:
-    Estimates unsampled consumer energy allocations using time adjustment factors
-    and metered consumer unit energies:
+    Estimates unsampled consumer energy allocations using percentile mapping
+    from assigned consumer weight distribution to metered consumer energy distribution per class,
+    biased slightly for below-mean consumers, and normalized using L1 normalization:
         E_i_hat = E_U * w_i
     where sum(w_i) across unmetered population = 1.
     """
@@ -35,8 +36,6 @@ class TimeAdjustedCLAEstimator:
     ) -> Dict[str, float]:
         """
         Computes the class-level average energy consumed for each load class among metered consumer units.
-        Returns a dictionary mapping class_id -> average metered energy consumed.
-        Raises ValueError if metered energy observation is missing.
         """
         class_metered_energies: Dict[str, List[float]] = {}
         for u in metered_units:
@@ -64,72 +63,88 @@ class TimeAdjustedCLAEstimator:
         unmetered_units: List[object],
         metered_units: List[object],
         metered_consumer_energies: Dict[str, float],
+        registry: Optional[object] = None,
         cla_estimates: Optional[Dict[str, float]] = None,
         cla_weights: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
-        Computes normalized time-adjusted weights w_i for unmetered consumer units,
-        adjusting unit weights proportional to the ratio of unmetered unit expected energy consumption
-        to class-average metered energy consumption.
-        Sum of returned weights across unmetered population equals 1.
+        Computes normalized time-adjusted weights w_i for unmetered consumer units:
+        1. Gets percentile of unmetered consumer unit within their class assigned weight distribution.
+        2. Maps percentile to distribution of consumed energy of metered consumers in the same class.
+        3. Adjusts mapped energy for units below class mean using fixed biasing energy.
+        4. Performs L1 normalization on adjusted energies.
         """
         if not unmetered_units:
             return {}
 
-        class_metered_avg = self.averaging_function(
-            metered_consumer_energies=metered_consumer_energies,
-            metered_units=metered_units
-        )
-
-        if cla_estimates is None:
-            raise ValueError("cla_estimates dictionary must be provided to weighting_function")
-
-        if cla_weights is None:
-            raise ValueError("cla_weights dictionary must be provided to weighting_function")
-
-        class_base_estimates: Dict[str, List[float]] = {}
-        for u in unmetered_units:
+        class_metered_energies: Dict[str, List[float]] = {}
+        for u in metered_units:
             cid = getattr(u, "consumer_id", None)
-            if cid is None:
-                raise ValueError(f"Unmetered unit {u} missing consumer_id attribute")
             class_id = getattr(u, "assigned_load_class", None)
-            if class_id is None:
-                raise ValueError(f"Unmetered consumer unit '{cid}' missing assigned_load_class attribute")
-            if cid not in cla_estimates:
-                raise ValueError(f"Missing base CLA estimate for unmetered consumer unit '{cid}'")
-            if cid not in cla_weights:
-                raise ValueError(f"Missing base CLA assigned weight for unmetered consumer unit '{cid}'")
-            class_base_estimates.setdefault(class_id, []).append(float(cla_estimates[cid]))
+            if cid and class_id and cid in metered_consumer_energies:
+                class_metered_energies.setdefault(class_id, []).append(float(metered_consumer_energies[cid]))
 
-        class_base_avg = {
-            c_id: float(np.mean(e_list)) for c_id, e_list in class_base_estimates.items() if e_list
-        }
-
-        raw_weights = {}
+        class_unmetered_units: Dict[str, List[object]] = {}
+        class_unmetered_weights: Dict[str, Dict[str, float]] = {}
         for u in unmetered_units:
             cid = getattr(u, "consumer_id", None)
             class_id = getattr(u, "assigned_load_class", None)
+            if cid is None or class_id is None:
+                raise ValueError(f"Unmetered consumer unit {u} missing consumer_id or assigned_load_class")
 
-            base_w = float(cla_weights[cid])
-
-            if class_id not in class_base_avg or class_base_avg[class_id] <= 0:
-                raise ValueError(f"Missing or non-positive base CLA estimate for load class '{class_id}'")
-            base_estimate = class_base_avg[class_id]
-
-            if class_id in class_metered_avg and class_metered_avg[class_id] > 0:
-                avg_metered_e = class_metered_avg[class_id]
-                adjusted_w = base_w * (avg_metered_e / base_estimate)
+            if registry is not None and hasattr(registry, "get_assigned_weight"):
+                assigned_w = registry.get_assigned_weight(u)
+            elif cla_weights and cid in cla_weights:
+                assigned_w = float(cla_weights[cid])
             else:
-                raise ValueError(f"missing metered energy observation for class '{class_id}'")
+                assigned_w = ConsumerLoadClassModel.compute_expected_weight(u, registry=registry)
 
-            raw_weights[cid] = float(adjusted_w)
+            class_unmetered_units.setdefault(class_id, []).append(u)
+            class_unmetered_weights.setdefault(class_id, {})[cid] = float(assigned_w)
 
-        sum_adj = sum(raw_weights.values())
+        mapped_energies: Dict[str, float] = {}
+        for class_id, u_list in class_unmetered_units.items():
+            weights_dict = class_unmetered_weights[class_id]
+            sorted_weights = sorted(weights_dict.values())
+            n_class_unmetered = len(sorted_weights)
+
+            metered_e_list = class_metered_energies.get(class_id, [])
+            if not metered_e_list:
+                raise ValueError(f"Missing metered energy observations for class '{class_id}'")
+
+            for u in u_list:
+                cid = u.consumer_id
+                w_val = weights_dict[cid]
+                if n_class_unmetered > 1:
+                    rank = sum(1 for w in sorted_weights if w <= w_val)
+                    percentile_p = ((rank - 1) / (n_class_unmetered - 1)) * 100.0
+                else:
+                    percentile_p = 50.0
+
+                mapped_e = float(np.percentile(metered_e_list, percentile_p))
+                mapped_energies[cid] = mapped_e
+
+        adjusted_energies: Dict[str, float] = {}
+        for class_id, u_list in class_unmetered_units.items():
+            class_mapped_e = [mapped_energies[u.consumer_id] for u in u_list]
+            class_mean = float(np.mean(class_mapped_e)) if class_mapped_e else 0.0
+
+            bias_e = 0.005 * class_mean if class_mean > 0 else 0.001
+
+            for u in u_list:
+                cid = u.consumer_id
+                e_val = mapped_energies[cid]
+                if e_val < class_mean:
+                    adjusted_energies[cid] = e_val + bias_e
+                else:
+                    adjusted_energies[cid] = e_val
+
+        sum_adj = sum(adjusted_energies.values())
         if sum_adj <= 0:
             n_units = len(unmetered_units)
-            return {getattr(p, "consumer_id", str(p)): 1.0 / n_units for p in unmetered_units}
+            return {u.consumer_id: 1.0 / n_units for u in unmetered_units}
 
-        normalized_weights = {cid: float(w / sum_adj) for cid, w in raw_weights.items()}
+        normalized_weights = {cid: float(e / sum_adj) for cid, e in adjusted_energies.items()}
         return normalized_weights
 
     def estimate(
@@ -170,24 +185,11 @@ class TimeAdjustedCLAEstimator:
                 weights={}
             )
 
-        if (cla_estimates is None or cla_weights is None) and unmetered_units:
-            from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
-            cla_estimator = ClusterLoadAllocationEstimator()
-            cla_res = cla_estimator.estimate(
-                feeder_supply_energy_kwh=feeder_supply_energy_kwh,
-                sampled_consumer_energy_kwh=sampled_consumer_energy_kwh,
-                technical_loss_kwh=technical_loss_kwh,
-                registry=registry
-            )
-            if cla_estimates is None:
-                cla_estimates = cla_res.allocated_unsampled_consumer_energy
-            if cla_weights is None:
-                cla_weights = cla_res.weights
-
         weights = self.weighting_function(
             unmetered_units=unmetered_units,
             metered_units=metered_units,
             metered_consumer_energies=metered_consumer_energies,
+            registry=registry,
             cla_estimates=cla_estimates,
             cla_weights=cla_weights
         )

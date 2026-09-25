@@ -1,40 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Union, Optional
 import numpy as np
-
-
-class ConsumerLoadClassModel:
-    """
-    Consumer Premises and Load Class Representation for CLA:
-    Defines consumer class weights based on assigned load class.
-    """
-    CLASS_WEIGHTS = {
-        "residential": 1.0,
-        "commercial": 2.2,
-        "industrial": 3.5,
-        "agricultural": 1.5
-    }
-
-    @classmethod
-    def compute_expected_weight(cls, unit) -> float:
-        """
-        Computes expected consumption weight w_i based on consumer unit characteristics.
-        Raises ValueError if required attributes are missing or invalid.
-        """
-        class_id = getattr(unit, "assigned_load_class", None)
-        if class_id is None:
-            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' is missing assigned_load_class")
-
-        if class_id not in cls.CLASS_WEIGHTS:
-            raise ValueError(f"Unknown assigned_load_class '{class_id}' for consumer unit '{getattr(unit, 'consumer_id', unit)}'")
-
-        base_w = cls.CLASS_WEIGHTS[class_id]
-        loads = getattr(unit, "loads", None)
-        if loads is None or len(loads) == 0:
-            raise ValueError(f"Consumer unit '{getattr(unit, 'consumer_id', unit)}' has no connected load circuits")
-
-        num_loads = len(loads)
-        return float(base_w * num_loads)
+from src.power_plant.consumer_registry import ConsumerRegistry, ConsumerLoadClassModel
 
 
 @dataclass
@@ -71,10 +38,12 @@ class ClusterLoadAllocationEstimator:
 
     def weighting_function(
         self,
-        unmetered_units: List[object]
+        unmetered_units: List[object],
+        registry: Optional[object] = None
     ) -> Dict[str, float]:
         """
         Computes normalized weights w_i for unmetered consumer units such that sum(w_i) = 1.
+        Uses the assigned weight (class weight + extra load weight if any) from the registry.
         """
         if not unmetered_units:
             return {}
@@ -82,7 +51,10 @@ class ClusterLoadAllocationEstimator:
         raw_weights = {}
         for u in unmetered_units:
             cid = getattr(u, "consumer_id", str(u))
-            raw_w = ConsumerLoadClassModel.compute_expected_weight(u)
+            if registry is not None and hasattr(registry, "get_assigned_weight"):
+                raw_w = registry.get_assigned_weight(u)
+            else:
+                raw_w = ConsumerLoadClassModel.compute_expected_weight(u, registry=registry)
             raw_weights[cid] = raw_w
 
         sum_raw = sum(raw_weights.values())
@@ -111,7 +83,7 @@ class ClusterLoadAllocationEstimator:
         if registry is not None and hasattr(registry, "get_unmetered_consumers"):
             unmetered_units = registry.get_unmetered_consumers()
 
-        weights = self.weighting_function(unmetered_units)
+        weights = self.weighting_function(unmetered_units, registry=registry)
 
         allocations = {}
         for cid, w_i in weights.items():
