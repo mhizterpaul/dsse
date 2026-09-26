@@ -64,8 +64,6 @@ class TimeAdjustedCLAEstimator:
 
             if registry is not None and hasattr(registry, "get_assigned_weight"):
                 assigned_w = registry.get_assigned_weight(u)
-            elif hasattr(u, "weight"):
-                assigned_w = u.weight
             else:
                 assigned_w = ConsumerLoadClassModel.compute_expected_weight(u, registry=registry)
 
