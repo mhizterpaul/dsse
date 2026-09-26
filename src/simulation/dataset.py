@@ -30,7 +30,7 @@ def get_equipment_duration_s(equipment_type: str) -> float:
     """
     Returns appropriate transient duration based on load category:
     - Big/Motor loads (ac_motor, dc_motor_inverter, compressor, industrial_fan): 1.5 s
-    - Small loads (microwave, induction_plate, audio_amplifier, ups): 0.5 s
+    - Small loads (microwave, induction_plate, audio_amplifier, ups, bulb, fan): 0.5 s
     """
     big_loads = {"ac_motor", "dc_motor_inverter", "compressor", "industrial_fan"}
     if equipment_type in big_loads:
@@ -322,8 +322,6 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             4
         )
 
-
-
         metered_consumer_energies = {
             u.consumer_id: consumer_energies[u.consumer_id]
             for u in sampled_units
@@ -407,12 +405,16 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             assigned_class = u.assigned_load_class
             consumer_type_label = f"{assigned_class}_{'metered' if is_metered else 'unmetered'}"
 
-            # Registered consumer unit (consumer_type includes assigned class and status type)
+            # Formatted list of load type names (e.g., ["Industrial Fan", "Microwave", ...])
+            formatted_load_names = [ld.load_type.replace("_", " ").title() for ld in u.loads]
+
+            # Registered consumer unit
             rows_1.append({
                 "gt_consumer_unit_id": u.consumer_id,
                 "consumer_type": consumer_type_label,
                 "consumer_unit_source": json.dumps({"bus": u.bus_id, "feeder": u.feeder_id}),
-                "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in u.loads]),
+                "num_loads": len(u.loads),
+                "consumer_unit_loads": json.dumps(formatted_load_names),
                 "cla_assigned_weight": cla_weight,
                 "time_adjusted_cla_assigned_weight": time_cla_weight,
                 "gt_consumed_energy_kwh": round(unit_consumed_energy_kwh, 4),
@@ -440,11 +442,14 @@ def generate_experiments_dataset(write_to_disk: bool = True):
                 p_latent_loss_kw = 3.0 * (i_latent_total ** 2) * r_latent_drop / 1000.0
                 latent_line_loss_kwh = round(float(p_latent_loss_kw * duration_hours), 6)
 
+                latent_formatted_load_names = [ld.load_type.replace("_", " ").title() for ld in latent_u.loads]
+
                 rows_1.append({
                     "gt_consumer_unit_id": latent_u.consumer_id,
                     "consumer_type": "latent",
                     "consumer_unit_source": json.dumps({"bus": latent_u.bus_id, "feeder": latent_u.feeder_id}),
-                    "consumer_unit_loads": json.dumps([{"load_id": ld.load_id, "circuit_id": ld.circuit_id, "load_type": ld.load_type} for ld in latent_u.loads]),
+                    "num_loads": len(latent_u.loads),
+                    "consumer_unit_loads": json.dumps(latent_formatted_load_names),
                     "cla_assigned_weight": np.nan,
                     "time_adjusted_cla_assigned_weight": np.nan,
                     "gt_consumed_energy_kwh": np.nan,

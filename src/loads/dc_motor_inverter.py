@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_dc_motor_inverter(rated_power_kw: float = 10.0) -> EquipmentCircuit:
+def get_dc_motor_inverter() -> EquipmentCircuit:
     """
     DC Motor + PWM H-Bridge Inverter: Rectifier, DC link capacitor, PWM H-bridge, DC motor Ra, La, Back-EMF.
     """
     return EquipmentCircuit(
         equipment_type="dc_motor_inverter",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=10.0,
         rated_voltage_v=415.0,
         power_factor=0.92,
         opendss_params={

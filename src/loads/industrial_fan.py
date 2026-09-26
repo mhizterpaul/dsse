@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_industrial_fan(rated_power_kw: float = 20.0) -> EquipmentCircuit:
+def get_industrial_fan() -> EquipmentCircuit:
     """
     Industrial Fan: Three-phase induction motor driving speed-squared aerodynamic fan load torque.
     """
     return EquipmentCircuit(
         equipment_type="industrial_fan",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=20.0,
         rated_voltage_v=415.0,
         power_factor=0.86,
         opendss_params={

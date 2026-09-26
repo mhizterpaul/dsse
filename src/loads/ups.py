@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_ups(rated_power_kw: float = 8.0) -> EquipmentCircuit:
+def get_ups() -> EquipmentCircuit:
     """
     Uninterruptible Power Supply (UPS): Battery bank, DC-link, bidirectional inverter, AC-side filter interface.
     """
     return EquipmentCircuit(
         equipment_type="ups",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=8.0,
         rated_voltage_v=415.0,
         power_factor=1.0,
         opendss_params={

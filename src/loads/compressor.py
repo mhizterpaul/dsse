@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_compressor(rated_power_kw: float = 4.0) -> EquipmentCircuit:
+def get_compressor() -> EquipmentCircuit:
     """
     Compressor: Single-phase AC induction motor driving reciprocating/scroll compressor load torque.
     """
     return EquipmentCircuit(
         equipment_type="compressor",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=4.0,
         rated_voltage_v=240.0,
         power_factor=0.82,
         opendss_params={
