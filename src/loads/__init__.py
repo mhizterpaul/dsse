@@ -49,13 +49,15 @@ EQUIPMENT_REGISTRY = {
     "fan": get_fan
 }
 
-def get_equipment_model(equipment_type: str, rated_power_kw: float = None) -> EquipmentCircuit:
+def get_equipment_model(equipment_type: str) -> EquipmentCircuit:
+    """
+    Returns EquipmentCircuit model for specified load equipment type.
+    Power rating is unparameterized and specified directly in each load model.
+    """
     if equipment_type not in EQUIPMENT_REGISTRY:
         raise ValueError(f"Unknown equipment type '{equipment_type}'. Supported types: {list(EQUIPMENT_REGISTRY.keys())}")
 
     factory = EQUIPMENT_REGISTRY[equipment_type]
-    if rated_power_kw is not None:
-        return factory(rated_power_kw=rated_power_kw)
     return factory()
 
 def distribute_loads(buses: list, rng=None) -> dict:
