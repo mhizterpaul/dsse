@@ -99,30 +99,41 @@ class ConsumerRegistry:
             raise ValueError(f"Service line resistance and reactance must be provided for consumer {consumer_id}")
 
         primary_types = self.CLASS_PRIMARY_LOADS.get(assigned_load_class, self.LOAD_CIRCUIT_TYPES)
-        base_type = str(self.rng.choice(primary_types))
-        base_load = LoadDefinition(
-            load_id=f"{consumer_id}_load_1",
-            circuit_id=f"{consumer_id}_circuit_1",
-            load_type=base_type,
-            is_extra_load=False
-        )
-        loads = [base_load]
 
-        # Ensure all consumer units have between 3 and 5 loads
-        target_num_loads = int(self.rng.integers(3, 6))
-        outside_types = [t for t in self.LOAD_CIRCUIT_TYPES if t not in primary_types]
-        if not outside_types:
-            outside_types = self.LOAD_CIRCUIT_TYPES
+        # 3 to 5 base loads selected from class primary loads (is_extra_load = False)
+        num_base_loads = int(self.rng.integers(3, 6))
+        loads = []
+        for k in range(num_base_loads):
+            base_type = str(self.rng.choice(primary_types))
+            base_load = LoadDefinition(
+                load_id=f"{consumer_id}_load_base_{k+1}_{base_type}",
+                circuit_id=f"{consumer_id}_circuit_base_{k+1}",
+                load_type=base_type,
+                is_extra_load=False
+            )
+            loads.append(base_load)
 
-        for k in range(1, target_num_loads):
-            if not is_metered and outside_types:
-                ltype = str(self.rng.choice(outside_types if (k % 2 == 1) else primary_types))
-            else:
-                ltype = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
+        # Extra loads (is_extra_load = True) added on top of base loads
+        if not is_metered:
+            num_extra = int(self.rng.choice([0, 1, 2], p=[0.35, 0.45, 0.20]))
+            outside_types = [t for t in self.LOAD_CIRCUIT_TYPES if t not in primary_types]
+            if not outside_types:
+                outside_types = self.LOAD_CIRCUIT_TYPES
+            for k in range(num_extra):
+                extra_type = str(self.rng.choice(outside_types))
+                extra_load = LoadDefinition(
+                    load_id=f"{consumer_id}_extra_{k+1}_{extra_type}",
+                    circuit_id=f"{consumer_id}_circuit_extra_{k+1}",
+                    load_type=extra_type,
+                    is_extra_load=True
+                )
+                loads.append(extra_load)
+        elif self.rng.random() < extra_load_probability:
+            extra_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
             extra_load = LoadDefinition(
-                load_id=f"{consumer_id}_load_{k+1}_{ltype}",
-                circuit_id=f"{consumer_id}_circuit_{k+1}",
-                load_type=ltype,
+                load_id=f"{consumer_id}_{extra_type}",
+                circuit_id=f"{consumer_id}_circuit_extra",
+                load_type=extra_type,
                 is_extra_load=True
             )
             loads.append(extra_load)
@@ -153,10 +164,9 @@ class ConsumerRegistry:
         if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
             raise ValueError(f"Service line resistance and reactance must be provided for latent consumer {consumer_id}")
 
-        # Ensure latent consumer unit also has between 3 and 5 loads
-        target_num_loads = int(self.rng.integers(3, 6))
+        num_latent_loads = int(self.rng.integers(3, 6))
         loads = []
-        for k in range(target_num_loads):
+        for k in range(num_latent_loads):
             ltype = load_type if k == 0 else str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
             load = LoadDefinition(
                 load_id=f"{consumer_id}_latent_load_{k+1}_{ltype}",
