@@ -263,6 +263,7 @@ def plot_opendss_circuit(
     Initializes OpenDSS plant session and generates OpenDSS circuit plot using plant parameters
     directly from plant.py with schemdraw icons and proper labels for lines, loads, generator, and transformers.
     Strictly evaluates fallback method only when native DSS plot is empty or unavailable.
+    Starts load labeling from the end of the line, applying offsets for labels close to the beginning.
     """
     from dss import plot as dss_plot
 
@@ -337,7 +338,7 @@ def plot_opendss_circuit(
         )
         ax = fig.axes[0]
 
-    # 3. Add standard schemdraw element icons & legible text labels distributed throughout the distribution line
+    # 3. Add standard schemdraw element icons & legible text labels
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
         raise KeyError("Missing required 'generator_info.generator_kw' in plant_data.")
     gen_kw = plant_data["generator_info"]["generator_kw"]
@@ -378,26 +379,51 @@ def plot_opendss_circuit(
                     fontsize=9, fontweight="bold", color="darkred", zorder=25
                 )
 
-        # Consumer Loads distributed along the length of the distribution line
+        # Consumer Loads: Labeling starts from the END of the transmission/distribution line
         if "registry" not in plant_data:
             raise KeyError("Missing required 'registry' in plant_data.")
         registry = plant_data["registry"]
 
+        source_x, source_y = bus_coords.get("sourcebus", (0.0, 0.0))
+        all_consumers = registry.get_all_consumers()
+
+        def get_dist_from_source(unit):
+            b_name = unit.bus_id.lower()
+            if b_name in bus_coords:
+                bx, by = bus_coords[b_name]
+                return math.hypot(bx - source_x, by - source_y)
+            return 0.0
+
+        # Sort consumers in descending order of distance (furthest/end of line first)
+        sorted_consumers = sorted(all_consumers, key=get_dist_from_source, reverse=True)
+
         labeled_types = set()
-        for unit in registry.get_all_consumers():
+        for unit in sorted_consumers:
+            b_name = unit.bus_id.lower()
+            if b_name not in bus_coords:
+                continue
+            bx, by = bus_coords[b_name]
+            dist = math.hypot(bx - source_x, by - source_y)
+
             for ld in unit.loads:
                 ltype = ld.load_type
-                if ltype not in labeled_types and unit.bus_id.lower() in bus_coords:
+                if ltype not in labeled_types:
                     labeled_types.add(ltype)
-                    bx, by = bus_coords[unit.bus_id.lower()]
 
                     d.add(elm.RBox().at((bx, by)).scale(0.35))
 
                     formatted_label = ltype.replace("_", " ").title()
 
-                    # Place label directly at bus position along the distribution line length without forced offsets
+                    # Apply position offset to labels close to the beginning of the transmission line (dist < 180)
+                    if dist < 180.0:
+                        offset_x = 35.0
+                        offset_y = 20.0
+                    else:
+                        offset_x = 8.0
+                        offset_y = 8.0
+
                     ax.text(
-                        bx + 8, by + 8,
+                        bx + offset_x, by + offset_y,
                         formatted_label,
                         fontsize=8, fontweight="bold", color="navy",
                         bbox=dict(
