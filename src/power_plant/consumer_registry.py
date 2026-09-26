@@ -48,14 +48,14 @@ class ConsumerRegistry:
 
     LOAD_CIRCUIT_TYPES = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
-        "compressor", "audio_amplifier", "ups", "industrial_fan"
+        "compressor", "audio_amplifier", "ups", "industrial_fan", "bulb", "fan"
     ]
 
     CLASS_PRIMARY_LOADS = {
-        "residential": ["microwave", "induction_plate", "audio_amplifier"],
-        "commercial": ["compressor", "ac_motor", "ups"],
-        "industrial": ["ac_motor", "industrial_fan", "dc_motor_inverter"],
-        "agricultural": ["ac_motor", "compressor"]
+        "residential": ["microwave", "induction_plate", "audio_amplifier", "fan", "bulb"],
+        "commercial": ["compressor", "ac_motor", "ups", "bulb"],
+        "industrial": ["ac_motor", "industrial_fan", "dc_motor_inverter", "bulb"],
+        "agricultural": ["ac_motor", "compressor", "bulb"]
     }
 
     def __init__(self, seed: int = 42):
@@ -100,33 +100,28 @@ class ConsumerRegistry:
         primary_types = self.CLASS_PRIMARY_LOADS.get(assigned_load_class, self.LOAD_CIRCUIT_TYPES)
         base_type = str(self.rng.choice(primary_types))
         base_load = LoadDefinition(
-            load_id=f"{consumer_id}_load_base",
+            load_id=f"{consumer_id}_load_1",
             circuit_id=f"{consumer_id}_circuit_1",
             load_type=base_type,
             is_extra_load=False
         )
         loads = [base_load]
 
-        if not is_metered:
-            num_extra = int(self.rng.choice([0, 1, 2], p=[0.35, 0.45, 0.20]))
-            outside_types = [t for t in self.LOAD_CIRCUIT_TYPES if t not in primary_types]
-            if not outside_types:
-                outside_types = self.LOAD_CIRCUIT_TYPES
-            for k in range(num_extra):
-                extra_type = str(self.rng.choice(outside_types))
-                extra_load = LoadDefinition(
-                    load_id=f"{consumer_id}_extra_{k+1}_{extra_type}",
-                    circuit_id=f"{consumer_id}_circuit_extra_{k+1}",
-                    load_type=extra_type,
-                    is_extra_load=True
-                )
-                loads.append(extra_load)
-        elif self.rng.random() < extra_load_probability:
-            extra_type = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
+        # Ensure all consumer units have between 3 and 5 loads
+        target_num_loads = int(self.rng.integers(3, 6))
+        outside_types = [t for t in self.LOAD_CIRCUIT_TYPES if t not in primary_types]
+        if not outside_types:
+            outside_types = self.LOAD_CIRCUIT_TYPES
+
+        for k in range(1, target_num_loads):
+            if not is_metered and outside_types:
+                ltype = str(self.rng.choice(outside_types if (k % 2 == 1) else primary_types))
+            else:
+                ltype = str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
             extra_load = LoadDefinition(
-                load_id=f"{consumer_id}_{extra_type}",
-                circuit_id=f"{consumer_id}_circuit_extra",
-                load_type=extra_type,
+                load_id=f"{consumer_id}_load_{k+1}_{ltype}",
+                circuit_id=f"{consumer_id}_circuit_{k+1}",
+                load_type=ltype,
                 is_extra_load=True
             )
             loads.append(extra_load)
@@ -157,18 +152,25 @@ class ConsumerRegistry:
         if service_line_resistance_ohm is None or service_line_reactance_ohm is None:
             raise ValueError(f"Service line resistance and reactance must be provided for latent consumer {consumer_id}")
 
-        load = LoadDefinition(
-            load_id=f"{consumer_id}_latent_load",
-            circuit_id=f"{consumer_id}_latent_circuit",
-            load_type=load_type,
-            is_extra_load=True
-        )
+        # Ensure latent consumer unit also has between 3 and 5 loads
+        target_num_loads = int(self.rng.integers(3, 6))
+        loads = []
+        for k in range(target_num_loads):
+            ltype = load_type if k == 0 else str(self.rng.choice(self.LOAD_CIRCUIT_TYPES))
+            load = LoadDefinition(
+                load_id=f"{consumer_id}_latent_load_{k+1}_{ltype}",
+                circuit_id=f"{consumer_id}_latent_circuit_{k+1}",
+                load_type=ltype,
+                is_extra_load=True
+            )
+            loads.append(load)
+
         unit = ConsumerUnit(
             consumer_id=consumer_id,
             bus_id=bus_id,
             feeder_id=feeder_id,
             assigned_load_class=None,
-            loads=[load],
+            loads=loads,
             is_latent_unmetered=True,
             service_line_resistance_ohm=service_line_resistance_ohm,
             service_line_reactance_ohm=service_line_reactance_ohm
