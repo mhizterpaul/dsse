@@ -4,6 +4,7 @@ PyWavelets
 pandas
 xarray
 matplotlib
+schemdraw
 ipython
 OpenDSSDirect.py[extras]
 altdss
