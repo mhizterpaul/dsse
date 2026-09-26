@@ -337,7 +337,7 @@ def plot_opendss_circuit(
         )
         ax = fig.axes[0]
 
-    # 3. Add standard schemdraw element icons & legible text labels
+    # 3. Add standard schemdraw element icons & legible text labels distributed throughout the distribution line
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
         raise KeyError("Missing required 'generator_info.generator_kw' in plant_data.")
     gen_kw = plant_data["generator_info"]["generator_kw"]
@@ -378,31 +378,26 @@ def plot_opendss_circuit(
                     fontsize=9, fontweight="bold", color="darkred", zorder=25
                 )
 
-        # Consumer Loads
+        # Consumer Loads distributed along the length of the distribution line
         if "registry" not in plant_data:
             raise KeyError("Missing required 'registry' in plant_data.")
         registry = plant_data["registry"]
 
         labeled_types = set()
-        label_count = 0
         for unit in registry.get_all_consumers():
             for ld in unit.loads:
                 ltype = ld.load_type
                 if ltype not in labeled_types and unit.bus_id.lower() in bus_coords:
                     labeled_types.add(ltype)
-                    label_count += 1
                     bx, by = bus_coords[unit.bus_id.lower()]
 
                     d.add(elm.RBox().at((bx, by)).scale(0.35))
 
                     formatted_label = ltype.replace("_", " ").title()
 
-                    # Position offsets spread far enough apart for clear legibility
-                    offset_x = 25 if (label_count % 2 == 1) else -145
-                    offset_y = ((label_count - 1) % 4) * 22 - 20
-
+                    # Place label directly at bus position along the distribution line length without forced offsets
                     ax.text(
-                        bx + offset_x, by + offset_y,
+                        bx + 8, by + 8,
                         formatted_label,
                         fontsize=8, fontweight="bold", color="navy",
                         bbox=dict(
