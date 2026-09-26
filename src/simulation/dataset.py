@@ -344,9 +344,7 @@ def generate_experiments_dataset(write_to_disk: bool = True):
             feeder_supply_energy_kwh=feeder_supply_energy_kwh,
             technical_loss_kwh=gt_tech_loss_kwh,
             metered_consumer_energies=metered_consumer_energies,
-            registry=registry,
-            cla_estimates=cla_res.allocated_unsampled_consumer_energy,
-            cla_weights=cla_res.weights
+            registry=registry
         )
 
         unmetered_units = [u for u in feeder_units if not u.is_metered]
