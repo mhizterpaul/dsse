@@ -48,14 +48,15 @@ class ConsumerRegistry:
 
     LOAD_CIRCUIT_TYPES = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
-        "compressor", "audio_amplifier", "ups", "industrial_fan", "bulb", "fan"
+        "compressor", "audio_amplifier", "ups", "industrial_fan",
+        "residential_fan", "residential_bulb", "industrial_bulb"
     ]
 
     CLASS_PRIMARY_LOADS = {
-        "residential": ["microwave", "induction_plate", "audio_amplifier", "fan", "bulb"],
-        "commercial": ["compressor", "ac_motor", "ups", "bulb"],
-        "industrial": ["ac_motor", "industrial_fan", "dc_motor_inverter", "bulb"],
-        "agricultural": ["ac_motor", "compressor", "bulb"]
+        "residential": ["microwave", "induction_plate", "audio_amplifier", "residential_fan", "residential_bulb"],
+        "commercial": ["compressor", "ac_motor", "ups", "industrial_bulb", "residential_fan"],
+        "industrial": ["ac_motor", "industrial_fan", "dc_motor_inverter", "industrial_bulb"],
+        "agricultural": ["ac_motor", "compressor", "industrial_bulb", "residential_fan"]
     }
 
     def __init__(self, seed: int = 42):

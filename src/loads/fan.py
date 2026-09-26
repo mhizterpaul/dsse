@@ -3,13 +3,13 @@ try:
 except ImportError:
     from loads.base import EquipmentCircuit
 
-def get_fan(rated_power_kw: float = 0.8) -> EquipmentCircuit:
+def get_residential_fan() -> EquipmentCircuit:
     """
-    Fan: Residential / Commercial ceiling and cooling fan.
+    Residential Fan: Ceiling / standing fan (0.1 kW).
     """
     return EquipmentCircuit(
-        equipment_type="fan",
-        rated_power_kw=rated_power_kw,
+        equipment_type="residential_fan",
+        rated_power_kw=0.1,
         rated_voltage_v=240.0,
         power_factor=0.90,
         opendss_params={
@@ -17,7 +17,10 @@ def get_fan(rated_power_kw: float = 0.8) -> EquipmentCircuit:
             "pf": 0.90
         },
         atp_params={
-            "r_fan": 180.0,
-            "l_fan": 0.05
+            "r_fan": 500.0,
+            "l_fan": 0.1
         }
     )
+
+def get_fan() -> EquipmentCircuit:
+    return get_residential_fan()

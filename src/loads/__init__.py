@@ -19,8 +19,8 @@ try:
     from src.loads.audio_amplifier import get_audio_amplifier
     from src.loads.ups import get_ups
     from src.loads.industrial_fan import get_industrial_fan
-    from src.loads.bulb import get_bulb
-    from src.loads.fan import get_fan
+    from src.loads.bulb import get_bulb, get_residential_bulb, get_industrial_bulb
+    from src.loads.fan import get_fan, get_residential_fan
 except ImportError:
     from loads.base import EquipmentCircuit
     from loads.ac_motor import get_ac_motor
@@ -31,8 +31,8 @@ except ImportError:
     from loads.audio_amplifier import get_audio_amplifier
     from loads.ups import get_ups
     from loads.industrial_fan import get_industrial_fan
-    from loads.bulb import get_bulb
-    from loads.fan import get_fan
+    from loads.bulb import get_bulb, get_residential_bulb, get_industrial_bulb
+    from loads.fan import get_fan, get_residential_fan
 
 import numpy as np
 
@@ -45,7 +45,10 @@ EQUIPMENT_REGISTRY = {
     "audio_amplifier": get_audio_amplifier,
     "ups": get_ups,
     "industrial_fan": get_industrial_fan,
+    "residential_fan": get_residential_fan,
     "bulb": get_bulb,
+    "residential_bulb": get_residential_bulb,
+    "industrial_bulb": get_industrial_bulb,
     "fan": get_fan
 }
 
