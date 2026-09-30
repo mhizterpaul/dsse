@@ -2,11 +2,15 @@ import os
 import sys
 import math
 import json
+import warnings
 from pathlib import Path
 from typing import Optional, Union, Dict, Any, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import curve_fit
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
