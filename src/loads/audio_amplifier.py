@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_audio_amplifier(rated_power_kw: float = 2.5) -> EquipmentCircuit:
+def get_audio_amplifier() -> EquipmentCircuit:
     """
     Audio Amplifier: AC supply, rectifier, DC-link supply capacitors, Class-D H-bridge, LC output filter, speaker load.
     """
     return EquipmentCircuit(
         equipment_type="audio_amplifier",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=2.5,
         rated_voltage_v=240.0,
         power_factor=0.90,
         opendss_params={

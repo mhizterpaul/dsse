@@ -19,6 +19,8 @@ try:
     from src.loads.audio_amplifier import get_audio_amplifier
     from src.loads.ups import get_ups
     from src.loads.industrial_fan import get_industrial_fan
+    from src.loads.bulb import get_bulb, get_residential_bulb, get_industrial_bulb
+    from src.loads.fan import get_fan, get_residential_fan
 except ImportError:
     from loads.base import EquipmentCircuit
     from loads.ac_motor import get_ac_motor
@@ -29,6 +31,8 @@ except ImportError:
     from loads.audio_amplifier import get_audio_amplifier
     from loads.ups import get_ups
     from loads.industrial_fan import get_industrial_fan
+    from loads.bulb import get_bulb, get_residential_bulb, get_industrial_bulb
+    from loads.fan import get_fan, get_residential_fan
 
 import numpy as np
 
@@ -40,16 +44,23 @@ EQUIPMENT_REGISTRY = {
     "compressor": get_compressor,
     "audio_amplifier": get_audio_amplifier,
     "ups": get_ups,
-    "industrial_fan": get_industrial_fan
+    "industrial_fan": get_industrial_fan,
+    "residential_fan": get_residential_fan,
+    "bulb": get_bulb,
+    "residential_bulb": get_residential_bulb,
+    "industrial_bulb": get_industrial_bulb,
+    "fan": get_fan
 }
 
-def get_equipment_model(equipment_type: str, rated_power_kw: float = None) -> EquipmentCircuit:
+def get_equipment_model(equipment_type: str) -> EquipmentCircuit:
+    """
+    Returns EquipmentCircuit model for specified load equipment type.
+    Power rating is unparameterized and specified directly in each load model.
+    """
     if equipment_type not in EQUIPMENT_REGISTRY:
         raise ValueError(f"Unknown equipment type '{equipment_type}'. Supported types: {list(EQUIPMENT_REGISTRY.keys())}")
 
     factory = EQUIPMENT_REGISTRY[equipment_type]
-    if rated_power_kw is not None:
-        return factory(rated_power_kw=rated_power_kw)
     return factory()
 
 def distribute_loads(buses: list, rng=None) -> dict:

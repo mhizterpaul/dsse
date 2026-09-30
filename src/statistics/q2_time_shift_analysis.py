@@ -101,9 +101,14 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
     i_sim = group_sim["residual_current_magnitude"].values
     i_shift = group_shift["residual_current_magnitude"].values
 
+    mean_v_sim = float(np.mean(v_sim)) if len(v_sim) > 0 else 0.0
+    mean_i_sim = float(np.mean(i_sim)) if len(i_sim) > 0 else 0.0
+    mean_v_shift = float(np.mean(v_shift)) if len(v_shift) > 0 else 0.0
+    mean_i_shift = float(np.mean(i_shift)) if len(i_shift) > 0 else 0.0
+
     print(f"Overall Dataset 3 Time Shift (N_sim={len(group_sim)}, N_shift={len(group_shift)}):")
-    print(f"  Simultaneous: Mean V_res = {np.mean(v_sim):.6f}, Mean I_res = {np.mean(i_sim):.6f}")
-    print(f"  Time-Shifted: Mean V_res = {np.mean(v_shift):.6f}, Mean I_res = {np.mean(i_shift):.6f}")
+    print(f"  Simultaneous: Mean V_res = {mean_v_sim:.6f}, Mean I_res = {mean_i_sim:.6f}")
+    print(f"  Time-Shifted: Mean V_res = {mean_v_shift:.6f}, Mean I_res = {mean_i_shift:.6f}")
 
     return {
         "col_corr_vector": col_corr_vector,
@@ -111,8 +116,8 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
         "corr_std": corr_std,
         "mag_ratio": mag_ratio,
         "discount_factor": discount_factor,
-        "mean_v_residual_simultaneous": float(np.mean(v_sim)) if len(v_sim) > 0 else 0.0,
-        "mean_v_residual_shifted": float(np.mean(v_shift)) if len(v_shift) > 0 else 0.0
+        "mean_v_residual_simultaneous": mean_v_sim,
+        "mean_v_residual_shifted": mean_v_shift
     }
 
 

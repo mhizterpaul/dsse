@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_induction_plate(rated_power_kw: float = 3.5) -> EquipmentCircuit:
+def get_induction_plate() -> EquipmentCircuit:
     """
     Induction Cooktop: Rectifier, DC link, high-frequency resonant inverter, resonant capacitor, induction coil R_eq + j*omega*L_eq.
     """
     return EquipmentCircuit(
         equipment_type="induction_plate",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=3.5,
         rated_voltage_v=240.0,
         power_factor=0.98,
         opendss_params={

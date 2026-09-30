@@ -1,12 +1,15 @@
-from loads.base import EquipmentCircuit
+try:
+    from src.loads.base import EquipmentCircuit
+except ImportError:
+    from loads.base import EquipmentCircuit
 
-def get_microwave(rated_power_kw: float = 1.8) -> EquipmentCircuit:
+def get_microwave() -> EquipmentCircuit:
     """
     Microwave Oven: Input rectifier, PFC, DC-link capacitor, HV transformer, diode voltage doubler, magnetron.
     """
     return EquipmentCircuit(
         equipment_type="microwave",
-        rated_power_kw=rated_power_kw,
+        rated_power_kw=1.8,
         rated_voltage_v=240.0,
         power_factor=0.95,
         opendss_params={
