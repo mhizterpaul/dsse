@@ -369,14 +369,6 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     ev1 = co_ev.event_1
     ev2 = co_ev.event_2
 
-    # Ensure single events are in chronological order by start_time_s
-    if ev2.start_time_s < ev1.start_time_s:
-        ev1, ev2 = ev2, ev1
-        if isinstance(co_ev, EquipmentEquipmentCoEvent):
-            co_ev = EquipmentEquipmentCoEvent(event_1=ev1, event_2=ev2)
-        elif isinstance(co_ev, EquipmentLineFaultCoEvent):
-            co_ev = EquipmentLineFaultCoEvent(event_1=ev1, event_2=ev2)
-
     # Determine feeder connected to event
     if use_baseline_feeder:
         feeder_idx = 1
