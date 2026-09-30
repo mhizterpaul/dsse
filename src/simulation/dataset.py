@@ -91,12 +91,14 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
     """
     Processes simulation results returned by CoSimulationRunner.run_transient_simulation.
     Applies Butterworth high-pass filter (remove_low_frequency_components) to waveforms,
-    computes 3-phase scalar voltage_magnitude and current_magnitude as well as residual magnitudes,
-    and returns list of row dictionaries.
+    applies time offset before composition, computes 3-phase scalar voltage_magnitude and
+    current_magnitude as well as residual magnitudes, and returns list of row dictionaries.
     """
     print(f"INFO: Processing {len(sim_results)} simulation results for {dataset_name}...")
 
     rows = []
+    fs = 10000.0  # Sampling frequency in Hz
+
     for item in sim_results:
         co_ev = item["co_ev"]
         ev1 = co_ev.event_1
@@ -110,15 +112,29 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         i_joint = item["i_joint"]
 
         # Apply low frequency filter to waveforms
-        v1_filt = remove_low_frequency_components(v1, cutoff_hz=50.0, fs=10000.0, order=4)
-        i1_filt = remove_low_frequency_components(i1, cutoff_hz=50.0, fs=10000.0, order=4)
-        v2_filt = remove_low_frequency_components(v2, cutoff_hz=50.0, fs=10000.0, order=4)
-        i2_filt = remove_low_frequency_components(i2, cutoff_hz=50.0, fs=10000.0, order=4)
-        v_joint_filt = remove_low_frequency_components(v_joint, cutoff_hz=50.0, fs=10000.0, order=4)
-        i_joint_filt = remove_low_frequency_components(i_joint, cutoff_hz=50.0, fs=10000.0, order=4)
+        v1_filt = remove_low_frequency_components(v1, cutoff_hz=50.0, fs=fs, order=4)
+        i1_filt = remove_low_frequency_components(i1, cutoff_hz=50.0, fs=fs, order=4)
+        v2_filt = remove_low_frequency_components(v2, cutoff_hz=50.0, fs=fs, order=4)
+        i2_filt = remove_low_frequency_components(i2, cutoff_hz=50.0, fs=fs, order=4)
+        v_joint_filt = remove_low_frequency_components(v_joint, cutoff_hz=50.0, fs=fs, order=4)
+        i_joint_filt = remove_low_frequency_components(i_joint, cutoff_hz=50.0, fs=fs, order=4)
 
-        v_comp = v1_filt + v2_filt
-        i_comp = i1_filt + i2_filt
+        # Apply time offset to event 2 single event before composition
+        t_off_s = float(getattr(co_ev, "time_offset_s", 0.0))
+        shift_samples = int(round(t_off_s * fs))
+
+        if shift_samples > 0:
+            v2_shifted = np.zeros_like(v2_filt)
+            i2_shifted = np.zeros_like(i2_filt)
+            if shift_samples < len(v2_filt):
+                v2_shifted[shift_samples:] = v2_filt[:-shift_samples]
+                i2_shifted[shift_samples:] = i2_filt[:-shift_samples]
+        else:
+            v2_shifted = v2_filt
+            i2_shifted = i2_filt
+
+        v_comp = v1_filt + v2_shifted
+        i_comp = i1_filt + i2_shifted
 
         v_res = v_joint_filt - v_comp
         i_res = i_joint_filt - i_comp
