@@ -173,6 +173,117 @@ run_no_load_vs_loaded_simulation = run_clean_experiment_simulations
 run_load_pair_vs_single_simulation = run_clean_experiment_simulations
 
 
+def run_shared_base_load_coevents_experiment(
+    base_equipment: str = "ac_motor",
+    event_equipment_A: str = "compressor",
+    event_equipment_B: str = "audio_amplifier",
+    start_time_s: float = 0.02,
+    duration_s: float = 0.10,
+    seed: int = 42
+) -> Dict[str, Any]:
+    """
+    Executes two co-events sharing the same base load (Equipment 1) under identical ATP circuit conditions:
+      - Co-event A: Base Load (ac_motor) + Additional Event A (compressor)
+      - Co-event B: Base Load (ac_motor) + Additional Event B (audio_amplifier)
+
+    Both co-events subtract the single No-Load baseline solution x_no_load(t).
+    Extracts two channels for each co-event:
+      - Harmonic Component Channel H(t) (Fundamental + Harmonics)
+      - Slowly Varying Component Channel S(t) (SSD / DC trend)
+
+    Computes Pearson correlations:
+      - rho_H = corr(H_A, H_B)
+      - rho_S = corr(S_A, S_B)
+      - Two-channel similarity: rho_2ch = w_H * rho_H + w_S * rho_S (w_H=0.5, w_S=0.5)
+      - Coefficients of determination R^2_H = rho_H^2 and R^2_S = rho_S^2.
+    """
+    runner = CoSimulationRunner()
+    plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    op = plant_data["op"] if "op" in plant_data else None
+    if op is None:
+        from src.power_plant.plant import solve_operating_point
+        op = solve_operating_point(runner.dss)
+
+    tx_unit_id = "trans1_lv_boundary"
+    t_stop = start_time_s + duration_s + 0.03
+
+    # 1. Case A: Single No-Load Baseline Run
+    no_load_ev = NoLoadEvent(start_time_s=start_time_s, duration_s=duration_s)
+    t_no, v_no_dict, _, _ = runner.measure_transients(
+        op=op, event=no_load_ev, scenario_id="shared_base_noload", feeder_idx=1, use_baseline_feeder=True, t_stop_override=t_stop
+    )
+
+    # 2. Co-event A: Base Equipment + Event A
+    ev_base = SingleEquipmentSwitchEvent(equipment_type=base_equipment, start_time_s=start_time_s, duration_s=duration_s, target="trans1", parameters={})
+    ev_A = SingleEquipmentSwitchEvent(equipment_type=event_equipment_A, start_time_s=start_time_s, duration_s=duration_s, target="trans1", parameters={})
+    co_ev_A = EquipmentEquipmentCoEvent(event_1=ev_base, event_2=ev_A)
+    t_A, v_A_dict, _, _ = runner.measure_transients(
+        op=op, event=co_ev_A, scenario_id="shared_base_coevent_A", feeder_idx=1, use_baseline_feeder=True, t_stop_override=t_stop
+    )
+
+    # 3. Co-event B: Base Equipment + Event B
+    ev_B = SingleEquipmentSwitchEvent(equipment_type=event_equipment_B, start_time_s=start_time_s, duration_s=duration_s, target="trans1", parameters={})
+    co_ev_B = EquipmentEquipmentCoEvent(event_1=ev_base, event_2=ev_B)
+    t_B, v_B_dict, _, _ = runner.measure_transients(
+        op=op, event=co_ev_B, scenario_id="shared_base_coevent_B", feeder_idx=1, use_baseline_feeder=True, t_stop_override=t_stop
+    )
+
+    v_no = v_no_dict[tx_unit_id][:, 0]
+    v_A = v_A_dict[tx_unit_id][:, 0]
+    v_B = v_B_dict[tx_unit_id][:, 0]
+
+    min_len = min(len(t_no), len(t_A), len(t_B))
+    t = t_A[:min_len]
+    v_no = v_no[:min_len]
+    v_A = v_A[:min_len]
+    v_B = v_B[:min_len]
+
+    # Subtract corresponding single no-load baseline
+    v_res_A = v_A - v_no
+    v_res_B = v_B - v_no
+
+    # Decompose into 2 Channels: Harmonic H(t) and Slowly Varying S(t)
+    decomp_A = decompose_load_waveform(t, v_res_A)
+    decomp_B = decompose_load_waveform(t, v_res_B)
+
+    H_A = decomp_A["x_fundamental"] + decomp_A["x_harmonics"]
+    S_A = decomp_A["x_ssd"]
+
+    H_B = decomp_B["x_fundamental"] + decomp_B["x_harmonics"]
+    S_B = decomp_B["x_ssd"]
+
+    # Calculate Pearson correlations
+    rho_H = float(np.corrcoef(H_A, H_B)[0, 1])
+    rho_S = float(np.corrcoef(S_A, S_B)[0, 1])
+
+    w_H, w_S = 0.5, 0.5
+    rho_2ch = float(w_H * rho_H + w_S * rho_S)
+
+    r2_H = float(rho_H ** 2)
+    r2_S = float(rho_S ** 2)
+
+    return {
+        "time": t,
+        "base_equipment": base_equipment,
+        "event_equipment_A": event_equipment_A,
+        "event_equipment_B": event_equipment_B,
+        "v_res_A": v_res_A,
+        "v_res_B": v_res_B,
+        "H_A": H_A,
+        "S_A": S_A,
+        "H_B": H_B,
+        "S_B": S_B,
+        "rho_H": rho_H,
+        "rho_S": rho_S,
+        "rho_2ch": rho_2ch,
+        "r2_H": r2_H,
+        "r2_S": r2_S,
+        "decomp_A": decomp_A,
+        "decomp_B": decomp_B,
+    }
+
+
 def decompose_load_waveform(
     time_s: np.ndarray,
     signal: np.ndarray,
@@ -367,10 +478,11 @@ def analyze_stft_spectrum(
 
 
 if __name__ == "__main__":
-    print("Testing 3-phase multi-channel 5-component expanded wave equations...")
-    sim_data = run_clean_experiment_simulations("ac_motor", "compressor")
-    decomp_v3 = decompose_load_waveform(sim_data["time"], sim_data["v_pair"])
-    eqs_v3 = derive_wave_equations(sim_data["time"], decomp_v3, signal_name="V_{pair}")
-    print("Derived Expanded 3-Phase Voltage Equations:")
-    for k, v in eqs_v3.items():
-        print(f"  {k}: {v}")
+    print("Testing shared base load co-events two-channel correlation experiment...")
+    exp_res = run_shared_base_load_coevents_experiment("ac_motor", "compressor", "audio_amplifier")
+    print(f"Base Equipment: {exp_res['base_equipment']}")
+    print(f"Co-event A: {exp_res['base_equipment']} + {exp_res['event_equipment_A']}")
+    print(f"Co-event B: {exp_res['base_equipment']} + {exp_res['event_equipment_B']}")
+    print(f"Harmonic Channel Correlation (rho_H): {exp_res['rho_H']:.4f} (R^2 = {exp_res['r2_H']:.4f})")
+    print(f"Slow-Varying Channel Correlation (rho_S): {exp_res['rho_S']:.4f} (R^2 = {exp_res['r2_S']:.4f})")
+    print(f"Two-Channel Combined Correlation (rho_2ch): {exp_res['rho_2ch']:.4f}")
