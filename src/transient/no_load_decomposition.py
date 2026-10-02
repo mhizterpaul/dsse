@@ -255,8 +255,8 @@ def derive_wave_equations(
     unit: str = "V"
 ) -> Dict[str, str]:
     """
-    Derives explicit mathematical wave equations for all 5 decomposed components.
-    Supports both 1D arrays and 3-phase (N, 3) arrays.
+    Derives explicit mathematical wave equations with fitted numerical values for all 5 decomposed components
+    and full expanded total signal expressions. Supports both 1D arrays and 3-phase (N, 3) arrays.
     """
     x_event = decomp["x_event"]
     if x_event.ndim == 2 and x_event.shape[1] == 3:
@@ -293,7 +293,8 @@ def derive_wave_equations(
     amp_f1 = (2.0 / n) * np.abs(X_f_fft[idx_50])
     phi_f1_deg = np.rad2deg(np.angle(X_f_fft[idx_50]))
     sign_f1 = "+" if phi_f1_deg >= 0 else "-"
-    eq_fund = f"x_{{fundamental}}(t) = {amp_f1:.2f} \\cos(2\\pi \\cdot 50 t {sign_f1} {abs(phi_f1_deg):.1f}^\\circ) \\quad [{unit}]"
+    term_fund = f"{amp_f1:.2f} \\cos(2\\pi \\cdot 50 t {sign_f1} {abs(phi_f1_deg):.1f}^\\circ)"
+    eq_fund = f"x_{{fundamental}}(t) = {term_fund} \\quad [{unit}]"
 
     # 2. Harmonic Bands: sum_k A_k * cos(2*pi*k*50*t + phi_k)
     X_h_fft = np.fft.rfft(x_harm)
@@ -308,13 +309,15 @@ def derive_wave_equations(
             sign_k = "+" if phi_k_deg >= 0 else "-"
             harm_terms.append(f"{amp_k:.2f} \\cos(2\\pi \\cdot {int(k*50)} t {sign_k} {abs(phi_k_deg):.1f}^\\circ)")
 
-    eq_harm = "x_{harmonics}(t) = " + (" + ".join(harm_terms) if harm_terms else "0.00") + f" \\quad [{unit}]"
+    term_harm = " + ".join(harm_terms) if harm_terms else "0.00"
+    eq_harm = f"x_{{harmonics}}(t) = {term_harm} \\quad [{unit}]"
 
     # 3. Localized Transient Impulse
     peak_loc_idx = np.argmax(np.abs(x_loc))
     t_loc = time_s[peak_loc_idx]
     amp_loc = np.abs(x_loc[peak_loc_idx])
-    eq_loc = f"x_{{localized}}(t) = {amp_loc:.2f} \\cdot \\mathrm{{rect}}\\!\\left(\\frac{{t - {t_loc:.3f}}}{{0.005}}\\right) \\quad [{unit}]"
+    term_loc = f"{amp_loc:.2f} \\cdot \\mathrm{{rect}}\\!\\left(\\frac{{t - {t_loc:.3f}}}{{0.005}}\\right)"
+    eq_loc = f"x_{{localized}}(t) = {term_loc} \\quad [{unit}]"
 
     # 4. Oscillatory Transient Ringing
     peak_osc_idx = np.argmax(np.abs(x_osc))
@@ -322,16 +325,19 @@ def derive_wave_equations(
     amp_osc = np.abs(x_osc[peak_osc_idx])
     X_o_fft = np.fft.rfft(x_osc)
     f_osc_dom = freqs[np.argmax(np.abs(X_o_fft))]
-    eq_osc = f"x_{{oscillatory}}(t) = {amp_osc:.2f} e^{{-120.0 (t - {t_osc:.3f})}} \\sin(2\\pi \\cdot {int(f_osc_dom)} (t - {t_osc:.3f})) \\cdot H(t - {t_osc:.3f}) \\quad [{unit}]"
+    term_osc = f"{amp_osc:.2f} e^{{-120.0 (t - {t_osc:.3f})}} \\sin(2\\pi \\cdot {int(f_osc_dom)} (t - {t_osc:.3f})) \\cdot H(t - {t_osc:.3f})"
+    eq_osc = f"x_{{oscillatory}}(t) = {term_osc} \\quad [{unit}]"
 
     # 5. Slowly Varying Component (SSD)
     t0 = time_s[0]
     p_ssd = np.polyfit(time_s - t0, x_ssd, 1)
     c1, c0 = p_ssd[0], p_ssd[1]
     c1_sign = "+" if c1 >= 0 else "-"
-    eq_ssd = f"x_{{SSD}}(t) = {c0:.3f} {c1_sign} {abs(c1):.3f} \\cdot t \\quad [{unit}]"
+    term_ssd = f"{c0:.3f} {c1_sign} {abs(c1):.3f} \\cdot t"
+    eq_ssd = f"x_{{SSD}}(t) = {term_ssd} \\quad [{unit}]"
 
-    eq_event = f"{signal_name}(t) = x_{{fundamental}}(t) + x_{{harmonics}}(t) + x_{{localized}}(t) + x_{{oscillatory}}(t) + x_{{SSD}}(t)"
+    # Expanded Total Signal Expression with Fitted Numerical Values
+    eq_event = f"{signal_name}(t) = \\left[ {term_fund} \\right] + \\left[ {term_harm} \\right] + \\left[ {term_loc} \\right] + \\left[ {term_osc} \\right] + \\left[ {term_ssd} \\right] \\quad [{unit}]"
 
     return {
         "eq_fundamental": eq_fund,
@@ -361,10 +367,10 @@ def analyze_stft_spectrum(
 
 
 if __name__ == "__main__":
-    print("Testing 3-phase multi-channel 5-component decomposition...")
+    print("Testing 3-phase multi-channel 5-component expanded wave equations...")
     sim_data = run_clean_experiment_simulations("ac_motor", "compressor")
     decomp_v3 = decompose_load_waveform(sim_data["time"], sim_data["v_pair"])
     eqs_v3 = derive_wave_equations(sim_data["time"], decomp_v3, signal_name="V_{pair}")
-    print("Derived 3-Phase Voltage Equations:")
+    print("Derived Expanded 3-Phase Voltage Equations:")
     for k, v in eqs_v3.items():
         print(f"  {k}: {v}")
