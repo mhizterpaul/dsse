@@ -11,7 +11,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.transient.events import SingleEquipmentSwitchEvent, NoLoadEvent
+from src.transient.events import (
+    SingleEquipmentSwitchEvent,
+    EquipmentEquipmentCoEvent,
+    NoLoadEvent,
+)
 
 
 def run_no_load_vs_loaded_simulation(
@@ -21,11 +25,7 @@ def run_no_load_vs_loaded_simulation(
     seed: int = 42
 ) -> Dict[str, Any]:
     """
-    Runs Case A (No-Load) and Case B (Loaded Event) in ATP under identical circuit conditions:
-    same simulation time step, source, transformer (BCTRAN), grounding, and line configuration.
-
-    Returns a dictionary containing time vectors, 3-phase voltages/currents for both cases,
-    and residual (load-induced) waveforms.
+    Runs Case A (No-Load) and Case B (Loaded Event) in ATP under identical circuit conditions.
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
@@ -38,7 +38,7 @@ def run_no_load_vs_loaded_simulation(
     tx_unit_id = "trans1_lv_boundary"
     t_stop = start_time_s + duration_s + 0.03
 
-    # Case A: No-load event (secondary open circuit / no test branch)
+    # Case A: No-load event
     no_load_ev = NoLoadEvent(start_time_s=start_time_s, duration_s=duration_s)
     t_no, v_no_dict, i_no_dict, _ = runner.measure_transients(
         op=op,
@@ -49,7 +49,7 @@ def run_no_load_vs_loaded_simulation(
         t_stop_override=t_stop
     )
 
-    # Case B: Loaded event (secondary attached with equipment event)
+    # Case B: Loaded event
     loaded_ev = SingleEquipmentSwitchEvent(
         equipment_type=equipment_type,
         start_time_s=start_time_s,
@@ -66,12 +66,11 @@ def run_no_load_vs_loaded_simulation(
         t_stop_override=t_stop
     )
 
-    v_no = v_no_dict[tx_unit_id]  # (N, 3)
-    i_no = i_no_dict[tx_unit_id]  # (N, 3)
-    v_ld = v_ld_dict[tx_unit_id]  # (N, 3)
-    i_ld = i_ld_dict[tx_unit_id]  # (N, 3)
+    v_no = v_no_dict[tx_unit_id]
+    i_no = i_no_dict[tx_unit_id]
+    v_ld = v_ld_dict[tx_unit_id]
+    i_ld = i_ld_dict[tx_unit_id]
 
-    # Align array lengths if minor time step differences occur
     min_len = min(len(t_no), len(t_ld))
     t = t_ld[:min_len]
     v_no = v_no[:min_len]
@@ -79,7 +78,6 @@ def run_no_load_vs_loaded_simulation(
     v_ld = v_ld[:min_len]
     i_ld = i_ld[:min_len]
 
-    # Compute load-induced residual waveforms
     v_event = v_ld - v_no
     i_event = i_ld - i_no
 
@@ -92,6 +90,150 @@ def run_no_load_vs_loaded_simulation(
         "v_event": v_event,
         "i_event": i_event,
         "equipment_type": equipment_type,
+    }
+
+
+def run_load_pair_vs_single_simulation(
+    equipment_1: str = "ac_motor",
+    equipment_2: str = "compressor",
+    start_time_s: float = 0.02,
+    duration_s: float = 0.10,
+    time_offset_s: float = 0.0,
+    seed: int = 42
+) -> Dict[str, Any]:
+    """
+    Runs Case A (No-Load), Case B1 (Single Load 1), Case B2 (Single Load 2), and Case C (Joint Load Pair)
+    under identical circuit parameters in ATP.
+
+    Computes single load residuals, joint load pair residual, linear composed sum, and interaction residual.
+    """
+    runner = CoSimulationRunner()
+    plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    op = plant_data["op"] if "op" in plant_data else None
+    if op is None:
+        from src.power_plant.plant import solve_operating_point
+        op = solve_operating_point(runner.dss)
+
+    tx_unit_id = "trans1_lv_boundary"
+    t_stop = start_time_s + duration_s + time_offset_s + 0.03
+
+    # Case A: No-load event
+    no_load_ev = NoLoadEvent(start_time_s=start_time_s, duration_s=duration_s + time_offset_s)
+    t_no, v_no_dict, i_no_dict, _ = runner.measure_transients(
+        op=op,
+        event=no_load_ev,
+        scenario_id="pair_noload",
+        feeder_idx=1,
+        use_baseline_feeder=True,
+        t_stop_override=t_stop
+    )
+
+    # Case B1: Single Load 1
+    ev1 = SingleEquipmentSwitchEvent(
+        equipment_type=equipment_1,
+        start_time_s=start_time_s,
+        duration_s=duration_s,
+        target="trans1",
+        parameters={}
+    )
+    t_1, v1_dict, i1_dict, _ = runner.measure_transients(
+        op=op,
+        event=ev1,
+        scenario_id="pair_single1",
+        feeder_idx=1,
+        use_baseline_feeder=True,
+        t_stop_override=t_stop
+    )
+
+    # Case B2: Single Load 2
+    ev2 = SingleEquipmentSwitchEvent(
+        equipment_type=equipment_2,
+        start_time_s=start_time_s + time_offset_s,
+        duration_s=duration_s,
+        target="trans1",
+        parameters={}
+    )
+    t_2, v2_dict, i2_dict, _ = runner.measure_transients(
+        op=op,
+        event=ev2,
+        scenario_id="pair_single2",
+        feeder_idx=1,
+        use_baseline_feeder=True,
+        t_stop_override=t_stop
+    )
+
+    # Case C: Joint Load Pair (Co-event)
+    co_ev = EquipmentEquipmentCoEvent(event_1=ev1, event_2=ev2)
+    t_pair, v_pair_dict, i_pair_dict, _ = runner.measure_transients(
+        op=op,
+        event=co_ev,
+        scenario_id="pair_joint",
+        feeder_idx=1,
+        use_baseline_feeder=True,
+        t_stop_override=t_stop
+    )
+
+    v_no = v_no_dict[tx_unit_id]
+    i_no = i_no_dict[tx_unit_id]
+    v_1 = v1_dict[tx_unit_id]
+    i_1 = i1_dict[tx_unit_id]
+    v_2 = v2_dict[tx_unit_id]
+    i_2 = i2_dict[tx_unit_id]
+    v_pair = v_pair_dict[tx_unit_id]
+    i_pair = i_pair_dict[tx_unit_id]
+
+    min_len = min(len(t_no), len(t_1), len(t_2), len(t_pair))
+    t = t_pair[:min_len]
+    v_no = v_no[:min_len]
+    i_no = i_no[:min_len]
+    v_1 = v_1[:min_len]
+    i_1 = i_1[:min_len]
+    v_2 = v_2[:min_len]
+    i_2 = i_2[:min_len]
+    v_pair = v_pair[:min_len]
+    i_pair = i_pair[:min_len]
+
+    # Compute Load Residuals
+    v_res_1 = v_1 - v_no
+    i_res_1 = i_1 - i_no
+
+    v_res_2 = v_2 - v_no
+    i_res_2 = i_2 - i_no
+
+    v_res_pair = v_pair - v_no
+    i_res_pair = i_pair - i_no
+
+    # Linear Superposition Composed Sum
+    v_composed = v_res_1 + v_res_2
+    i_composed = i_res_1 + i_res_2
+
+    # Non-linear Interaction Residual across shared Thévenin impedance
+    v_interaction = v_res_pair - v_composed
+    i_interaction = i_res_pair - i_composed
+
+    return {
+        "time": t,
+        "v_no_load": v_no,
+        "i_no_load": i_no,
+        "v_single_1": v_1,
+        "i_single_1": i_1,
+        "v_single_2": v_2,
+        "i_single_2": i_2,
+        "v_pair": v_pair,
+        "i_pair": i_pair,
+        "v_res_1": v_res_1,
+        "i_res_1": i_res_1,
+        "v_res_2": v_res_2,
+        "i_res_2": i_res_2,
+        "v_res_pair": v_res_pair,
+        "i_res_pair": i_res_pair,
+        "v_composed": v_composed,
+        "i_composed": i_composed,
+        "v_interaction": v_interaction,
+        "i_interaction": i_interaction,
+        "equipment_1": equipment_1,
+        "equipment_2": equipment_2,
     }
 
 
@@ -123,10 +265,6 @@ def decompose_load_waveform(
     """
     Decomposes a 1D residual event signal x_event(t) into 3 physically meaningful components:
       x_event(t) = x_SSD(t) + x_harmonic(t) + x_transient(t)
-
-    - x_SSD(t): Slowly varying / DC steady-state trend extracted via LPF / moving average.
-    - x_harmonic(t): Fundamental and integer harmonic frequencies (50, 100, 150, 200 Hz...) reconstructed via FFT.
-    - x_transient(t): Localized high-frequency transient residue extracted via Discrete Wavelet Decomposition (DWT).
     """
     dt = time_s[1] - time_s[0] if fs is None else 1.0 / fs
     fs = 1.0 / dt
@@ -143,9 +281,9 @@ def decompose_load_waveform(
     freqs = np.fft.rfftfreq(n, d=dt)
 
     X_harmonic_fft = np.zeros_like(X_fft)
-    f0 = 50.0  # Operating frequency
+    f0 = 50.0
     f_max = 1000.0
-    bin_width = 10.0  # Hz band around harmonics
+    bin_width = 10.0
 
     for k in range(1, int(f_max / f0) + 1):
         target_f = k * f0
@@ -184,7 +322,6 @@ def derive_wave_equations(
     x_ssd = decomp["x_ssd"]
     x_harm = decomp["x_harmonic"]
     x_tran = decomp["x_transient"]
-    x_ev = decomp["x_event"]
 
     # 1. Fit x_SSD(t) = C0 + C1 * (t - t0)
     t0 = time_s[0]
@@ -220,7 +357,6 @@ def derive_wave_equations(
     t_onset = time_s[peak_idx]
     a_tr = np.abs(x_tran[peak_idx])
 
-    # Dominant frequency of transient
     X_tr_fft = np.fft.rfft(x_tran)
     f_tr_dom = freqs[np.argmax(np.abs(X_tr_fft))]
 
@@ -229,24 +365,29 @@ def derive_wave_equations(
     # 4. Total Event Wave Equation
     eq_event = f"{signal_name}(t) = x_{{SSD}}(t) + x_{{harmonic}}(t) + x_{{transient}}(t)"
 
-    eqs = {
+    return {
         "eq_ssd": eq_ssd,
         "eq_harmonic": eq_harm,
         "eq_transient": eq_tran,
         "eq_event": eq_event
     }
 
-    return eqs
-
 
 if __name__ == "__main__":
-    print("Running test case for ATP No-Load vs Loaded simulation & decomposition...")
-    sim_data = run_no_load_vs_loaded_simulation("ac_motor")
-    print(f"Simulation completed successfully for {sim_data['equipment_type']}.")
+    print("Running test case for ATP Load Pair vs Single Load simulation & decomposition...")
+    pair_data = run_load_pair_vs_single_simulation("ac_motor", "compressor")
+    print(f"Simulation completed for pair {pair_data['equipment_1']} + {pair_data['equipment_2']}.")
 
-    decomp = decompose_load_waveform(sim_data["time"], sim_data["v_event"][:, 0])
-    eqs = derive_wave_equations(sim_data["time"], decomp, signal_name="V_{a, event}")
+    decomp_s1 = decompose_load_waveform(pair_data["time"], pair_data["v_res_1"][:, 0])
+    decomp_pair = decompose_load_waveform(pair_data["time"], pair_data["v_res_pair"][:, 0])
 
-    print("\nDerived Wave Equations:")
-    for key, eq in eqs.items():
-        print(f"  {key}: {eq}")
+    eqs_s1 = derive_wave_equations(pair_data["time"], decomp_s1, signal_name="V_{a, single1}")
+    eqs_pair = derive_wave_equations(pair_data["time"], decomp_pair, signal_name="V_{a, pair}")
+
+    print("\nDerived Single Load Wave Equations:")
+    for k, v in eqs_s1.items():
+        print(f"  {k}: {v}")
+
+    print("\nDerived Load Pair Wave Equations:")
+    for k, v in eqs_pair.items():
+        print(f"  {k}: {v}")
