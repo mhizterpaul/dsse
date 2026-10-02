@@ -191,9 +191,27 @@ class EquipmentLineFaultCoEvent:
         return branches
 
 
+@dataclass
+class NoLoadEvent:
+    start_time_s: float = 0.02
+    duration_s: float = 0.10
+
+    @property
+    def event_class(self) -> str:
+        return "no_load"
+
+    @property
+    def event_type(self) -> str:
+        return "no_load"
+
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
+        return []
+
+
 TransientEvent = Union[
     SingleEquipmentSwitchEvent,
     SingleLineFaultEvent,
     EquipmentEquipmentCoEvent,
     EquipmentLineFaultCoEvent,
+    NoLoadEvent,
 ]
