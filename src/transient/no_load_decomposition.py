@@ -18,14 +18,26 @@ from src.transient.events import (
 )
 
 
-def run_no_load_vs_loaded_simulation(
-    equipment_type: str = "ac_motor",
+def run_clean_experiment_simulations(
+    equipment_1: str = "ac_motor",
+    equipment_2: str = "compressor",
     start_time_s: float = 0.02,
     duration_s: float = 0.10,
     seed: int = 42
 ) -> Dict[str, Any]:
     """
-    Runs Case A (No-Load) and Case B (Loaded Event) in ATP under identical circuit conditions.
+    Executes the clean experiment simulation suite ONCE under identical ATP circuit conditions:
+      - Case A:  No-Load baseline (secondary open circuit)
+      - Case B1: Single Equipment 1 (e.g., AC Motor)
+      - Case B2: Single Equipment 2 (e.g., Compressor)
+      - Case C:  Joint Equipment Pair (Equipment 1 + Equipment 2)
+
+    Computes load residuals by subtracting the single Case A no-load baseline waveform:
+      - x_res_1 = x_single_1 - x_no_load
+      - x_res_2 = x_single_2 - x_no_load
+      - x_res_pair = x_pair - x_no_load
+      - x_composed = x_res_1 + x_res_2
+      - x_interaction = x_res_pair - x_composed
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
@@ -38,98 +50,18 @@ def run_no_load_vs_loaded_simulation(
     tx_unit_id = "trans1_lv_boundary"
     t_stop = start_time_s + duration_s + 0.03
 
-    # Case A: No-load event
+    # 1. Case A: Single No-Load Baseline Run
     no_load_ev = NoLoadEvent(start_time_s=start_time_s, duration_s=duration_s)
     t_no, v_no_dict, i_no_dict, _ = runner.measure_transients(
         op=op,
         event=no_load_ev,
-        scenario_id="noload_case_a",
+        scenario_id="clean_case_a_noload",
         feeder_idx=1,
         use_baseline_feeder=True,
         t_stop_override=t_stop
     )
 
-    # Case B: Loaded event
-    loaded_ev = SingleEquipmentSwitchEvent(
-        equipment_type=equipment_type,
-        start_time_s=start_time_s,
-        duration_s=duration_s,
-        target="trans1",
-        parameters={}
-    )
-    t_ld, v_ld_dict, i_ld_dict, _ = runner.measure_transients(
-        op=op,
-        event=loaded_ev,
-        scenario_id="loaded_case_b",
-        feeder_idx=1,
-        use_baseline_feeder=True,
-        t_stop_override=t_stop
-    )
-
-    v_no = v_no_dict[tx_unit_id]
-    i_no = i_no_dict[tx_unit_id]
-    v_ld = v_ld_dict[tx_unit_id]
-    i_ld = i_ld_dict[tx_unit_id]
-
-    min_len = min(len(t_no), len(t_ld))
-    t = t_ld[:min_len]
-    v_no = v_no[:min_len]
-    i_no = i_no[:min_len]
-    v_ld = v_ld[:min_len]
-    i_ld = i_ld[:min_len]
-
-    v_event = v_ld - v_no
-    i_event = i_ld - i_no
-
-    return {
-        "time": t,
-        "v_no_load": v_no,
-        "i_no_load": i_no,
-        "v_loaded": v_ld,
-        "i_loaded": i_ld,
-        "v_event": v_event,
-        "i_event": i_event,
-        "equipment_type": equipment_type,
-    }
-
-
-def run_load_pair_vs_single_simulation(
-    equipment_1: str = "ac_motor",
-    equipment_2: str = "compressor",
-    start_time_s: float = 0.02,
-    duration_s: float = 0.10,
-    time_offset_s: float = 0.0,
-    seed: int = 42
-) -> Dict[str, Any]:
-    """
-    Runs Case A (No-Load), Case B1 (Single Load 1), Case B2 (Single Load 2), and Case C (Joint Load Pair)
-    under identical circuit parameters in ATP.
-
-    Computes single load residuals, joint load pair residual, linear composed sum, and interaction residual.
-    """
-    runner = CoSimulationRunner()
-    plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
-    runner.dss.run_command("disable Fault.*")
-    op = plant_data["op"] if "op" in plant_data else None
-    if op is None:
-        from src.power_plant.plant import solve_operating_point
-        op = solve_operating_point(runner.dss)
-
-    tx_unit_id = "trans1_lv_boundary"
-    t_stop = start_time_s + duration_s + time_offset_s + 0.03
-
-    # Case A: No-load event
-    no_load_ev = NoLoadEvent(start_time_s=start_time_s, duration_s=duration_s + time_offset_s)
-    t_no, v_no_dict, i_no_dict, _ = runner.measure_transients(
-        op=op,
-        event=no_load_ev,
-        scenario_id="pair_noload",
-        feeder_idx=1,
-        use_baseline_feeder=True,
-        t_stop_override=t_stop
-    )
-
-    # Case B1: Single Load 1
+    # 2. Case B1: Single Equipment 1
     ev1 = SingleEquipmentSwitchEvent(
         equipment_type=equipment_1,
         start_time_s=start_time_s,
@@ -140,16 +72,16 @@ def run_load_pair_vs_single_simulation(
     t_1, v1_dict, i1_dict, _ = runner.measure_transients(
         op=op,
         event=ev1,
-        scenario_id="pair_single1",
+        scenario_id="clean_case_b1_single1",
         feeder_idx=1,
         use_baseline_feeder=True,
         t_stop_override=t_stop
     )
 
-    # Case B2: Single Load 2
+    # 3. Case B2: Single Equipment 2
     ev2 = SingleEquipmentSwitchEvent(
         equipment_type=equipment_2,
-        start_time_s=start_time_s + time_offset_s,
+        start_time_s=start_time_s,
         duration_s=duration_s,
         target="trans1",
         parameters={}
@@ -157,18 +89,18 @@ def run_load_pair_vs_single_simulation(
     t_2, v2_dict, i2_dict, _ = runner.measure_transients(
         op=op,
         event=ev2,
-        scenario_id="pair_single2",
+        scenario_id="clean_case_b2_single2",
         feeder_idx=1,
         use_baseline_feeder=True,
         t_stop_override=t_stop
     )
 
-    # Case C: Joint Load Pair (Co-event)
+    # 4. Case C: Joint Equipment Pair (Co-Event)
     co_ev = EquipmentEquipmentCoEvent(event_1=ev1, event_2=ev2)
     t_pair, v_pair_dict, i_pair_dict, _ = runner.measure_transients(
         op=op,
         event=co_ev,
-        scenario_id="pair_joint",
+        scenario_id="clean_case_c_joint_pair",
         feeder_idx=1,
         use_baseline_feeder=True,
         t_stop_override=t_stop
@@ -194,7 +126,7 @@ def run_load_pair_vs_single_simulation(
     v_pair = v_pair[:min_len]
     i_pair = i_pair[:min_len]
 
-    # Compute Load Residuals
+    # Subtract the single Case A no-load baseline
     v_res_1 = v_1 - v_no
     i_res_1 = i_1 - i_no
 
@@ -208,7 +140,7 @@ def run_load_pair_vs_single_simulation(
     v_composed = v_res_1 + v_res_2
     i_composed = i_res_1 + i_res_2
 
-    # Non-linear Interaction Residual across shared Thévenin impedance
+    # Non-linear Interaction Residual across shared Thévenin source impedance
     v_interaction = v_res_pair - v_composed
     i_interaction = i_res_pair - i_composed
 
@@ -235,6 +167,10 @@ def run_load_pair_vs_single_simulation(
         "equipment_1": equipment_1,
         "equipment_2": equipment_2,
     }
+
+
+run_no_load_vs_loaded_simulation = run_clean_experiment_simulations
+run_load_pair_vs_single_simulation = run_clean_experiment_simulations
 
 
 def analyze_stft_spectrum(
@@ -374,15 +310,15 @@ def derive_wave_equations(
 
 
 if __name__ == "__main__":
-    print("Running test case for ATP Load Pair vs Single Load simulation & decomposition...")
-    pair_data = run_load_pair_vs_single_simulation("ac_motor", "compressor")
-    print(f"Simulation completed for pair {pair_data['equipment_1']} + {pair_data['equipment_2']}.")
+    print("Running unified clean experiment simulation suite...")
+    sim_data = run_clean_experiment_simulations("ac_motor", "compressor")
+    print(f"Simulation completed for single {sim_data['equipment_1']} and pair {sim_data['equipment_1']}+{sim_data['equipment_2']}.")
 
-    decomp_s1 = decompose_load_waveform(pair_data["time"], pair_data["v_res_1"][:, 0])
-    decomp_pair = decompose_load_waveform(pair_data["time"], pair_data["v_res_pair"][:, 0])
+    decomp_s1 = decompose_load_waveform(sim_data["time"], sim_data["v_res_1"][:, 0])
+    decomp_pair = decompose_load_waveform(sim_data["time"], sim_data["v_res_pair"][:, 0])
 
-    eqs_s1 = derive_wave_equations(pair_data["time"], decomp_s1, signal_name="V_{a, single1}")
-    eqs_pair = derive_wave_equations(pair_data["time"], decomp_pair, signal_name="V_{a, pair}")
+    eqs_s1 = derive_wave_equations(sim_data["time"], decomp_s1, signal_name="V_{a, single1}")
+    eqs_pair = derive_wave_equations(sim_data["time"], decomp_pair, signal_name="V_{a, pair}")
 
     print("\nDerived Single Load Wave Equations:")
     for k, v in eqs_s1.items():
