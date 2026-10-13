@@ -24,6 +24,14 @@ def poly2_model(K: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
     return a * (K ** 2) + b * K + c
 
 
+def rational_model(K: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
+    """
+    Rational ratio model: R(K) = (a * K + b) / (K + c)
+    representing normalized residual RMS magnitude / total co-event RMS magnitude scaling.
+    """
+    return (a * K + b) / (K + c)
+
+
 def compute_residual_rms_vs_coevents(
     max_coevents: int = 25,
     seed: int = 42
@@ -91,6 +99,33 @@ def compute_residual_rms_vs_coevents(
         z_tx_ohm,
         mean_i_event,
     )
+
+
+def compute_residual_rms_ratio_vs_coevents(
+    max_coevents: int = 25,
+    seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Computes Residual RMS Magnitude / Co-event RMS Magnitude ratios for voltage and current
+    as a function of the number of simultaneous co-events K (K = 2 .. max_coevents).
+
+    Returns:
+      (k_values, v_ratio, i_ratio, v_coevent_rms, i_coevent_rms)
+    """
+    k_vals, v_res_rms, i_res_rms, z_th, mean_i = compute_residual_rms_vs_coevents(max_coevents=max_coevents, seed=seed)
+
+    # Base nominal RMS voltage and current scale per co-event
+    v_nominal_rms = 1.0  # p.u. nominal voltage
+
+    # Total co-event RMS voltage and current scaling with K
+    v_coevent_rms = np.array([v_nominal_rms * (K ** 0.5) for K in k_vals], dtype=float)
+    i_coevent_rms = np.array([mean_i * (K ** 0.5) for K in k_vals], dtype=float)
+
+    # Ratios: Residual RMS Magnitude / Total Co-Event RMS Magnitude
+    v_ratio = v_res_rms / v_coevent_rms
+    i_ratio = i_res_rms / i_coevent_rms
+
+    return k_vals, v_ratio, i_ratio, v_coevent_rms, i_coevent_rms
 
 
 def plot_residual_rms_vs_coevents(
@@ -184,6 +219,96 @@ def plot_residual_rms_vs_coevents(
     return fig, funcs_dict, params_dict
 
 
+def plot_residual_rms_ratio_vs_coevents(
+    max_coevents: int = 25,
+    save_path: str = "src/visualization/residual_rms_ratio_vs_coevents.png"
+) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
+    """
+    Plots Residual RMS Magnitude / Co-event RMS Magnitude ratio scaling for voltage and current
+    as simultaneous co-events increase from K = 2 up to max_coevents (25).
+    Fits quadratic/rational mathematical models, displays derived ratio functions, and saves the figure.
+    """
+    k_vals, v_ratio, i_ratio, _, _ = compute_residual_rms_ratio_vs_coevents(max_coevents=max_coevents)
+
+    # Fit quadratic function for Voltage Residual RMS Ratio
+    popt_vr, _ = curve_fit(poly2_model, k_vals, v_ratio, p0=[0.0001, 0.001, 0.001])
+    avr, bvr, cvr = popt_vr
+
+    fit_vr = poly2_model(k_vals, avr, bvr, cvr)
+    ss_res_vr = float(np.sum((v_ratio - fit_vr) ** 2))
+    ss_tot_vr = float(np.sum((v_ratio - np.mean(v_ratio)) ** 2))
+    r2_vr = 1.0 - (ss_res_vr / ss_tot_vr) if ss_tot_vr > 0 else 1.0
+
+    bvr_sign = "+" if bvr >= 0 else "-"
+    cvr_sign = "+" if cvr >= 0 else "-"
+    func_str_vr = f"R_V(K) = {abs(avr):.6f}·K² {bvr_sign} {abs(bvr):.6f}·K {cvr_sign} {abs(cvr):.6f}"
+
+    # Fit quadratic function for Current Residual RMS Ratio
+    popt_ir, _ = curve_fit(poly2_model, k_vals, i_ratio, p0=[0.0001, 0.001, 0.001])
+    air, bir, cir = popt_ir
+
+    fit_ir = poly2_model(k_vals, air, bir, cir)
+    ss_res_ir = float(np.sum((i_ratio - fit_ir) ** 2))
+    ss_tot_ir = float(np.sum((i_ratio - np.mean(i_ratio)) ** 2))
+    r2_ir = 1.0 - (ss_res_ir / ss_tot_ir) if ss_tot_ir > 0 else 1.0
+
+    bir_sign = "+" if bir >= 0 else "-"
+    cir_sign = "+" if cir >= 0 else "-"
+    func_str_ir = f"R_I(K) = {abs(air):.6f}·K² {bir_sign} {abs(bir):.6f}·K {cir_sign} {abs(cir):.6f}"
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    k_dense = np.linspace(2.0, max_coevents, 200)
+
+    # Graph 1: Voltage Residual RMS / Co-Event RMS Ratio
+    ax1.scatter(k_vals, v_ratio, color="crimson", s=45, zorder=5, label="Voltage Residual/Co-event RMS Ratio ($R_{\\mathrm{V}}$)")
+    fit_vr_dense = poly2_model(k_dense, avr, bvr, cvr)
+    ax1.plot(k_dense, fit_vr_dense, "--", color="navy", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_vr}$ ($R^2={r2_vr:.4f}$)")
+    ax1.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
+    ax1.set_ylabel("Voltage Residual RMS / Co-Event RMS Ratio ($R_{\\mathrm{V}}$)", fontsize=11, fontweight="bold")
+    ax1.set_title(f"Voltage Residual/Co-event RMS Ratio vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
+
+    text_info_vr = (
+        f"Derived Voltage Residual RMS Ratio Function:\n"
+        f"${func_str_vr}$\n"
+        f"Goodness of Fit ($R^2$): {r2_vr:.4f}"
+    )
+    ax1.text(0.05, 0.75, text_info_vr, transform=ax1.transAxes, fontsize=9, fontweight="bold", color="darkblue",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
+    ax1.grid(True, alpha=0.2, linestyle=":")
+    ax1.legend(loc="lower right", frameon=True, facecolor="white", framealpha=0.9, fontsize=9)
+
+    # Graph 2: Current Residual RMS / Co-Event RMS Ratio
+    ax2.scatter(k_vals, i_ratio, color="darkgreen", s=45, zorder=5, label="Current Residual/Co-event RMS Ratio ($R_{\\mathrm{I}}$)")
+    fit_ir_dense = poly2_model(k_dense, air, bir, cir)
+    ax2.plot(k_dense, fit_ir_dense, "--", color="darkred", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_ir}$ ($R^2={r2_ir:.4f}$)")
+    ax2.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
+    ax2.set_ylabel("Current Residual RMS / Co-Event RMS Ratio ($R_{\\mathrm{I}}$)", fontsize=11, fontweight="bold")
+    ax2.set_title(f"Current Residual/Co-event RMS Ratio vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
+
+    text_info_ir = (
+        f"Derived Current Residual RMS Ratio Function:\n"
+        f"${func_str_ir}$\n"
+        f"Goodness of Fit ($R^2$): {r2_ir:.4f}"
+    )
+    ax2.text(0.05, 0.75, text_info_ir, transform=ax2.transAxes, fontsize=9, fontweight="bold", color="darkgreen",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="darkgreen", alpha=0.95), zorder=10)
+    ax2.grid(True, alpha=0.2, linestyle=":")
+    ax2.legend(loc="lower right", frameon=True, facecolor="white", framealpha=0.9, fontsize=9)
+
+    fig.tight_layout()
+
+    if save_path:
+        save_p = Path(save_path)
+        save_p.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_p, bbox_inches="tight", dpi=300)
+
+    funcs_dict = {"voltage_ratio_function": func_str_vr, "current_ratio_function": func_str_ir}
+    params_dict = {"voltage_ratio_params": (avr, bvr, cvr), "current_ratio_params": (air, bir, cir)}
+
+    return fig, funcs_dict, params_dict
+
+
 compute_residual_energy_vs_coevents = compute_residual_rms_vs_coevents
 plot_residual_energy_vs_coevents = plot_residual_rms_vs_coevents
 plot_residual_error_vs_coevents = plot_residual_rms_vs_coevents
@@ -191,7 +316,12 @@ compute_residual_error_vs_coevents = compute_residual_rms_vs_coevents
 
 
 if __name__ == "__main__":
-    fig, funcs, params = plot_residual_rms_vs_coevents()
+    fig1, funcs1, _ = plot_residual_rms_vs_coevents()
     print("Residual RMS magnitude vs co-events plots generated successfully!")
-    print(f"Voltage Residual RMS Function: {funcs['voltage_function']}")
-    print(f"Current Residual RMS Function: {funcs['current_function']}")
+    print(f"Voltage Residual RMS Function: {funcs1['voltage_function']}")
+    print(f"Current Residual RMS Function: {funcs1['current_function']}")
+
+    fig2, funcs2, _ = plot_residual_rms_ratio_vs_coevents()
+    print("\nResidual RMS ratio vs co-events plots generated successfully!")
+    print(f"Voltage Residual RMS Ratio Function: {funcs2['voltage_ratio_function']}")
+    print(f"Current Residual RMS Ratio Function: {funcs2['current_ratio_function']}")
