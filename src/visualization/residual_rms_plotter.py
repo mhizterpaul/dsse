@@ -132,13 +132,11 @@ def compute_residual_rms_vs_coevents(
         i_composed = sum(single_i_waveforms)
         v_composed = single_v_waveforms[0]
 
-        # Multi-event non-linear coupling residual across shared Thévenin source impedance Z_th
-        interactions = K * (K - 1) / 2.0
-        v_interaction = interactions * z_tx_ohm * 0.05 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
-        i_interaction = interactions * (z_tx_ohm / 0.415) * 0.08 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
-
-        v_joint = v_composed + v_interaction
-        i_joint = i_composed + i_interaction
+        # Physical joint co-event terminal response across shared source impedance Z_th
+        i_total = i_composed
+        v_drop = i_total * z_tx_ohm
+        v_joint = v_composed - v_drop
+        i_joint = i_total
 
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
