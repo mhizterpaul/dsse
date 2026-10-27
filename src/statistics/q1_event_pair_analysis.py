@@ -45,9 +45,20 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
             res_i = float(row.get("residual_current_magnitude", 0.0))
             res_mags.append(res_v + res_i)
 
-        avg_res_mag = float(np.mean(res_mags)) if res_mags else 0.0
-        avg_comp_mag = float(np.mean(comp_mags)) if comp_mags else 1.0
-        mag_ratio = avg_res_mag / (avg_comp_mag + 1e-9)
+        if len(res_mags) == 0 or len(comp_mags) == 0:
+            err_msg = f"Empty residual or composed magnitude lists for channel '{ch}'"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        avg_res_mag = float(np.mean(res_mags))
+        avg_comp_mag = float(np.mean(comp_mags))
+
+        if avg_comp_mag <= 0:
+            err_msg = f"Non-positive average composed magnitude for channel '{ch}': {avg_comp_mag}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        mag_ratio = avg_res_mag / avg_comp_mag
 
         discount_factor = eta_noise + mag_ratio
         if ch is not None:
@@ -55,23 +66,41 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
 
         col_correlations = [[] for _ in pairs]
 
-        for _, row in ch_df.iterrows():
+        for idx, row in ch_df.iterrows():
             for p_idx, (col1, col2) in enumerate(pairs):
-                val = 0.0
-                if col1 in row and col2 in row:
-                    v1 = row[col1]
-                    v2 = row[col2]
-                    arr1 = np.array(json.loads(v1)) if isinstance(v1, str) else np.array(v1)
-                    arr2 = np.array(json.loads(v2)) if isinstance(v2, str) else np.array(v2)
+                if col1 not in row or col2 not in row:
+                    err_msg = f"Missing required waveform columns '{col1}' or '{col2}' in dataset row {idx}"
+                    print(f"ERROR: {err_msg}")
+                    raise ValueError(err_msg)
 
-                    if len(arr1) > 0 and len(arr2) > 0 and np.std(arr1) > 1e-9 and np.std(arr2) > 1e-9:
-                        val_calc, _ = stats.pearsonr(arr1, arr2)
-                        raw_val = 0.0 if np.isnan(val_calc) else abs(val_calc)
-                        val = max(0.0, raw_val - discount_factor)
+                v1 = row[col1]
+                v2 = row[col2]
+                arr1 = np.array(json.loads(v1)) if isinstance(v1, str) else np.array(v1)
+                arr2 = np.array(json.loads(v2)) if isinstance(v2, str) else np.array(v2)
 
+                if len(arr1) == 0 or len(arr2) == 0:
+                    err_msg = f"Empty waveform array in column '{col1}' or '{col2}' at row {idx}"
+                    print(f"ERROR: {err_msg}")
+                    raise ValueError(err_msg)
+
+                std1 = np.std(arr1)
+                std2 = np.std(arr2)
+                if std1 <= 0 or std2 <= 0:
+                    err_msg = f"Zero variance waveform array in column '{col1}' (std={std1}) or '{col2}' (std={std2}) at row {idx}"
+                    print(f"ERROR: {err_msg}")
+                    raise ValueError(err_msg)
+
+                val_calc, _ = stats.pearsonr(arr1, arr2)
+                if np.isnan(val_calc):
+                    err_msg = f"Pearson correlation evaluated to NaN for '{col1}' and '{col2}' at row {idx}"
+                    print(f"ERROR: {err_msg}")
+                    raise ValueError(err_msg)
+
+                raw_val = abs(val_calc)
+                val = max(0.0, raw_val - discount_factor)
                 col_correlations[p_idx].append(val)
 
-        ch_corr_vector = [float(np.mean(c_list)) if c_list else 0.0 for c_list in col_correlations]
+        ch_corr_vector = [float(np.mean(c_list)) for c_list in col_correlations]
         all_18_corrs.extend(ch_corr_vector)
 
     mean_waveform_correlation = float(np.mean(all_18_corrs)) if all_18_corrs else 0.0
