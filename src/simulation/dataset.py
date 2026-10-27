@@ -112,36 +112,29 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         v_joint = item["v_joint"]
         i_joint = item["i_joint"]
 
-        # Apply low frequency filter to waveforms
-        v1_filt = remove_low_frequency_components(v1, cutoff_hz=50.0, fs=fs, order=4)
-        i1_filt = remove_low_frequency_components(i1, cutoff_hz=50.0, fs=fs, order=4)
-        v2_filt = remove_low_frequency_components(v2, cutoff_hz=50.0, fs=fs, order=4)
-        i2_filt = remove_low_frequency_components(i2, cutoff_hz=50.0, fs=fs, order=4)
-        v_joint_filt = remove_low_frequency_components(v_joint, cutoff_hz=50.0, fs=fs, order=4)
-        i_joint_filt = remove_low_frequency_components(i_joint, cutoff_hz=50.0, fs=fs, order=4)
-
-        # Apply time offset to event 2 single event before composition
+        # Apply time offset to event 2 raw single event before composition
         t_off_s = float(getattr(co_ev, "time_offset_s", 0.0))
         shift_samples = int(round(t_off_s * fs))
 
         if shift_samples > 0:
-            v2_shifted = np.zeros_like(v2_filt)
-            i2_shifted = np.zeros_like(i2_filt)
-            if shift_samples < len(v2_filt):
-                v2_shifted[shift_samples:] = v2_filt[:-shift_samples]
-                i2_shifted[shift_samples:] = i2_filt[:-shift_samples]
+            v2_shifted = np.zeros_like(v2)
+            i2_shifted = np.zeros_like(i2)
+            if shift_samples < len(v2):
+                v2_shifted[shift_samples:] = v2[:-shift_samples]
+                i2_shifted[shift_samples:] = i2[:-shift_samples]
         else:
-            v2_shifted = v2_filt
-            i2_shifted = i2_filt
+            v2_shifted = v2
+            i2_shifted = i2
 
-        t_arr = np.arange(len(v1_filt)) / fs
+        t_arr = np.arange(len(v1)) / fs
 
-        decomp_v1 = decompose_load_waveform(t_arr, v1_filt, fs=fs)
-        decomp_i1 = decompose_load_waveform(t_arr, i1_filt, fs=fs)
+        # Decompose RAW waveforms directly so each component channel uses its own filter
+        decomp_v1 = decompose_load_waveform(t_arr, v1, fs=fs)
+        decomp_i1 = decompose_load_waveform(t_arr, i1, fs=fs)
         decomp_v2 = decompose_load_waveform(t_arr, v2_shifted, fs=fs)
         decomp_i2 = decompose_load_waveform(t_arr, i2_shifted, fs=fs)
-        decomp_v_joint = decompose_load_waveform(t_arr, v_joint_filt, fs=fs)
-        decomp_i_joint = decompose_load_waveform(t_arr, i_joint_filt, fs=fs)
+        decomp_v_joint = decompose_load_waveform(t_arr, v_joint, fs=fs)
+        decomp_i_joint = decompose_load_waveform(t_arr, i_joint, fs=fs)
 
         channel_map = [
             ("fundamental", "x_fundamental"),
