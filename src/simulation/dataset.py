@@ -218,6 +218,9 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 "obs_residual_i_phase_c": json.dumps(i_res_ch[:, 2].tolist()),
             }
 
+            if dataset_name == "Dataset 4":
+                row["gt_feeder_id"] = item.get("gt_feeder_id", "feeder_1")
+
             rows.append(row)
 
     print(f"INFO: Completed {dataset_name} generation ({len(rows)} rows).")
