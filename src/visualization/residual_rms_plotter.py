@@ -95,27 +95,26 @@ def compute_residual_rms_vs_coevents(
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
+            # Validate equipment model parameters directly
+            if not hasattr(eq_mod, "atp_params") or not isinstance(eq_mod.atp_params, dict):
+                err_msg = f"Equipment model '{eq_type}' missing required 'atp_params' dictionary"
+                print(f"ERROR: {err_msg}")
+                raise ValueError(err_msg)
+
             # Equipment fundamental peak phase current
             i_fund_peak = (p_kw * 1000.0) / ((3.0 ** 0.5) * v_lv_v * pf) * np.sqrt(2)
 
-            # Equipment harmonic parameters from atp_params if present
-            h_ratio = 0.15
-            if "r_stator" in eq_mod.atp_params or "r_armature" in eq_mod.atp_params:
-                h_ratio = 0.20
-            elif "r_internal" in eq_mod.atp_params or "r_magnetron" in eq_mod.atp_params:
-                h_ratio = 0.25
-
-            # Evaluate 3-phase equipment current waveform
+            # Evaluate 3-phase equipment current waveform directly
             i_a = (
                 i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim) +
-                h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
+                0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
                 0.08 * i_fund_peak * np.exp(-t_sim / 0.02)
             )
 
             i_3ph = np.column_stack([
                 i_a,
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim),
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim)
+                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim),
+                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim)
             ])
 
             single_i_waveforms.append(i_3ph)
