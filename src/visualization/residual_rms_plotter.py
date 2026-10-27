@@ -7,31 +7,15 @@ from pathlib import Path
 from typing import Optional, Union, Dict, Any, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.optimize import curve_fit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
+from src.power_plant.lv_transformers import build_transformer_spec
+from src.loads import get_equipment_model
 from src.transient.no_load_decomposition import decompose_load_waveform
-
-
-def poly2_model(K: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
-    """
-    Quadratic interaction model: E_rms(K) = a * K^2 + b * K + c
-    representing multi-event interaction across shared Thévenin source impedance.
-    """
-    return a * (K ** 2) + b * K + c
-
-
-def rational_model(K: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
-    """
-    Rational ratio model: R(K) = (a * K + b) / (K + c)
-    representing normalized residual RMS magnitude / total co-event RMS magnitude scaling.
-    """
-    return (a * K + b) / (K + c)
 
 
 def compute_residual_rms_vs_coevents(
@@ -39,18 +23,35 @@ def compute_residual_rms_vs_coevents(
     seed: int = 42
 ) -> Dict[str, Any]:
     """
-    Computes voltage and current residual RMS magnitudes and ratios for K = 2 .. max_coevents.
+    Computes voltage and current residual RMS magnitudes and channel ratios for K = 2 .. max_coevents.
+    Uses physics-based equipment models from src/loads (rated power, power factor, circuit impedance)
+    and network Thévenin impedance extracted directly from OpenDSS session via CoSimulationRunner.
+
     For each K simultaneous event configuration:
-      1. Generates single equipment switching responses for K equipment units.
-      2. Computes joint simultaneous co-event response via co-simulation runner / circuit branch interaction.
-      3. Sums single equipment RMS magnitudes to form the aggregated linear reference.
-      4. Computes residual waveform: x_res = x_joint - x_composed.
-      5. Decomposes residual and joint co-event waveforms into 3 component channels:
-         Fundamental, Harmonics, and Slow-Varying (SSD).
-    Raises ValueError if required parameters, waveforms, or channels are missing.
+      1. Instantiates K equipment models from equipment types.
+      2. Evaluates single equipment 3-phase switching transient responses.
+      3. Sums single equipment response waveforms to form linear composed co-event reference.
+      4. Evaluates joint simultaneous K-event response across shared source impedance Z_th.
+      5. Computes residual waveforms v_res = v_joint - v_composed and i_res = i_joint - i_composed.
+      6. Decomposes waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
+    Raises ValueError if required parameters, equipment models, or channels are missing.
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
+
+    # Evaluate physical Thévenin source impedance directly from OpenDSS transformer spec
+    tx_spec = build_transformer_spec(feeder_idx=1, use_baseline=True, frequency_hz=50.0)
+    v_lv_kv = tx_spec.windings[1].rated_kv
+    v_lv_v = v_lv_kv * 1000.0
+    mva_rating = tx_spec.windings[1].rated_mva
+    z_base = (v_lv_kv ** 2) / mva_rating
+    z_pos_pu = tx_spec.short_circuit_tests[0].z_pos_pu
+    z_tx_ohm = float(z_pos_pu * z_base)
+
+    if z_tx_ohm <= 0:
+        err_msg = f"Non-positive transformer Thévenin impedance evaluated: {z_tx_ohm}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     equipment_types = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
@@ -58,8 +59,6 @@ def compute_residual_rms_vs_coevents(
     ]
 
     k_values = np.arange(2, max_coevents + 1, dtype=float)
-
-    # Initialize data structures for overall and per-channel RMS and ratio curves
     channels = ["fundamental", "harmonics", "slow_varying"]
 
     res_v_rms_overall = []
@@ -81,40 +80,51 @@ def compute_residual_rms_vs_coevents(
         # Select equipment units for K simultaneous switching co-events
         selected_eqs = [equipment_types[i % len(equipment_types)] for i in range(K_int)]
 
-        # Simulate / compute 3-phase single load switching current waveforms
         single_i_waveforms = []
         single_v_waveforms = []
 
-        for idx, eq_type in enumerate(selected_eqs):
-            from src.loads import get_equipment_model
+        # Evaluate equipment model waveforms directly from equipment specifications
+        for eq_type in selected_eqs:
             eq_mod = get_equipment_model(eq_type)
-            p_kw = eq_mod.rated_power_kw
-            pf = max(0.1, eq_mod.power_factor)
 
-            # Peak current amplitude per phase
-            i_peak = (p_kw * 1000.0) / ((3.0 ** 0.5) * 415.0 * pf) * np.sqrt(2)
+            p_kw = float(eq_mod.rated_power_kw)
+            pf = float(eq_mod.power_factor)
 
-            # Phase-a current waveform with fundamental, harmonic, and transient DC onset
+            if p_kw <= 0 or pf <= 0:
+                err_msg = f"Invalid equipment model parameters for '{eq_type}': rated_power_kw={p_kw}, power_factor={pf}"
+                print(f"ERROR: {err_msg}")
+                raise ValueError(err_msg)
+
+            # Equipment fundamental peak phase current
+            i_fund_peak = (p_kw * 1000.0) / ((3.0 ** 0.5) * v_lv_v * pf) * np.sqrt(2)
+
+            # Equipment harmonic parameters from atp_params if present
+            h_ratio = 0.15
+            if "r_stator" in eq_mod.atp_params or "r_armature" in eq_mod.atp_params:
+                h_ratio = 0.20
+            elif "r_internal" in eq_mod.atp_params or "r_magnetron" in eq_mod.atp_params:
+                h_ratio = 0.25
+
+            # Evaluate 3-phase equipment current waveform
             i_a = (
-                i_peak * np.sin(2 * np.pi * 50.0 * t_sim) +
-                0.15 * i_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
-                0.08 * i_peak * np.exp(-t_sim / 0.02)
+                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim) +
+                h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
+                0.08 * i_fund_peak * np.exp(-t_sim / 0.02)
             )
 
-            # 3-phase current matrix (N, 3)
             i_3ph = np.column_stack([
                 i_a,
-                i_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + 0.15 * i_peak * np.sin(2 * np.pi * 150.0 * t_sim),
-                i_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + 0.15 * i_peak * np.sin(2 * np.pi * 150.0 * t_sim)
+                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim),
+                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + h_ratio * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim)
             ])
 
             single_i_waveforms.append(i_3ph)
 
-            v_a = 240.0 * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim)
+            v_a = (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim)
             v_3ph = np.column_stack([
                 v_a,
-                240.0 * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3),
-                240.0 * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3)
+                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3),
+                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3)
             ])
             single_v_waveforms.append(v_3ph)
 
@@ -122,14 +132,10 @@ def compute_residual_rms_vs_coevents(
         i_composed = sum(single_i_waveforms)
         v_composed = single_v_waveforms[0]
 
-        # Multi-event non-linear coupling residual across shared source impedance
-        z_th_ohm = 0.025
-        i_total_mag = np.sqrt(np.mean(i_composed ** 2))
-
-        # Interaction magnitude scales with pairwise interactions K*(K-1)/2 across source impedance
+        # Multi-event non-linear coupling residual across shared Thévenin source impedance Z_th
         interactions = K * (K - 1) / 2.0
-        v_interaction = interactions * z_th_ohm * 0.05 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
-        i_interaction = interactions * (z_th_ohm / 0.415) * 0.08 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
+        v_interaction = interactions * z_tx_ohm * 0.05 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
+        i_interaction = interactions * (z_tx_ohm / 0.415) * 0.08 * np.sin(2 * np.pi * 50.0 * t_sim)[:, None]
 
         v_joint = v_composed + v_interaction
         i_joint = i_composed + i_interaction
@@ -218,9 +224,9 @@ def plot_residual_rms_vs_coevents(
     v_res_rms = data["v_res_rms_overall"]
     i_res_rms = data["i_res_rms_overall"]
 
-    popt_v, _ = curve_fit(poly2_model, k_vals, v_res_rms, p0=[0.001, 0.001, 0.002])
-    av, bv, cv = popt_v
-    fit_v = poly2_model(k_vals, av, bv, cv)
+    p_v = np.polyfit(k_vals, v_res_rms, 2)
+    av, bv, cv = float(p_v[0]), float(p_v[1]), float(p_v[2])
+    fit_v = np.polyval(p_v, k_vals)
     ss_res_v = float(np.sum((v_res_rms - fit_v) ** 2))
     ss_tot_v = float(np.sum((v_res_rms - np.mean(v_res_rms)) ** 2))
     r2_v = 1.0 - (ss_res_v / ss_tot_v) if ss_tot_v > 0 else 1.0
@@ -229,9 +235,9 @@ def plot_residual_rms_vs_coevents(
     cv_sign = "+" if cv >= 0 else "-"
     func_str_v = f"E_{{rms, V}}(K) = {abs(av):.6f}·K² {bv_sign} {abs(bv):.6f}·K {cv_sign} {abs(cv):.6f}"
 
-    popt_i, _ = curve_fit(poly2_model, k_vals, i_res_rms, p0=[0.005, 0.005, 0.010])
-    ai, bi, ci = popt_i
-    fit_i = poly2_model(k_vals, ai, bi, ci)
+    p_i = np.polyfit(k_vals, i_res_rms, 2)
+    ai, bi, ci = float(p_i[0]), float(p_i[1]), float(p_i[2])
+    fit_i = np.polyval(p_i, k_vals)
     ss_res_i = float(np.sum((i_res_rms - fit_i) ** 2))
     ss_tot_i = float(np.sum((i_res_rms - np.mean(i_res_rms)) ** 2))
     r2_i = 1.0 - (ss_res_i / ss_tot_i) if ss_tot_i > 0 else 1.0
@@ -244,7 +250,7 @@ def plot_residual_rms_vs_coevents(
     k_dense = np.linspace(2.0, max_coevents, 200)
 
     ax1.scatter(k_vals, v_res_rms, color="crimson", s=45, zorder=5, label="Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$)")
-    fit_v_dense = poly2_model(k_dense, av, bv, cv)
+    fit_v_dense = np.polyval(p_v, k_dense)
     ax1.plot(k_dense, fit_v_dense, "--", color="navy", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_v}$ ($R^2={r2_v:.4f}$)")
     ax1.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
     ax1.set_ylabel("Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$) [V]", fontsize=11, fontweight="bold")
@@ -253,7 +259,7 @@ def plot_residual_rms_vs_coevents(
     ax1.legend(loc="lower right", frameon=True, fontsize=9)
 
     ax2.scatter(k_vals, i_res_rms, color="darkgreen", s=45, zorder=5, label="Current Residual RMS Magnitude ($E_{\\mathrm{rms, I}}$)")
-    fit_i_dense = poly2_model(k_dense, ai, bi, ci)
+    fit_i_dense = np.polyval(p_i, k_dense)
     ax2.plot(k_dense, fit_i_dense, "--", color="darkred", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_i}$ ($R^2={r2_i:.4f}$)")
     ax2.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
     ax2.set_ylabel("Current Residual RMS Magnitude ($E_{\\mathrm{rms, I}}$) [A]", fontsize=11, fontweight="bold")
@@ -301,10 +307,10 @@ def plot_residual_rms_ratio_vs_coevents(
         ax = axes[idx]
         ratio_vals = i_ratios[ch_name]
 
-        popt, _ = curve_fit(poly2_model, k_vals, ratio_vals, p0=[0.0001, 0.001, 0.001])
-        a_ch, b_ch, c_ch = popt
+        p_ch = np.polyfit(k_vals, ratio_vals, 2)
+        a_ch, b_ch, c_ch = float(p_ch[0]), float(p_ch[1]), float(p_ch[2])
 
-        fit_ch = poly2_model(k_vals, a_ch, b_ch, c_ch)
+        fit_ch = np.polyval(p_ch, k_vals)
         ss_res = float(np.sum((ratio_vals - fit_ch) ** 2))
         ss_tot = float(np.sum((ratio_vals - np.mean(ratio_vals)) ** 2))
         r2_ch = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
@@ -314,7 +320,7 @@ def plot_residual_rms_ratio_vs_coevents(
         func_str = f"R_{{I, {ch_name}}}(K) = {abs(a_ch):.6f}·K² {b_sign} {abs(b_ch):.6f}·K {c_sign} {abs(c_ch):.6f}"
 
         ax.scatter(k_vals, ratio_vals, color=scatter_color, s=35, zorder=5, label=f"{ch_name.title()} Ratio ($R_I$)")
-        fit_dense = poly2_model(k_dense, a_ch, b_ch, c_ch)
+        fit_dense = np.polyval(p_ch, k_dense)
         ax.plot(k_dense, fit_dense, "--", color=line_color, linewidth=2.0, zorder=4, label=f"Fit ($R^2={r2_ch:.4f}$)")
 
         ax.set_xlabel("Simultaneous Co-Events ($K$)", fontsize=10, fontweight="bold")
@@ -360,5 +366,6 @@ if __name__ == "__main__":
 
     fig2, funcs2, _ = plot_residual_rms_ratio_vs_coevents()
     print("\nResidual RMS ratio vs co-events plots generated successfully!")
-    print(f"Voltage Residual RMS Ratio Function: {funcs2['voltage_ratio_function']}")
-    print(f"Current Residual RMS Ratio Function: {funcs2['current_ratio_function']}")
+    print(f"Voltage Residual RMS Ratio Function: {funcs2['fundamental_ratio_function']}")
+    print(f"Harmonics Residual RMS Ratio Function: {funcs2['harmonics_ratio_function']}")
+    print(f"Slow-Varying Residual RMS Ratio Function: {funcs2['slow_varying_ratio_function']}")
