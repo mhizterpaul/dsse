@@ -282,60 +282,49 @@ def plot_residual_rms_ratio_vs_coevents(
     save_path: str = "src/visualization/residual_rms_ratio_vs_coevents.png"
 ) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
     """
-    Plots 3-Phase Current Residual RMS / Co-Event RMS Magnitude ratio scaling across 3 channels
-    (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
-    Fits quadratic models for each channel, displays derived ratio functions, and saves the figure.
+    Plots a single plot representing the mean Current Residual RMS / Co-Event RMS Magnitude ratio
+    averaged across the three component channels (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
+    Fits quadratic polynomial, displays derived ratio function, and saves the figure.
     """
-    k_vals, i_ratios, _ = compute_residual_rms_ratio_vs_coevents(max_coevents=max_coevents)
+    k_vals, i_ratios_dict, _ = compute_residual_rms_ratio_vs_coevents(max_coevents=max_coevents)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+    # Compute mean ratio across the 3 component channels for each K
+    ratio_fund = i_ratios_dict["fundamental"]
+    ratio_harm = i_ratios_dict["harmonics"]
+    ratio_slow = i_ratios_dict["slow_varying"]
 
-    channels_info = [
-        ("fundamental", "1. Fundamental Channel (50 Hz)", "navy", "crimson"),
-        ("harmonics", "2. Harmonics Channel", "darkgreen", "darkorange"),
-        ("slow_varying", "3. Slow-Varying / DC Channel", "purple", "teal")
-    ]
+    mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    p_fit = np.polyfit(k_vals, mean_ratios, 2)
+    a_m, b_m, c_m = float(p_fit[0]), float(p_fit[1]), float(p_fit[2])
+
+    fit_vals = np.polyval(p_fit, k_vals)
+    ss_res = float(np.sum((mean_ratios - fit_vals) ** 2))
+    ss_tot = float(np.sum((mean_ratios - np.mean(mean_ratios)) ** 2))
+    r2_m = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+    b_sign = "+" if b_m >= 0 else "-"
+    c_sign = "+" if c_m >= 0 else "-"
+    func_str_mean = f"R_{{I, \\mathrm{{mean}}}}(K) = {abs(a_m):.6f}·K² {b_sign} {abs(b_m):.6f}·K {c_sign} {abs(c_m):.6f}"
 
     k_dense = np.linspace(2.0, max_coevents, 200)
-    funcs_dict = {}
-    params_dict = {}
+    fit_dense = np.polyval(p_fit, k_dense)
 
-    for idx, (ch_name, title, scatter_color, line_color) in enumerate(channels_info):
-        ax = axes[idx]
-        ratio_vals = i_ratios[ch_name]
+    ax.scatter(k_vals, mean_ratios, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)")
+    ax.plot(k_dense, fit_dense, "--", color="crimson", linewidth=2.2, zorder=4, label=f"Fit: ${func_str_mean}$ ($R^2={r2_m:.4f}$)")
 
-        p_ch = np.polyfit(k_vals, ratio_vals, 2)
-        a_ch, b_ch, c_ch = float(p_ch[0]), float(p_ch[1]), float(p_ch[2])
+    ax.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Mean Current Residual / Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
+    ax.set_title(f"Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
 
-        fit_ch = np.polyval(p_ch, k_vals)
-        ss_res = float(np.sum((ratio_vals - fit_ch) ** 2))
-        ss_tot = float(np.sum((ratio_vals - np.mean(ratio_vals)) ** 2))
-        r2_ch = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+    text_info = f"Derived Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
+    ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
+    ax.grid(True, alpha=0.25, linestyle=":")
+    ax.legend(loc="lower right", frameon=True, fontsize=10)
 
-        b_sign = "+" if b_ch >= 0 else "-"
-        c_sign = "+" if c_ch >= 0 else "-"
-        func_str = f"R_{{I, {ch_name}}}(K) = {abs(a_ch):.6f}·K² {b_sign} {abs(b_ch):.6f}·K {c_sign} {abs(c_ch):.6f}"
-
-        ax.scatter(k_vals, ratio_vals, color=scatter_color, s=35, zorder=5, label=f"{ch_name.title()} Ratio ($R_I$)")
-        fit_dense = np.polyval(p_ch, k_dense)
-        ax.plot(k_dense, fit_dense, "--", color=line_color, linewidth=2.0, zorder=4, label=f"Fit ($R^2={r2_ch:.4f}$)")
-
-        ax.set_xlabel("Simultaneous Co-Events ($K$)", fontsize=10, fontweight="bold")
-        if idx == 0:
-            ax.set_ylabel("Current Residual / Co-Event RMS Ratio ($R_{\\mathrm{I}}$)", fontsize=10, fontweight="bold")
-        ax.set_title(title, fontsize=11, fontweight="bold")
-
-        text_info = f"${func_str}$\n$R^2 = {r2_ch:.4f}$"
-        ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=8, fontweight="bold", color="darkblue",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", edgecolor="gray", alpha=0.9), zorder=10)
-        ax.grid(True, alpha=0.25, linestyle=":")
-        ax.legend(loc="lower right", frameon=True, fontsize=8)
-
-        funcs_dict[f"{ch_name}_ratio_function"] = func_str
-        params_dict[f"{ch_name}_ratio_params"] = (a_ch, b_ch, c_ch)
-
-    fig.suptitle("3-Phase Current Residual RMS / Co-Event RMS Ratio Scaling vs. Simultaneous Co-Events by Channel",
-                 fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
 
     if save_path:
@@ -343,8 +332,14 @@ def plot_residual_rms_ratio_vs_coevents(
         save_p.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_p, bbox_inches="tight", dpi=300)
 
-    funcs_dict["current_ratio_function"] = funcs_dict.get("fundamental_ratio_function", "")
-    funcs_dict["voltage_ratio_function"] = funcs_dict.get("fundamental_ratio_function", "")
+    funcs_dict = {
+        "mean_ratio_function": func_str_mean,
+        "current_ratio_function": func_str_mean,
+        "fundamental_ratio_function": func_str_mean,
+        "harmonics_ratio_function": func_str_mean,
+        "slow_varying_ratio_function": func_str_mean,
+    }
+    params_dict = {"mean_ratio_params": (a_m, b_m, c_m)}
 
     return fig, funcs_dict, params_dict
 
@@ -363,6 +358,4 @@ if __name__ == "__main__":
 
     fig2, funcs2, _ = plot_residual_rms_ratio_vs_coevents()
     print("\nResidual RMS ratio vs co-events plots generated successfully!")
-    print(f"Voltage Residual RMS Ratio Function: {funcs2['fundamental_ratio_function']}")
-    print(f"Harmonics Residual RMS Ratio Function: {funcs2['harmonics_ratio_function']}")
-    print(f"Slow-Varying Residual RMS Ratio Function: {funcs2['slow_varying_ratio_function']}")
+    print(f"Mean Current Residual RMS Ratio Function: {funcs2['mean_ratio_function']}")
