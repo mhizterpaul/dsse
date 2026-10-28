@@ -3,12 +3,15 @@ import sys
 import math
 from pathlib import Path
 from typing import Optional, Union, Dict, Any, List, Tuple
+from collections import deque
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from PIL import Image
 import pypsa
 import networkx as nx
+import schemdraw
+import schemdraw.elements as elm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -80,20 +83,51 @@ def read_min_phase_voltage_pu(dss) -> pd.Series:
     return pd.Series(values, name="min_phase_voltage_pu", dtype=float)
 
 
-def topology_positions(net: pypsa.Network, seed: int = 42) -> Dict[str, Tuple[float, float]]:
-    """
-    Compute reproducible schematic positions from network connectivity using NetworkX spring_layout.
-    """
+def topology_positions(net: pypsa.Network, root: str = "sourcebus") -> Dict[str, Tuple[float, float]]:
+    """Assign stable, feeder-oriented level-based positions to a distribution network."""
     graph = nx.Graph()
     graph.add_nodes_from(net.buses.index)
 
     for component_name in ("lines", "transformers"):
-        component_table = getattr(net, component_name)
-        if component_table is not None and not component_table.empty:
-            for bus0, bus1 in component_table[["bus0", "bus1"]].itertuples(index=False, name=None):
-                graph.add_edge(bus0, bus1)
+        table = getattr(net, component_name)
+        if table is not None and not table.empty:
+            graph.add_edges_from(table[["bus0", "bus1"]].itertuples(index=False, name=None))
 
-    return nx.spring_layout(graph, seed=seed, iterations=300)
+    if root not in graph:
+        raise KeyError(f"Source bus {root!r} is missing.")
+
+    # Build a deterministic breadth-first spanning tree.
+    tree = nx.DiGraph()
+    tree.add_node(root)
+    queue = deque([root])
+    visited = {root}
+    level = {root: 0}
+    nodes_at_level = {0: [root]}
+
+    while queue:
+        curr = queue.popleft()
+        curr_lvl = level[curr]
+        for neighbor in sorted(graph.neighbors(curr)):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                level[neighbor] = curr_lvl + 1
+                nodes_at_level.setdefault(curr_lvl + 1, []).append(neighbor)
+                tree.add_edge(curr, neighbor)
+                queue.append(neighbor)
+
+    positions = {}
+    for lvl, n_list in nodes_at_level.items():
+        n_count = len(n_list)
+        y = -float(lvl) * 2.8
+        for idx, node in enumerate(n_list):
+            x = (idx - (n_count - 1) / 2.0) * 2.2
+            positions[node] = (x, y)
+
+    for node in net.buses.index:
+        if node not in positions:
+            positions[node] = (0.0, 0.0)
+
+    return positions
 
 
 def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.Network:
@@ -102,6 +136,9 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
     plant_data topology parameters, and consumer units from registry without synthetic hubs or fallbacks.
     Raises KeyError or ValueError if required network elements or properties are missing.
     """
+    dss.run_command("Set Voltagebases=[33.0, 11.0, 0.415]")
+    dss.run_command("CalcVoltageBases")
+
     net = pypsa.Network()
 
     if "AC" not in net.carriers.index:
@@ -119,6 +156,7 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
         b_idx = dss.Circuit.SetActiveBus(bus_name)
         if b_idx is None or b_idx < 0:
             raise ValueError(f"Cannot activate OpenDSS bus {bus_name!r}.")
+
         kv_base = float(dss.Bus.kVBase())
         if not math.isfinite(kv_base) or kv_base <= 0:
             err_msg = f"Invalid base voltage evaluated for bus '{bus_name}': {kv_base} kV"
@@ -244,6 +282,38 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
     return net
 
 
+def draw_consumer_busbar(
+    d: schemdraw.Drawing,
+    ax,
+    x: float,
+    y: float,
+    consumer_ids: List[str],
+) -> None:
+    """Draw a shared consumer busbar with individually labelled branches using Schemdraw elements."""
+    if not consumer_ids:
+        return
+
+    max_id_len = max(len(cid) for cid in consumer_ids)
+    pitch = max(0.8, max_id_len * 0.04)
+    count = len(consumer_ids)
+    branch_x = [x + (i - (count - 1) / 2.0) * pitch for i in range(count)]
+    half_width = max(0.2, max(abs(cx - x) for cx in branch_x) + 0.1)
+
+    # Busbar
+    ax.plot([x - half_width, x + half_width], [y - 0.2, y - 0.2], color="black", linewidth=2.0, zorder=5)
+
+    # Individual consumer connection branches using Schemdraw
+    for cx, cid in zip(branch_x, consumer_ids):
+        d.add(elm.Dot().at((cx, y - 0.2)))
+        d.add(
+            elm.Resistor()
+            .at((cx, y - 0.2))
+            .down()
+            .label(cid, loc="bottom", fontsize=6, color="navy")
+        )
+        d.add(elm.Ground().at((cx, y - 1.2)))
+
+
 def validate_network_plot(net: pypsa.Network, plant_data: dict, fig: plt.Figure, save_path: Optional[Union[str, Path]] = None):
     """
     Validates structural topology coverage (buses, branches, consumer units) and graphical non-emptiness.
@@ -319,50 +389,51 @@ def plot_opendss_circuit(
 
     positions = topology_positions(net)
 
-    norm = plt.Normalize(vmin=0.90, vmax=1.10)
-    cmap = plt.get_cmap("RdYlGn").copy()
-    cmap.set_bad("lightgray")
+    fig, ax = plt.subplots(figsize=(18, 12))
 
-    bus_colours = voltage_pu.reindex(net.buses.index)
+    d = schemdraw.Drawing(canvas=ax)
 
-    fig, ax = plt.subplots(figsize=(15, 10))
+    # 3. Source at sourcebus
+    if "sourcebus" in positions:
+        sx, sy = positions["sourcebus"]
+        d.add(elm.SourceSin().at((sx, sy)).up().label("33 kV Grid Feed-in", loc="top", fontsize=8))
 
-    # 3. Render PyPSA single-line diagram
-    try:
-        net.plot(
-            ax=ax,
-            geomap=False,
-            layouter=lambda _g: positions,
-            bus_size=0.015 if dots else 0.0,
-            bus_color=bus_colours,
-            bus_cmap=cmap,
-            bus_cmap_norm=norm,
-            line_color="steelblue",
-            line_width=2.0,
-            transformer_color="crimson",
-            title="Distribution Network — OpenDSS Operating-State Snapshot",
+    # 4. Draw Feeder Lines
+    for line_idx, row in net.lines.iterrows():
+        b0, b1 = row.bus0, row.bus1
+        if b0 in positions and b1 in positions:
+            x0, y0 = positions[b0]
+            x1, y1 = positions[b1]
+            ax.plot([x0, x1], [y0, y1], color="#333333", linewidth=1.4, zorder=2)
+
+    # 5. Draw Transformers using Schemdraw
+    for tx_idx, row in net.transformers.iterrows():
+        b0, b1 = row.bus0, row.bus1
+        if b0 in positions and b1 in positions:
+            x0, y0 = positions[b0]
+            x1, y1 = positions[b1]
+            mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            d.add(
+                elm.Transformer()
+                .at((mx, my))
+                .right()
+                .label(f"Trxr {tx_idx}", loc="top", fontsize=7)
+            )
+
+    # 6. Draw Buses & Voltage Annotations
+    for b_name, (x, y) in positions.items():
+        v_pu = voltage_pu.get(b_name, 1.0)
+        ax.scatter([x], [y], color="navy", s=35, zorder=6)
+        ax.text(
+            x + 0.15, y + 0.1,
+            f"{b_name} ({v_pu:.3f} p.u.)",
+            fontsize=6.5,
+            fontweight="bold",
+            color="darkgreen" if 0.95 <= v_pu <= 1.05 else "darkred",
+            zorder=8
         )
-    except TypeError:
-        # Fallback to legacy PyPSA keyword parameters if current version uses plural keywords
-        net.plot(
-            ax=ax,
-            geomap=False,
-            layouter=lambda _g: positions,
-            bus_sizes=0.015 if dots else 0.0,
-            bus_colors=bus_colours,
-            line_colors="steelblue",
-            line_widths=2.0,
-            transformer_colors="crimson",
-            title="Distribution Network — OpenDSS Operating-State Snapshot",
-        )
 
-    fig.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-        ax=ax,
-        label="Minimum phase voltage (p.u.) — OpenDSS",
-    )
-
-    # 4. Label consumer units cleanly by consumer unit ID from registry
+    # 7. Draw Consumer Unit Busbars and Connection Branches using Schemdraw
     if "registry" not in plant_data:
         err_msg = "Missing required 'registry' in plant_data"
         print(f"ERROR: {err_msg}")
@@ -380,26 +451,13 @@ def plot_opendss_circuit(
 
     for b_name, unit_ids in consumers_by_bus.items():
         x, y = positions[b_name]
-        label_text = "\n".join(unit_ids[:3])
-        if len(unit_ids) > 3:
-            label_text += f"\n+{len(unit_ids) - 3} more"
+        draw_consumer_busbar(d, ax, x, y, unit_ids)
 
-        ax.text(
-            x, y,
-            label_text,
-            fontsize=7,
-            color="navy",
-            bbox=dict(
-                boxstyle="round,pad=0.25",
-                facecolor="white",
-                edgecolor="steelblue",
-                alpha=0.9
-            ),
-            zorder=30
-        )
+    d.draw()
 
-    ax.set_title("Distribution Network — Consumer Units and OpenDSS Voltages", fontsize=13, fontweight="bold")
+    ax.set_title("OpenDSS Distribution Network — Orthogonal Schematic Single-Line Diagram", fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.15)
+    ax.set_aspect("equal", adjustable="datalim")
     fig.tight_layout()
 
     # Save plot
