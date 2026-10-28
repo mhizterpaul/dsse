@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.simulation.runner import CoSimulationRunner
 from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
-from src.transient.no_load_decomposition import decompose_load_waveform, run_clean_experiment_simulations
+from src.transient.no_load_decomposition import decompose_load_waveform
 
 
 def compute_residual_rms_vs_coevents(
@@ -60,7 +60,7 @@ def compute_residual_rms_vs_coevents(
 
     tx_unit_id = "trans1_lv_boundary"
 
-    # Pre-evaluate single equipment switching responses for all 8 load models
+    # Pre-evaluate single equipment switching responses for all load models
     single_responses = {}
     for eq_type in equipment_types:
         ev = SingleEquipmentSwitchEvent(
@@ -75,84 +75,15 @@ def compute_residual_rms_vs_coevents(
                 op=op, event=ev, scenario_id=f"single_{eq_type}", feeder_idx=1, use_baseline_feeder=True
             )
             single_responses[eq_type] = (t_s, v_dict[tx_unit_id], i_dict[tx_unit_id])
-        except Exception:
-            # Fallback to clean experiment simulation if Wine/ATP binary is unavailable in current sandbox environment
-            pass
+        except Exception as e:
+            err_msg = f"Failed to measure transient response for equipment '{eq_type}': {e}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg) from e
 
-    # If ATP binaries are unavailable in sandbox execution, evaluate using clean experiment simulations
     if len(single_responses) < len(equipment_types):
-        clean_exp = run_clean_experiment_simulations("ac_motor", "compressor", seed=seed)
-        t_s = clean_exp["time"]
-        fs = 1.0 / (t_s[1] - t_s[0])
-
-        v_eq1 = clean_exp["v_res_1"]
-        i_eq1 = clean_exp["i_res_1"]
-        v_eq2 = clean_exp["v_res_2"]
-        i_eq2 = clean_exp["i_res_2"]
-
-        for K_int in range(2, max_coevents + 1):
-            K = float(K_int)
-
-            # Sum single responses to form linear composed reference
-            i_composed = (K / 2.0) * (i_eq1 + i_eq2)
-            v_composed = (K / 2.0) * (v_eq1 + v_eq2)
-
-            # Joint co-event response with multi-event non-linear coupling
-            v_joint = clean_exp["v_res_pair"] * (K / 2.0) ** 1.05
-            i_joint = clean_exp["i_res_pair"] * (K / 2.0) ** 1.08
-
-            v_res = v_joint - v_composed
-            i_res = i_joint - i_composed
-
-            decomp_i_joint = decompose_load_waveform(t_s, i_joint, fs=fs)
-            decomp_i_res = decompose_load_waveform(t_s, i_res, fs=fs)
-
-            channel_keys = {
-                "fundamental": "x_fundamental",
-                "harmonics": "x_harmonics",
-                "slow_varying": "x_ssd"
-            }
-
-            for ch_name, decomp_key in channel_keys.items():
-                if decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res:
-                    err_msg = f"Missing component key '{decomp_key}' in decomposition results"
-                    print(f"ERROR: {err_msg}")
-                    raise ValueError(err_msg)
-
-                i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
-                i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
-
-                if i_co_ch <= 0:
-                    err_msg = f"Non-positive co-event RMS magnitude for channel '{ch_name}' at K={K_int}: {i_co_ch}"
-                    print(f"ERROR: {err_msg}")
-                    raise ValueError(err_msg)
-
-                ratio_ch = i_res_ch / (i_co_ch + 1e-9)
-
-                res_i_rms_channels[ch_name].append(i_res_ch)
-                co_i_rms_channels[ch_name].append(i_co_ch)
-                i_ratios_channels[ch_name].append(ratio_ch)
-
-            v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
-            i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
-            v_res_rms = float(np.sqrt(np.mean(v_res ** 2)))
-            i_res_rms = float(np.sqrt(np.mean(i_res ** 2)))
-
-            res_v_rms_overall.append(v_res_rms)
-            res_i_rms_overall.append(i_res_rms)
-            co_v_rms_overall.append(v_co_rms)
-            co_i_rms_overall.append(i_co_rms)
-
-        return {
-            "k_values": k_values,
-            "v_res_rms_overall": np.array(res_v_rms_overall),
-            "i_res_rms_overall": np.array(res_i_rms_overall),
-            "co_v_rms_overall": np.array(co_v_rms_overall),
-            "co_i_rms_overall": np.array(co_i_rms_overall),
-            "res_i_rms_channels": {k: np.array(v) for k, v in res_i_rms_channels.items()},
-            "co_i_rms_channels": {k: np.array(v) for k, v in co_i_rms_channels.items()},
-            "i_ratios_channels": {k: np.array(v) for k, v in i_ratios_channels.items()},
-        }
+        err_msg = f"Incomplete single responses: expected {len(equipment_types)}, got {len(single_responses)}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     # Evaluate for each K simultaneous co-events using CoSimulationRunner transients
     for K_int in range(2, max_coevents + 1):
