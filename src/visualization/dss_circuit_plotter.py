@@ -10,6 +10,8 @@ import pandas as pd
 from PIL import Image
 import pypsa
 import networkx as nx
+import schemdraw
+import schemdraw.elements as elm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -281,12 +283,13 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
 
 
 def draw_consumer_busbar(
+    d: schemdraw.Drawing,
     ax,
     x: float,
     y: float,
     consumer_ids: List[str],
 ) -> None:
-    """Draw a shared consumer busbar with individually labelled branches."""
+    """Draw a shared consumer busbar with individually labelled branches using Schemdraw elements."""
     if not consumer_ids:
         return
 
@@ -299,29 +302,16 @@ def draw_consumer_busbar(
     # Busbar
     ax.plot([x - half_width, x + half_width], [y - 0.2, y - 0.2], color="black", linewidth=2.0, zorder=5)
 
-    # Individual consumer connection branches
+    # Individual consumer connection branches using Schemdraw
     for cx, cid in zip(branch_x, consumer_ids):
-        # Vertical drop line
-        ax.plot([cx, cx], [y - 0.2, y - 0.8], color="#333333", linewidth=1.2, zorder=4)
-        # Junction dot
-        ax.scatter([cx], [y - 0.2], color="black", s=15, zorder=6)
-        # Consumer ID box
-        ax.text(
-            cx, y - 0.9,
-            cid,
-            fontsize=6,
-            fontweight="bold",
-            color="navy",
-            ha="center",
-            va="top",
-            bbox=dict(
-                boxstyle="round,pad=0.2",
-                facecolor="white",
-                edgecolor="steelblue",
-                alpha=0.9
-            ),
-            zorder=10
+        d.add(elm.Dot().at((cx, y - 0.2)))
+        d.add(
+            elm.Resistor()
+            .at((cx, y - 0.2))
+            .down()
+            .label(cid, loc="bottom", fontsize=6, color="navy")
         )
+        d.add(elm.Ground().at((cx, y - 1.2)))
 
 
 def validate_network_plot(net: pypsa.Network, plant_data: dict, fig: plt.Figure, save_path: Optional[Union[str, Path]] = None):
@@ -401,7 +391,14 @@ def plot_opendss_circuit(
 
     fig, ax = plt.subplots(figsize=(18, 12))
 
-    # 3. Draw Feeder Lines
+    d = schemdraw.Drawing(canvas=ax)
+
+    # 3. Source at sourcebus
+    if "sourcebus" in positions:
+        sx, sy = positions["sourcebus"]
+        d.add(elm.SourceSin().at((sx, sy)).up().label("33 kV Grid Feed-in", loc="top", fontsize=8))
+
+    # 4. Draw Feeder Lines
     for line_idx, row in net.lines.iterrows():
         b0, b1 = row.bus0, row.bus1
         if b0 in positions and b1 in positions:
@@ -409,18 +406,21 @@ def plot_opendss_circuit(
             x1, y1 = positions[b1]
             ax.plot([x0, x1], [y0, y1], color="#333333", linewidth=1.4, zorder=2)
 
-    # 4. Draw Transformers
+    # 5. Draw Transformers using Schemdraw
     for tx_idx, row in net.transformers.iterrows():
         b0, b1 = row.bus0, row.bus1
         if b0 in positions and b1 in positions:
             x0, y0 = positions[b0]
             x1, y1 = positions[b1]
-            ax.plot([x0, x1], [y0, y1], color="crimson", linewidth=1.8, linestyle="--", zorder=3)
             mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-            ax.scatter([mx - 0.15], [my], s=120, facecolors="none", edgecolors="crimson", linewidth=1.5, zorder=4)
-            ax.scatter([mx + 0.15], [my], s=120, facecolors="none", edgecolors="crimson", linewidth=1.5, zorder=4)
+            d.add(
+                elm.Transformer()
+                .at((mx, my))
+                .right()
+                .label(f"Trxr {tx_idx}", loc="top", fontsize=7)
+            )
 
-    # 5. Draw Buses & Voltage Annotations
+    # 6. Draw Buses & Voltage Annotations
     for b_name, (x, y) in positions.items():
         v_pu = voltage_pu.get(b_name, 1.0)
         ax.scatter([x], [y], color="navy", s=35, zorder=6)
@@ -433,7 +433,7 @@ def plot_opendss_circuit(
             zorder=8
         )
 
-    # 6. Draw Consumer Unit Busbars and Connection Branches
+    # 7. Draw Consumer Unit Busbars and Connection Branches using Schemdraw
     if "registry" not in plant_data:
         err_msg = "Missing required 'registry' in plant_data"
         print(f"ERROR: {err_msg}")
@@ -451,7 +451,9 @@ def plot_opendss_circuit(
 
     for b_name, unit_ids in consumers_by_bus.items():
         x, y = positions[b_name]
-        draw_consumer_busbar(ax, x, y, unit_ids)
+        draw_consumer_busbar(d, ax, x, y, unit_ids)
+
+    d.draw()
 
     ax.set_title("OpenDSS Distribution Network — Orthogonal Schematic Single-Line Diagram", fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.15)
