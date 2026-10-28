@@ -88,6 +88,11 @@ def compute_residual_rms_vs_coevents(
     # Evaluate for each K simultaneous co-events using CoSimulationRunner transients
     for K_int in range(2, max_coevents + 1):
         K = float(K_int)
+
+        # Clear steady-state loads in OpenDSS to prevent network overloading as K increases towards 25
+        runner.dss.run_command("disable Load.*")
+        from src.power_plant.plant import solve_operating_point
+        op = solve_operating_point(runner.dss)
         selected_eqs = [equipment_types[i % len(equipment_types)] for i in range(K_int)]
 
         t_sim, v_eq1, i_eq1 = single_responses[selected_eqs[0]]
