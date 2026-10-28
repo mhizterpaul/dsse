@@ -158,6 +158,44 @@ class EquipmentEquipmentCoEvent:
 
 
 @dataclass
+class MultiEquipmentCoEvent:
+    events: List[SingleEquipmentSwitchEvent]
+
+    @property
+    def event_class(self) -> str:
+        return "multi_equipment_coevent"
+
+    @property
+    def event_type(self) -> str:
+        return f"multi_equipment_{len(self.events)}"
+
+    @property
+    def start_time_s(self) -> float:
+        return self.events[0].start_time_s if self.events else 0.02
+
+    @property
+    def duration_s(self) -> float:
+        return self.events[0].duration_s if self.events else 0.10
+
+    def to_test_branches(self, frequency_hz: float) -> List[TestBranch]:
+        branches = []
+        for idx, ev in enumerate(self.events):
+            b_list = ev.to_test_branches(frequency_hz)
+            for b in b_list:
+                branches.append(
+                    TestBranch(
+                        name=f"{b.name}_{idx}",
+                        branch_type=b.branch_type,
+                        phases=b.phases,
+                        model=b.model,
+                        start_time_s=b.start_time_s,
+                        duration_s=b.duration_s,
+                    )
+                )
+        return branches
+
+
+@dataclass
 class EquipmentLineFaultCoEvent:
     event_1: SingleEquipmentSwitchEvent
     event_2: SingleLineFaultEvent

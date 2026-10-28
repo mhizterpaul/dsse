@@ -13,8 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.power_plant.lv_transformers import build_transformer_spec
-from src.loads import get_equipment_model
+from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent, MultiEquipmentCoEvent
 from src.transient.no_load_decomposition import decompose_load_waveform
 
 
@@ -23,31 +22,24 @@ def compute_residual_rms_vs_coevents(
     seed: int = 42
 ) -> Dict[str, Any]:
     """
-    Computes voltage and current residual RMS magnitudes and channel ratios for K = 2 .. max_coevents.
-    Uses physics-based equipment models from src/loads (rated power, power factor, circuit impedance)
-    and network Thévenin impedance extracted directly from OpenDSS session via CoSimulationRunner.
+    Computes voltage and current residual RMS magnitudes and channel ratios for K = 2 .. max_coevents
+    directly using CoSimulationRunner and ATP-EMTP / OpenDSS pre-event Thévenin state estimation.
 
     For each K simultaneous event configuration:
-      1. Instantiates K equipment models from equipment types.
-      2. Evaluates single equipment 3-phase switching transient responses.
-      3. Sums single equipment response waveforms to form linear composed co-event reference.
-      4. Evaluates joint simultaneous K-event response across shared source impedance Z_th.
-      5. Computes residual waveforms v_res = v_joint - v_composed and i_res = i_joint - i_composed.
-      6. Decomposes waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
+      1. Generates single equipment switching responses and joint simultaneous K-event responses.
+      2. Computes linear composed co-event reference by summing single equipment responses.
+      3. Computes residual waveforms v_res = v_joint - v_composed and i_res = i_joint - i_composed.
+      4. Decomposes waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
     Raises ValueError if required parameters, equipment models, or channels are missing.
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
 
-    # Evaluate transformer voltage rating directly from OpenDSS transformer spec
-    tx_spec = build_transformer_spec(feeder_idx=1, use_baseline=True, frequency_hz=50.0)
-    v_lv_kv = tx_spec.windings[1].rated_kv
-    v_lv_v = v_lv_kv * 1000.0
-
-    if v_lv_v <= 0:
-        err_msg = f"Non-positive transformer terminal voltage evaluated: {v_lv_v}"
-        print(f"ERROR: {err_msg}")
-        raise ValueError(err_msg)
+    # Solve base network operating point from OpenDSS
+    op = plant_data["op"] if "op" in plant_data else None
+    if op is None:
+        from src.power_plant.plant import solve_operating_point
+        op = solve_operating_point(runner.dss)
 
     equipment_types = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
@@ -66,75 +58,66 @@ def compute_residual_rms_vs_coevents(
     co_i_rms_channels = {ch: [] for ch in channels}
     i_ratios_channels = {ch: [] for ch in channels}
 
-    t_sim = np.linspace(0.0, 0.15, 1500)
-    dt = t_sim[1] - t_sim[0]
-    fs = 1.0 / dt
+    tx_unit_id = "trans1_lv_boundary"
 
+    # Pre-evaluate single equipment switching responses for all load models
+    single_responses = {}
+    for eq_type in equipment_types:
+        ev = SingleEquipmentSwitchEvent(
+            equipment_type=eq_type,
+            start_time_s=0.02,
+            duration_s=0.10,
+            target="trans1",
+            parameters={}
+        )
+        try:
+            t_s, v_dict, i_dict, _ = runner.measure_transients(
+                op=op, event=ev, scenario_id=f"single_{eq_type}", feeder_idx=1, use_baseline_feeder=True
+            )
+            single_responses[eq_type] = (t_s, v_dict[tx_unit_id], i_dict[tx_unit_id])
+        except Exception as e:
+            err_msg = f"Failed to measure transient response for equipment '{eq_type}': {e}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg) from e
+
+    if len(single_responses) < len(equipment_types):
+        err_msg = f"Incomplete single responses: expected {len(equipment_types)}, got {len(single_responses)}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    # Evaluate for each K simultaneous co-events using CoSimulationRunner transients
     for K_int in range(2, max_coevents + 1):
         K = float(K_int)
 
-        # Select equipment units for K simultaneous switching co-events
+        # Clear steady-state loads in OpenDSS to prevent network overloading as K increases towards 25
+        runner.dss.run_command("disable Load.*")
+        from src.power_plant.plant import solve_operating_point
+        op = solve_operating_point(runner.dss)
         selected_eqs = [equipment_types[i % len(equipment_types)] for i in range(K_int)]
 
-        single_i_waveforms = []
-        single_v_waveforms = []
+        t_sim, v_eq1, i_eq1 = single_responses[selected_eqs[0]]
+        fs = 1.0 / (t_sim[1] - t_sim[0])
 
-        # Evaluate equipment model waveforms directly from equipment specifications
-        for eq_type in selected_eqs:
-            eq_mod = get_equipment_model(eq_type)
+        i_composed = sum(single_responses[eq][2] for eq in selected_eqs)
+        v_composed = sum(single_responses[eq][1] for eq in selected_eqs) / K
 
-            p_kw = float(eq_mod.rated_power_kw)
-            pf = float(eq_mod.power_factor)
+        # Construct multi-equipment co-event with ALL K equipment switched simultaneously
+        single_events = [
+            SingleEquipmentSwitchEvent(eq_type, 0.02, 0.10, "trans1", {})
+            for eq_type in selected_eqs
+        ]
+        co_ev = MultiEquipmentCoEvent(events=single_events)
 
-            if p_kw <= 0 or pf <= 0:
-                err_msg = f"Invalid equipment model parameters for '{eq_type}': rated_power_kw={p_kw}, power_factor={pf}"
-                print(f"ERROR: {err_msg}")
-                raise ValueError(err_msg)
+        t_s, v_dict, i_dict, _ = runner.measure_transients(
+            op=op, event=co_ev, scenario_id=f"coevent_K{K_int}", feeder_idx=1, use_baseline_feeder=True
+        )
 
-            # Validate equipment model parameters directly
-            if not hasattr(eq_mod, "atp_params") or not isinstance(eq_mod.atp_params, dict):
-                err_msg = f"Equipment model '{eq_type}' missing required 'atp_params' dictionary"
-                print(f"ERROR: {err_msg}")
-                raise ValueError(err_msg)
-
-            # Equipment fundamental peak phase current
-            i_fund_peak = (p_kw * 1000.0) / ((3.0 ** 0.5) * v_lv_v * pf) * np.sqrt(2)
-
-            # Evaluate 3-phase equipment current waveform directly
-            i_a = (
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim) +
-                0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
-                0.08 * i_fund_peak * np.exp(-t_sim / 0.02)
-            )
-
-            i_3ph = np.column_stack([
-                i_a,
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim),
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim)
-            ])
-
-            single_i_waveforms.append(i_3ph)
-
-            v_a = (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim)
-            v_3ph = np.column_stack([
-                v_a,
-                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3),
-                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3)
-            ])
-            single_v_waveforms.append(v_3ph)
-
-        # Form linear aggregate co-event waveform by summing single equipment responses
-        i_composed = sum(single_i_waveforms)
-        v_composed = single_v_waveforms[0]
-
-        # Joint co-event terminal response directly without v_drop variable
-        i_joint = i_composed
-        v_joint = v_composed
+        v_joint = v_dict[tx_unit_id]
+        i_joint = i_dict[tx_unit_id]
 
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
 
-        # Decompose joint co-event and residual waveforms into 3 component channels
         decomp_i_joint = decompose_load_waveform(t_sim, i_joint, fs=fs)
         decomp_i_res = decompose_load_waveform(t_sim, i_res, fs=fs)
 
@@ -146,7 +129,7 @@ def compute_residual_rms_vs_coevents(
 
         for ch_name, decomp_key in channel_keys.items():
             if decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res:
-                err_msg = f"Missing component key '{decomp_key}' in decomposition results for channel '{ch_name}'"
+                err_msg = f"Missing component key '{decomp_key}' in decomposition results"
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
@@ -164,7 +147,6 @@ def compute_residual_rms_vs_coevents(
             co_i_rms_channels[ch_name].append(i_co_ch)
             i_ratios_channels[ch_name].append(ratio_ch)
 
-        # Overall 3-phase scalar RMS magnitudes
         v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
         i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
         v_res_rms = float(np.sqrt(np.mean(v_res ** 2)))
@@ -215,6 +197,16 @@ def plot_residual_rms_vs_coevents(
     v_res_rms = data["v_res_rms_overall"]
     i_res_rms = data["i_res_rms_overall"]
 
+    if v_res_rms is None or len(v_res_rms) == 0 or not np.all(np.isfinite(v_res_rms)):
+        err_msg = f"Cannot fit curve: Voltage residual RMS values are missing or invalid: {v_res_rms}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(v_res_rms):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and voltage residual RMS ({len(v_res_rms)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
     p_v = np.polyfit(k_vals, v_res_rms, 2)
     av, bv, cv = float(p_v[0]), float(p_v[1]), float(p_v[2])
     fit_v = np.polyval(p_v, k_vals)
@@ -225,6 +217,16 @@ def plot_residual_rms_vs_coevents(
     bv_sign = "+" if bv >= 0 else "-"
     cv_sign = "+" if cv >= 0 else "-"
     func_str_v = f"E_{{rms, V}}(K) = {abs(av):.6f}·K² {bv_sign} {abs(bv):.6f}·K {cv_sign} {abs(cv):.6f}"
+
+    if i_res_rms is None or len(i_res_rms) == 0 or not np.all(np.isfinite(i_res_rms)):
+        err_msg = f"Cannot fit curve: Current residual RMS values are missing or invalid: {i_res_rms}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(i_res_rms):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and current residual RMS ({len(i_res_rms)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     p_i = np.polyfit(k_vals, i_res_rms, 2)
     ai, bi, ci = float(p_i[0]), float(p_i[1]), float(p_i[2])
@@ -288,6 +290,16 @@ def plot_residual_rms_ratio_vs_coevents(
     ratio_slow = i_ratios_dict["slow_varying"]
 
     mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+
+    if mean_ratios is None or len(mean_ratios) == 0 or not np.all(np.isfinite(mean_ratios)):
+        err_msg = f"Cannot fit curve: Mean residual RMS ratio values are missing or invalid: {mean_ratios}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(mean_ratios):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and mean ratios ({len(mean_ratios)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
