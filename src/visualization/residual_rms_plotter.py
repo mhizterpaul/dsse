@@ -24,28 +24,34 @@ def compute_residual_rms_vs_coevents(
 ) -> Dict[str, Any]:
     """
     Computes voltage and current residual RMS magnitudes and channel ratios for K = 2 .. max_coevents.
-    Uses physics-based equipment models from src/loads (rated power, power factor, circuit impedance)
-    and network Thévenin impedance extracted directly from OpenDSS session via CoSimulationRunner.
+    Uses physics-based equipment models from src/loads (rated power, power factor, circuit admittance)
+    and transformer Thévenin impedance Z_tx extracted directly from OpenDSS session via CoSimulationRunner.
 
     For each K simultaneous event configuration:
       1. Instantiates K equipment models from equipment types.
-      2. Evaluates single equipment 3-phase switching transient responses.
-      3. Sums single equipment response waveforms to form linear composed co-event reference.
-      4. Evaluates joint simultaneous K-event response across shared source impedance Z_th.
+      2. Evaluates single equipment 3-phase switching admittance Y_k and terminal responses.
+      3. Evaluates joint simultaneous K-event admittance Y_total = sum(Y_k) across shared transformer impedance Z_tx:
+         V_joint = V_source / (1 + Z_tx * Y_total), I_joint = V_joint * Y_total.
+      4. Sums single equipment response waveforms to form linear composed co-event reference:
+         I_composed = sum(I_single_k).
       5. Computes residual waveforms v_res = v_joint - v_composed and i_res = i_joint - i_composed.
-      6. Decomposes waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
+      6. Decomposes residual and joint waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
     Raises ValueError if required parameters, equipment models, or channels are missing.
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
 
-    # Evaluate transformer voltage rating directly from OpenDSS transformer spec
+    # Evaluate physical Thévenin source impedance directly from OpenDSS transformer spec
     tx_spec = build_transformer_spec(feeder_idx=1, use_baseline=True, frequency_hz=50.0)
     v_lv_kv = tx_spec.windings[1].rated_kv
     v_lv_v = v_lv_kv * 1000.0
+    mva_rating = tx_spec.windings[1].rated_mva
+    z_base = (v_lv_kv ** 2) / mva_rating
+    z_pos_pu = tx_spec.short_circuit_tests[0].z_pos_pu
+    z_tx_ohm = float(z_pos_pu * z_base)
 
-    if v_lv_v <= 0:
-        err_msg = f"Non-positive transformer terminal voltage evaluated: {v_lv_v}"
+    if z_tx_ohm <= 0 or v_lv_v <= 0:
+        err_msg = f"Invalid transformer network parameters evaluated: v_lv_v={v_lv_v}, z_tx_ohm={z_tx_ohm}"
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
 
@@ -70,6 +76,14 @@ def compute_residual_rms_vs_coevents(
     dt = t_sim[1] - t_sim[0]
     fs = 1.0 / dt
 
+    # Source Phase-A, B, C peak voltage waveform
+    v_peak = (v_lv_v / np.sqrt(3)) * np.sqrt(2)
+    v_source_3ph = np.column_stack([
+        v_peak * np.sin(2 * np.pi * 50.0 * t_sim),
+        v_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3),
+        v_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3)
+    ])
+
     for K_int in range(2, max_coevents + 1):
         K = float(K_int)
 
@@ -78,8 +92,8 @@ def compute_residual_rms_vs_coevents(
 
         single_i_waveforms = []
         single_v_waveforms = []
+        total_y_3ph = np.zeros_like(v_source_3ph)
 
-        # Evaluate equipment model waveforms directly from equipment specifications
         for eq_type in selected_eqs:
             eq_mod = get_equipment_model(eq_type)
 
@@ -91,46 +105,49 @@ def compute_residual_rms_vs_coevents(
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            # Validate equipment model parameters directly
             if not hasattr(eq_mod, "atp_params") or not isinstance(eq_mod.atp_params, dict):
                 err_msg = f"Equipment model '{eq_type}' missing required 'atp_params' dictionary"
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            # Equipment fundamental peak phase current
-            i_fund_peak = (p_kw * 1000.0) / ((3.0 ** 0.5) * v_lv_v * pf) * np.sqrt(2)
+            # Equipment phase peak current and admittance
+            p_phase_w = (p_kw * 1000.0) / 3.0
+            v_phase_rms = v_lv_v / np.sqrt(3)
+            i_phase_rms = p_phase_w / (v_phase_rms * pf)
+            i_fund_peak = i_phase_rms * np.sqrt(2)
 
-            # Evaluate 3-phase equipment current waveform directly
-            i_a = (
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim) +
-                0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim) +
-                0.08 * i_fund_peak * np.exp(-t_sim / 0.02)
+            y_fund = i_fund_peak / v_peak
+
+            # Evaluate admittance operator with fundamental, harmonics, and transient DC onset
+            i_a_scale = (
+                np.sin(2 * np.pi * 50.0 * t_sim) +
+                0.15 * np.sin(2 * np.pi * 150.0 * t_sim) +
+                0.08 * np.exp(-t_sim / 0.02)
             )
 
-            i_3ph = np.column_stack([
-                i_a,
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim),
-                i_fund_peak * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + 0.15 * i_fund_peak * np.sin(2 * np.pi * 150.0 * t_sim)
+            y_3ph = y_fund * np.column_stack([
+                i_a_scale,
+                np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3) + 0.15 * np.sin(2 * np.pi * 150.0 * t_sim),
+                np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3) + 0.15 * np.sin(2 * np.pi * 150.0 * t_sim)
             ])
 
-            single_i_waveforms.append(i_3ph)
+            total_y_3ph += y_3ph
 
-            v_a = (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim)
-            v_3ph = np.column_stack([
-                v_a,
-                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim - 2*np.pi/3),
-                (v_lv_v / np.sqrt(3)) * np.sqrt(2) * np.sin(2 * np.pi * 50.0 * t_sim + 2*np.pi/3)
-            ])
-            single_v_waveforms.append(v_3ph)
+            # Single equipment response in isolation across transformer impedance Z_tx
+            v_single_k = v_source_3ph / (1.0 + z_tx_ohm * y_3ph)
+            i_single_k = v_single_k * y_3ph
+            single_i_waveforms.append(i_single_k)
+            single_v_waveforms.append(v_single_k)
 
-        # Form linear aggregate co-event waveform by summing single equipment responses
+        # Linear superposition composed co-event reference
         i_composed = sum(single_i_waveforms)
-        v_composed = single_v_waveforms[0]
+        v_composed = np.mean(single_v_waveforms, axis=0)
 
-        # Joint co-event terminal response directly without v_drop variable
-        i_joint = i_composed
-        v_joint = v_composed
+        # Joint multi-event response across shared transformer source impedance Z_tx
+        v_joint = v_source_3ph / (1.0 + z_tx_ohm * total_y_3ph)
+        i_joint = v_joint * total_y_3ph
 
+        # Residual waveforms representing multi-event interaction across source impedance Z_tx
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
 
