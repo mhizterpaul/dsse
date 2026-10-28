@@ -7,9 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import pypsa
-import networkx as nx
-from matplotlib.patches import Patch
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -128,21 +125,18 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
 def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.Network:
     """
     Constructs a PyPSA Network instance populated dynamically from active OpenDSS circuit elements,
-    sector carriers (AC electricity, heat, gas), and plant_data topology parameters without hardcoded fallback assumptions.
+    plant_data topology parameters, and consumer units from registry without synthetic hubs or fallbacks.
     Raises KeyError or ValueError if required network elements or properties are missing.
     """
     bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
     net = pypsa.Network()
-
-    # Register energy carriers to distinguish sectors by color in schematic single-line diagram
-    net.add("Carrier", "AC", color="#1f77b4")       # Blue for Electricity
-    net.add("Carrier", "heat", color="#d62728")     # Red for Heat
+    net.add("Carrier", "AC", color="#1f77b4")
 
     def clean_bus_name(raw_bus: str) -> str:
         return raw_bus.split(".")[0].strip().lower()
 
-    # 1. Add Buses with custom Cartesian coordinates (x, y) for schematic alignment
+    # 1. Add Buses with Cartesian coordinates (x, y) queried directly from OpenDSS bus coordinates
     for bus_name in dss.Circuit.AllBusNames():
         b_clean = bus_name.lower()
         if b_clean in bus_coords:
@@ -157,12 +151,6 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
 
             v_nom = kv_base * (3.0 ** 0.5)
             net.add("Bus", b_clean, x=bx, y=by, v_nom=v_nom, carrier="AC")
-
-    # Add Sector Coupling Thermal Bus & Heat Pump Link for Secondary Distribution Substation
-    if "feeder1_sec" in net.buses.index:
-        net.add("Bus", "Heat_Hub", carrier="heat")
-        net.add("Link", "Heat_Pump", bus0="feeder1_sec", bus1="Heat_Hub", efficiency=3.0, p_nom=2.0)
-        net.add("Load", "Thermal_Demand", bus="Heat_Hub", p_set=0.05)
 
     # 2. Add Generator with capacity retrieved directly from plant_data
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
@@ -285,8 +273,9 @@ def plot_opendss_circuit(
     save_path: str = "src/visualization/dss_circuit_plot.png"
 ):
     """
-    Initializes OpenDSS plant session, builds a PyPSA Network representation featuring sector coupling,
-    and renders the schematic single-line diagram using PyPSA's `network.plot()` method with `geomap=False`.
+    Initializes OpenDSS plant session, builds a PyPSA Network representation of active network buses,
+    consumer units, lines, and transformers, and renders the distribution single-line diagram using PyPSA (`net.plot`).
+    Representing all consumer units, loads, and buses accurately without synthetic hubs.
     """
     runner = CoSimulationRunner()
     if dss is None:
@@ -299,32 +288,70 @@ def plot_opendss_circuit(
 
     fig, ax = plt.subplots(figsize=(14, 10))
 
-    # 2. Define Custom Color Map for Energy Carriers
-    carrier_colors = {
-        "AC": "#1f77b4",    # Blue for Electricity
-        "heat": "#d62728",  # Red for Heat
-    }
-    bus_colors = net.buses.carrier.map(carrier_colors)
-
-    # 3. Render PyPSA single-line diagram topology using NetworkX layouter
+    # 2. Render PyPSA single-line diagram
     net.plot(
         ax=ax,
         geomap=False,
-        layouter=nx.kamada_kawai_layout,
-        bus_colors=bus_colors,
-        bus_sizes=0.03 if dots else 0.0,
-        line_colors="#7f7f7f",
-        link_colors="#ff7f0e",
+        bus_sizes=0.015 if dots else 0.0,
+        bus_colors="navy",
+        line_colors="steelblue",
         line_widths=2.0,
-        link_widths=3.0,
-        title="Sector-Coupled Distribution Network Topology"
+        transformer_colors="crimson",
+        title="Distribution Network Single Line Diagram (PyPSA)",
     )
 
-    # 4. Custom legend configuration for energy carriers and sector links
-    legend_elements = [Patch(facecolor=color, label=carrier) for carrier, color in carrier_colors.items()]
-    legend_elements.append(Patch(facecolor="#ff7f0e", label="Sector Link"))
-    ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
+    # 3. Label consumer units, loads, and buses clearly using registry parameters
+    if "registry" not in plant_data:
+        err_msg = "Missing required 'registry' in plant_data"
+        print(f"ERROR: {err_msg}")
+        raise KeyError(err_msg)
 
+    registry = plant_data["registry"]
+    bus_coords = {b: (net.buses.loc[b, "x"], net.buses.loc[b, "y"]) for b in net.buses.index}
+    source_x, source_y = bus_coords.get("sourcebus", (0.0, 0.0))
+
+    all_consumers = registry.get_all_consumers()
+
+    def get_dist_from_source(unit):
+        b_name = unit.bus_id.lower()
+        if b_name in bus_coords:
+            bx, by = bus_coords[b_name]
+            return math.hypot(bx - source_x, by - source_y)
+        return 0.0
+
+    sorted_consumers = sorted(all_consumers, key=get_dist_from_source, reverse=True)
+
+    labeled_types = set()
+    for unit in sorted_consumers:
+        b_name = unit.bus_id.lower()
+        if b_name not in bus_coords:
+            continue
+        bx, by = bus_coords[b_name]
+        dist = math.hypot(bx - source_x, by - source_y)
+
+        for ld in unit.loads:
+            ltype = ld.load_type
+            if ltype not in labeled_types:
+                labeled_types.add(ltype)
+                formatted_label = ltype.replace("_", " ").title()
+
+                offset_x = 35.0 if dist < 180.0 else 8.0
+                offset_y = 20.0 if dist < 180.0 else 8.0
+
+                ax.text(
+                    bx + offset_x, by + offset_y,
+                    formatted_label,
+                    fontsize=8, fontweight="bold", color="navy",
+                    bbox=dict(
+                        boxstyle="round,pad=0.3",
+                        facecolor="lightyellow",
+                        edgecolor="royalblue",
+                        alpha=0.9
+                    ),
+                    zorder=26
+                )
+
+    ax.set_title("OpenDSS Distribution Network Single Line Diagram (PyPSA)", fontsize=13, fontweight="bold")
     ax.grid(True, alpha=0.15)
     fig.tight_layout()
 
