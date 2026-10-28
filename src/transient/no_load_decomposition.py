@@ -441,6 +441,16 @@ def derive_wave_equations(
 
     # 5. Slowly Varying Component (SSD)
     t0 = time_s[0]
+    if x_ssd is None or len(x_ssd) == 0 or not np.all(np.isfinite(x_ssd)):
+        err_msg = f"Cannot derive wave equation: SSD signal component is missing or invalid: {x_ssd}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(time_s) != len(x_ssd):
+        err_msg = f"Cannot derive wave equation: Mismatch between time array ({len(time_s)}) and SSD signal ({len(x_ssd)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
     p_ssd = np.polyfit(time_s - t0, x_ssd, 1)
     c1, c0 = p_ssd[0], p_ssd[1]
     c1_sign = "+" if c1 >= 0 else "-"

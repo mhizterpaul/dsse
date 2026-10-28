@@ -259,6 +259,16 @@ def plot_residual_rms_vs_coevents(
     v_res_rms = data["v_res_rms_overall"]
     i_res_rms = data["i_res_rms_overall"]
 
+    if v_res_rms is None or len(v_res_rms) == 0 or not np.all(np.isfinite(v_res_rms)):
+        err_msg = f"Cannot fit curve: Voltage residual RMS values are missing or invalid: {v_res_rms}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(v_res_rms):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and voltage residual RMS ({len(v_res_rms)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
     p_v = np.polyfit(k_vals, v_res_rms, 2)
     av, bv, cv = float(p_v[0]), float(p_v[1]), float(p_v[2])
     fit_v = np.polyval(p_v, k_vals)
@@ -269,6 +279,16 @@ def plot_residual_rms_vs_coevents(
     bv_sign = "+" if bv >= 0 else "-"
     cv_sign = "+" if cv >= 0 else "-"
     func_str_v = f"E_{{rms, V}}(K) = {abs(av):.6f}·K² {bv_sign} {abs(bv):.6f}·K {cv_sign} {abs(cv):.6f}"
+
+    if i_res_rms is None or len(i_res_rms) == 0 or not np.all(np.isfinite(i_res_rms)):
+        err_msg = f"Cannot fit curve: Current residual RMS values are missing or invalid: {i_res_rms}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(i_res_rms):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and current residual RMS ({len(i_res_rms)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     p_i = np.polyfit(k_vals, i_res_rms, 2)
     ai, bi, ci = float(p_i[0]), float(p_i[1]), float(p_i[2])
@@ -332,6 +352,16 @@ def plot_residual_rms_ratio_vs_coevents(
     ratio_slow = i_ratios_dict["slow_varying"]
 
     mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+
+    if mean_ratios is None or len(mean_ratios) == 0 or not np.all(np.isfinite(mean_ratios)):
+        err_msg = f"Cannot fit curve: Mean residual RMS ratio values are missing or invalid: {mean_ratios}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if len(k_vals) != len(mean_ratios):
+        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and mean ratios ({len(mean_ratios)})"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
