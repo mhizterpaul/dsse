@@ -141,7 +141,7 @@ def compute_residual_rms_vs_coevents(
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            ratio_ch = i_res_ch / (i_co_ch + 1e-9)
+            ratio_ch = i_res_ch / (i_co_ch * K + 1e-9)
 
             res_i_rms_channels[ch_name].append(i_res_ch)
             co_i_rms_channels[ch_name].append(i_co_ch)
@@ -328,6 +328,7 @@ def plot_residual_rms_ratio_vs_coevents(
     text_info = f"Derived Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
+    ax.set_ylim(0.0, 1.0)
     ax.grid(True, alpha=0.25, linestyle=":")
     ax.legend(loc="lower right", frameon=True, fontsize=10)
 
