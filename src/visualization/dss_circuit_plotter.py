@@ -197,7 +197,6 @@ def draw_consumer_branch(
 ) -> None:
     """Draw a single consumer connection branch perpendicular to the shared busbar."""
     drop_y = busbar_y - 0.7
-    ground_y = busbar_y - 1.3
 
     # Vertical drop line from busbar
     ax.plot([cx, cx], [busbar_y, drop_y], color="#333333", linewidth=1.2, zorder=4)
@@ -209,9 +208,6 @@ def draw_consumer_branch(
         .down()
         .label(cid, loc="bottom", fontsize=6, color="navy")
     )
-
-    # GroundSignal symbol
-    draw_ground_signal(d, cx, ground_y)
 
 
 def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.Network:
@@ -510,12 +506,20 @@ def plot_opendss_circuit(
         pitch = max(0.8, max_id_len * 0.04)
         branch_x_list = [x + (i - (count - 1) / 2.0) * pitch for i in range(count)]
 
-        # Continuous shared busbar across consumer group
-        draw_busbar(ax, branch_x_list, y - 0.2, padding=0.25, linewidth=2.6)
+        # Continuous shared PCC busbar across consumer group
+        busbar_y = y - 0.2
+        draw_busbar(ax, branch_x_list, busbar_y, padding=0.25, linewidth=2.6)
+
+        # Neutral ground signal plotted strictly at PCC busbars where more than one consumer units are connected
+        if count > 1:
+            pcc_ground_x = max(branch_x_list) + 0.25
+            drop_y = busbar_y - 0.7
+            ax.plot([pcc_ground_x, pcc_ground_x], [busbar_y, drop_y], color="#333333", linewidth=1.2, zorder=4)
+            draw_ground_signal(d, pcc_ground_x, drop_y)
 
         # Draw individual perpendicular connection drops for each consumer
         for cx, cid in zip(branch_x_list, c_ids):
-            draw_consumer_branch(d, ax, cx, y, cid)
+            draw_consumer_branch(d, ax, cx, busbar_y, cid)
 
     d.draw()
 
