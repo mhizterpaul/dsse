@@ -131,7 +131,7 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
     bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
     net = pypsa.Network()
-    net.add("Carrier", "AC", color="#1f77b4")
+    net.add("Carrier", "heat", color="#e74c3c")
 
     def clean_bus_name(raw_bus: str) -> str:
         return raw_bus.split(".")[0].strip().lower()
@@ -150,7 +150,7 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
                 raise ValueError(err_msg)
 
             v_nom = kv_base * (3.0 ** 0.5)
-            net.add("Bus", b_clean, x=bx, y=by, v_nom=v_nom, carrier="AC")
+            net.add("Bus", b_clean, x=bx, y=by, v_nom=v_nom, carrier="heat")
 
     # 2. Add Generator with capacity retrieved directly from plant_data
     if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
@@ -169,7 +169,14 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
         print(f"ERROR: {err_msg}")
         raise KeyError(err_msg)
 
-    net.add("Generator", "gen_33kv", bus="sourcebus", p_nom=gen_kw/1000.0)
+    net.add(
+        "Generator",
+        "Heat_Pump_Gen",
+        bus="sourcebus",
+        carrier="heat",
+        p_nom=gen_kw / 1000.0,
+        p_nom_extendable=True,
+    )
 
     # 3. Add Lines with physical properties queried directly from OpenDSS active elements
     for line_name in dss.Lines.AllNames():
