@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent
+from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent, MultiEquipmentCoEvent
 from src.transient.no_load_decomposition import decompose_load_waveform
 
 
@@ -101,10 +101,12 @@ def compute_residual_rms_vs_coevents(
         i_composed = sum(single_responses[eq][2] for eq in selected_eqs)
         v_composed = sum(single_responses[eq][1] for eq in selected_eqs) / K
 
-        # Construct multi-equipment co-event
-        ev1 = SingleEquipmentSwitchEvent(selected_eqs[0], 0.02, 0.10, "trans1", {})
-        ev2 = SingleEquipmentSwitchEvent(selected_eqs[1], 0.02, 0.10, "trans1", {})
-        co_ev = EquipmentEquipmentCoEvent(ev1, ev2)
+        # Construct multi-equipment co-event with ALL K equipment switched simultaneously
+        single_events = [
+            SingleEquipmentSwitchEvent(eq_type, 0.02, 0.10, "trans1", {})
+            for eq_type in selected_eqs
+        ]
+        co_ev = MultiEquipmentCoEvent(events=single_events)
 
         t_s, v_dict, i_dict, _ = runner.measure_transients(
             op=op, event=co_ev, scenario_id=f"coevent_K{K_int}", feeder_idx=1, use_baseline_feeder=True
