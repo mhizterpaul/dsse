@@ -447,12 +447,14 @@ def plot_opendss_circuit(
         draw_busbar(ax, [sx - 0.8, sx + 0.8], sy, padding=0.3, linewidth=3.0)
 
     # 4. Draw Feeder Lines with Right-Angle Orthogonal Routing
+    parent_children: Dict[str, List[str]] = {}
     for line_idx, row in net.lines.iterrows():
         b0, b1 = row.bus0, row.bus1
         if b0 in positions and b1 in positions:
             p0 = positions[b0]
             p1 = positions[b1]
             draw_orthogonal_edge(ax, p0, p1, color="#333333", linewidth=1.4)
+            parent_children.setdefault(b0, []).append(b1)
 
     # 5. Draw Transformers using Schemdraw
     for tx_idx, row in net.transformers.iterrows():
@@ -467,6 +469,20 @@ def plot_opendss_circuit(
                 .right()
                 .label(f"Trxr {tx_idx}", loc="top", fontsize=7)
             )
+
+    # Add 1 signal ground for each orthogonal line with >1 drops/junctions (between drops/junctions)
+    for b0, children in parent_children.items():
+        if len(children) > 1:
+            x_b0, y_b0 = positions[b0]
+            y_children = positions[children[0]][1]
+            y_mid = (y_b0 + y_children) / 2.0
+            x_coords = sorted(set([positions[c][0] for c in children] + [x_b0]))
+            if len(x_coords) > 1:
+                mid_idx = (len(x_coords) - 1) // 2
+                g_x = (x_coords[mid_idx] + x_coords[mid_idx + 1]) / 2.0
+                g_y = y_mid - 0.5
+                ax.plot([g_x, g_x], [y_mid, g_y], color="#333333", linewidth=1.2, zorder=4)
+                draw_ground_signal(d, g_x, g_y)
 
     # 6. Draw Bus Annotations (No scattered navy dots)
     for b_name, (x, y) in positions.items():
