@@ -14,10 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.simulation.filter import remove_low_frequency_components
 from src.estimator.cla_estimator import ClusterLoadAllocationEstimator
 from src.estimator.time_adjusted_cla_estimator import TimeAdjustedCLAEstimator
 from src.loads import get_equipment_model
+from src.transient.no_load_decomposition import decompose_load_waveform
 from src.transient.events import (
     SingleEquipmentSwitchEvent,
     SingleLineFaultEvent,
@@ -111,40 +111,35 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         v_joint = item["v_joint"]
         i_joint = item["i_joint"]
 
-        # Apply low frequency filter to waveforms
-        v1_filt = remove_low_frequency_components(v1, cutoff_hz=50.0, fs=fs, order=4)
-        i1_filt = remove_low_frequency_components(i1, cutoff_hz=50.0, fs=fs, order=4)
-        v2_filt = remove_low_frequency_components(v2, cutoff_hz=50.0, fs=fs, order=4)
-        i2_filt = remove_low_frequency_components(i2, cutoff_hz=50.0, fs=fs, order=4)
-        v_joint_filt = remove_low_frequency_components(v_joint, cutoff_hz=50.0, fs=fs, order=4)
-        i_joint_filt = remove_low_frequency_components(i_joint, cutoff_hz=50.0, fs=fs, order=4)
-
-        # Apply time offset to event 2 single event before composition
+        # Apply time offset to event 2 raw single event before composition
         t_off_s = float(getattr(co_ev, "time_offset_s", 0.0))
         shift_samples = int(round(t_off_s * fs))
 
         if shift_samples > 0:
-            v2_shifted = np.zeros_like(v2_filt)
-            i2_shifted = np.zeros_like(i2_filt)
-            if shift_samples < len(v2_filt):
-                v2_shifted[shift_samples:] = v2_filt[:-shift_samples]
-                i2_shifted[shift_samples:] = i2_filt[:-shift_samples]
+            v2_shifted = np.zeros_like(v2)
+            i2_shifted = np.zeros_like(i2)
+            if shift_samples < len(v2):
+                v2_shifted[shift_samples:] = v2[:-shift_samples]
+                i2_shifted[shift_samples:] = i2[:-shift_samples]
         else:
-            v2_shifted = v2_filt
-            i2_shifted = i2_filt
+            v2_shifted = v2
+            i2_shifted = i2
 
-        v_comp = v1_filt + v2_shifted
-        i_comp = i1_filt + i2_shifted
+        t_arr = np.arange(len(v1)) / fs
 
-        v_res = v_joint_filt - v_comp
-        i_res = i_joint_filt - i_comp
+        # Decompose RAW waveforms directly so each component channel uses its own filter
+        decomp_v1 = decompose_load_waveform(t_arr, v1, fs=fs)
+        decomp_i1 = decompose_load_waveform(t_arr, i1, fs=fs)
+        decomp_v2 = decompose_load_waveform(t_arr, v2_shifted, fs=fs)
+        decomp_i2 = decompose_load_waveform(t_arr, i2_shifted, fs=fs)
+        decomp_v_joint = decompose_load_waveform(t_arr, v_joint, fs=fs)
+        decomp_i_joint = decompose_load_waveform(t_arr, i_joint, fs=fs)
 
-        # Compute 3-phase joint/composed scalar magnitudes
-        voltage_magnitude = float(np.sqrt(np.mean(v_joint_filt ** 2)))
-        current_magnitude = float(np.sqrt(np.mean(i_joint_filt ** 2)))
-
-        residual_v_mag = float(np.sqrt(np.mean(v_res ** 2)))
-        residual_i_mag = float(np.sqrt(np.mean(i_res ** 2)))
+        channel_map = [
+            ("fundamental", "x_fundamental"),
+            ("harmonics", "x_harmonics"),
+            ("slow_varying", "x_ssd")
+        ]
 
         target_bus = getattr(ev1, "target", "feeder1_head")
         load_source_json = json.dumps({"bus": target_bus, "line": target_bus})
@@ -154,50 +149,71 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         eq2_type = getattr(ev2, "equipment_type", None)
         flt2_type = getattr(ev2, "fault_type", None)
 
-        row = {
-            "load_source": load_source_json,
-            "fault_info": item["fault_info"],
-            "gt_event_1_equipment_type": eq1_type,
-            "gt_event_1_fault_type": flt1_type,
-            "gt_event_1_start_timestamp_s": ev1.start_time_s,
-            "gt_event_2_equipment_type": eq2_type,
-            "gt_event_2_fault_type": flt2_type,
-            "gt_event_2_start_timestamp_s": ev2.start_time_s,
-            "gt_time_offset_s": co_ev.time_offset_s,
-            "voltage_magnitude": round(voltage_magnitude, 6),
-            "current_magnitude": round(current_magnitude, 6),
-            "residual_voltage_magnitude": round(residual_v_mag, 6),
-            "residual_current_magnitude": round(residual_i_mag, 6),
-            "obs_single_event_1_v_phase_a": json.dumps(v1_filt[:, 0].tolist()),
-            "obs_single_event_1_v_phase_b": json.dumps(v1_filt[:, 1].tolist()),
-            "obs_single_event_1_v_phase_c": json.dumps(v1_filt[:, 2].tolist()),
-            "obs_single_event_1_i_phase_a": json.dumps(i1_filt[:, 0].tolist()),
-            "obs_single_event_1_i_phase_b": json.dumps(i1_filt[:, 1].tolist()),
-            "obs_single_event_1_i_phase_c": json.dumps(i1_filt[:, 2].tolist()),
-            "obs_single_event_2_v_phase_a": json.dumps(v2_filt[:, 0].tolist()),
-            "obs_single_event_2_v_phase_b": json.dumps(v2_filt[:, 1].tolist()),
-            "obs_single_event_2_v_phase_c": json.dumps(v2_filt[:, 2].tolist()),
-            "obs_single_event_2_i_phase_a": json.dumps(i2_filt[:, 0].tolist()),
-            "obs_single_event_2_i_phase_b": json.dumps(i2_filt[:, 1].tolist()),
-            "obs_single_event_2_i_phase_c": json.dumps(i2_filt[:, 2].tolist()),
-            "obs_composed_event_v_phase_a": json.dumps(v_comp[:, 0].tolist()),
-            "obs_composed_event_v_phase_b": json.dumps(v_comp[:, 1].tolist()),
-            "obs_composed_event_v_phase_c": json.dumps(v_comp[:, 2].tolist()),
-            "obs_composed_event_i_phase_a": json.dumps(i_comp[:, 0].tolist()),
-            "obs_composed_event_i_phase_b": json.dumps(i_comp[:, 1].tolist()),
-            "obs_composed_event_i_phase_c": json.dumps(i_comp[:, 2].tolist()),
-            "obs_residual_v_phase_a": json.dumps(v_res[:, 0].tolist()),
-            "obs_residual_v_phase_b": json.dumps(v_res[:, 1].tolist()),
-            "obs_residual_v_phase_c": json.dumps(v_res[:, 2].tolist()),
-            "obs_residual_i_phase_a": json.dumps(i_res[:, 0].tolist()),
-            "obs_residual_i_phase_b": json.dumps(i_res[:, 1].tolist()),
-            "obs_residual_i_phase_c": json.dumps(i_res[:, 2].tolist()),
-        }
+        for ch_name, key in channel_map:
+            v1_ch = decomp_v1[key]
+            i1_ch = decomp_i1[key]
+            v2_ch = decomp_v2[key]
+            i2_ch = decomp_i2[key]
+            v_joint_ch = decomp_v_joint[key]
+            i_joint_ch = decomp_i_joint[key]
 
-        if dataset_name == "Dataset 4":
-            row["gt_feeder_id"] = item.get("gt_feeder_id", "feeder_1")
+            v_comp_ch = v1_ch + v2_ch
+            i_comp_ch = i1_ch + i2_ch
 
-        rows.append(row)
+            v_res_ch = v_joint_ch - v_comp_ch
+            i_res_ch = i_joint_ch - i_comp_ch
+
+            voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+            current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+
+            residual_v_mag = float(np.sqrt(np.mean(v_res_ch ** 2)))
+            residual_i_mag = float(np.sqrt(np.mean(i_res_ch ** 2)))
+
+            row = {
+                "channel": ch_name,
+                "load_source": load_source_json,
+                "fault_info": item["fault_info"],
+                "gt_event_1_equipment_type": eq1_type,
+                "gt_event_1_fault_type": flt1_type,
+                "gt_event_1_start_timestamp_s": ev1.start_time_s,
+                "gt_event_2_equipment_type": eq2_type,
+                "gt_event_2_fault_type": flt2_type,
+                "gt_event_2_start_timestamp_s": ev2.start_time_s,
+                "gt_time_offset_s": co_ev.time_offset_s,
+                "voltage_magnitude": round(voltage_magnitude, 6),
+                "current_magnitude": round(current_magnitude, 6),
+                "residual_voltage_magnitude": round(residual_v_mag, 6),
+                "residual_current_magnitude": round(residual_i_mag, 6),
+                "obs_single_event_1_v_phase_a": json.dumps(v1_ch[:, 0].tolist()),
+                "obs_single_event_1_v_phase_b": json.dumps(v1_ch[:, 1].tolist()),
+                "obs_single_event_1_v_phase_c": json.dumps(v1_ch[:, 2].tolist()),
+                "obs_single_event_1_i_phase_a": json.dumps(i1_ch[:, 0].tolist()),
+                "obs_single_event_1_i_phase_b": json.dumps(i1_ch[:, 1].tolist()),
+                "obs_single_event_1_i_phase_c": json.dumps(i1_ch[:, 2].tolist()),
+                "obs_single_event_2_v_phase_a": json.dumps(v2_ch[:, 0].tolist()),
+                "obs_single_event_2_v_phase_b": json.dumps(v2_ch[:, 1].tolist()),
+                "obs_single_event_2_v_phase_c": json.dumps(v2_ch[:, 2].tolist()),
+                "obs_single_event_2_i_phase_a": json.dumps(i2_ch[:, 0].tolist()),
+                "obs_single_event_2_i_phase_b": json.dumps(i2_ch[:, 1].tolist()),
+                "obs_single_event_2_i_phase_c": json.dumps(i2_ch[:, 2].tolist()),
+                "obs_composed_event_v_phase_a": json.dumps(v_comp_ch[:, 0].tolist()),
+                "obs_composed_event_v_phase_b": json.dumps(v_comp_ch[:, 1].tolist()),
+                "obs_composed_event_v_phase_c": json.dumps(v_comp_ch[:, 2].tolist()),
+                "obs_composed_event_i_phase_a": json.dumps(i_comp_ch[:, 0].tolist()),
+                "obs_composed_event_i_phase_b": json.dumps(i_comp_ch[:, 1].tolist()),
+                "obs_composed_event_i_phase_c": json.dumps(i_comp_ch[:, 2].tolist()),
+                "obs_residual_v_phase_a": json.dumps(v_res_ch[:, 0].tolist()),
+                "obs_residual_v_phase_b": json.dumps(v_res_ch[:, 1].tolist()),
+                "obs_residual_v_phase_c": json.dumps(v_res_ch[:, 2].tolist()),
+                "obs_residual_i_phase_a": json.dumps(i_res_ch[:, 0].tolist()),
+                "obs_residual_i_phase_b": json.dumps(i_res_ch[:, 1].tolist()),
+                "obs_residual_i_phase_c": json.dumps(i_res_ch[:, 2].tolist()),
+            }
+
+            if dataset_name == "Dataset 4":
+                row["gt_feeder_id"] = item.get("gt_feeder_id", "feeder_1")
+
+            rows.append(row)
 
     print(f"INFO: Completed {dataset_name} generation ({len(rows)} rows).")
     return rows
