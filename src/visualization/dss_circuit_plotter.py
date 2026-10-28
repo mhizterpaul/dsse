@@ -288,9 +288,10 @@ def plot_opendss_circuit(
 
     fig, ax = plt.subplots(figsize=(14, 10))
 
-    # 2. Render PyPSA single line diagram
+    # 2. Render PyPSA single line diagram with geomap=False to target standard Matplotlib axes
     net.plot(
         ax=ax,
+        geomap=False,
         bus_sizes=0.015 if dots else 0.0,
         bus_colors="navy",
         line_colors="steelblue",
