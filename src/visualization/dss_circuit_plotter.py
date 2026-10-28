@@ -510,11 +510,12 @@ def plot_opendss_circuit(
         busbar_y = y - 0.2
         draw_busbar(ax, branch_x_list, busbar_y, padding=0.25, linewidth=2.6)
 
-        # Single grounding placed at the same level horizontally as the consumer units in each group
-        pcc_ground_x = max(branch_x_list) + 0.25
-        drop_y = busbar_y - 0.7
-        ax.plot([pcc_ground_x, pcc_ground_x], [busbar_y, drop_y], color="#333333", linewidth=1.2, zorder=4)
-        draw_ground_signal(d, pcc_ground_x, drop_y)
+        # Neutral ground signal plotted strictly at PCC busbars where more than one consumer units are connected
+        if count > 1:
+            pcc_ground_x = max(branch_x_list) + 0.25
+            drop_y = busbar_y - 0.7
+            ax.plot([pcc_ground_x, pcc_ground_x], [busbar_y, drop_y], color="#333333", linewidth=1.2, zorder=4)
+            draw_ground_signal(d, pcc_ground_x, drop_y)
 
         # Draw individual perpendicular connection drops for each consumer
         for cx, cid in zip(branch_x_list, c_ids):
