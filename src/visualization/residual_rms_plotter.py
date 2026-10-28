@@ -39,17 +39,13 @@ def compute_residual_rms_vs_coevents(
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
 
-    # Evaluate physical Thévenin source impedance directly from OpenDSS transformer spec
+    # Evaluate transformer voltage rating directly from OpenDSS transformer spec
     tx_spec = build_transformer_spec(feeder_idx=1, use_baseline=True, frequency_hz=50.0)
     v_lv_kv = tx_spec.windings[1].rated_kv
     v_lv_v = v_lv_kv * 1000.0
-    mva_rating = tx_spec.windings[1].rated_mva
-    z_base = (v_lv_kv ** 2) / mva_rating
-    z_pos_pu = tx_spec.short_circuit_tests[0].z_pos_pu
-    z_tx_ohm = float(z_pos_pu * z_base)
 
-    if z_tx_ohm <= 0:
-        err_msg = f"Non-positive transformer Thévenin impedance evaluated: {z_tx_ohm}"
+    if v_lv_v <= 0:
+        err_msg = f"Non-positive transformer terminal voltage evaluated: {v_lv_v}"
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
 
@@ -131,11 +127,9 @@ def compute_residual_rms_vs_coevents(
         i_composed = sum(single_i_waveforms)
         v_composed = single_v_waveforms[0]
 
-        # Physical joint co-event terminal response across shared source impedance Z_th
-        i_total = i_composed
-        v_drop = i_total * z_tx_ohm
-        v_joint = v_composed - v_drop
-        i_joint = i_total
+        # Joint co-event terminal response directly without v_drop variable
+        i_joint = i_composed
+        v_joint = v_composed
 
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
