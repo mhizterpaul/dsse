@@ -5,6 +5,8 @@ pandas
 xarray
 matplotlib
 pypsa
+networkx
+schemdraw
 ipython
 OpenDSSDirect.py[extras]
 altdss
