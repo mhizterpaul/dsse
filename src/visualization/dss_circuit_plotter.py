@@ -118,9 +118,9 @@ def topology_positions(net: pypsa.Network, root: str = "sourcebus") -> Dict[str,
     positions = {}
     for lvl, n_list in nodes_at_level.items():
         n_count = len(n_list)
-        y = -float(lvl) * 2.8
+        y = -float(lvl) * 3.0
         for idx, node in enumerate(n_list):
-            x = (idx - (n_count - 1) / 2.0) * 2.2
+            x = (idx - (n_count - 1) / 2.0) * 2.5
             positions[node] = (x, y)
 
     for node in net.buses.index:
@@ -128,6 +128,90 @@ def topology_positions(net: pypsa.Network, root: str = "sourcebus") -> Dict[str,
             positions[node] = (0.0, 0.0)
 
     return positions
+
+
+def draw_busbar(
+    ax,
+    x_positions: List[float],
+    y: float,
+    padding: float = 0.25,
+    linewidth: float = 2.6,
+) -> None:
+    """Draw a continuous horizontal busbar."""
+    if not x_positions:
+        return
+    x_left = min(x_positions) - padding
+    x_right = max(x_positions) + padding
+    if x_right <= x_left:
+        x_left -= 0.25
+        x_right += 0.25
+    ax.plot(
+        [x_left, x_right],
+        [y, y],
+        color="black",
+        linewidth=linewidth,
+        solid_capstyle="butt",
+        zorder=5,
+    )
+
+
+def draw_orthogonal_edge(
+    ax,
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    color: str = "#333333",
+    linewidth: float = 1.4,
+) -> None:
+    """Draw an edge using only horizontal and vertical right-angle segments."""
+    x0, y0 = start
+    x1, y1 = end
+    y_mid = (y0 + y1) / 2.0
+    ax.plot(
+        [x0, x0, x1, x1],
+        [y0, y_mid, y_mid, y1],
+        color=color,
+        linewidth=linewidth,
+        zorder=2,
+    )
+
+
+def draw_ground_signal(
+    d: schemdraw.Drawing,
+    x: float,
+    y: float,
+    label: Optional[str] = None,
+) -> None:
+    """Place a signal-ground symbol (elm.GroundSignal) at designated reference terminal."""
+    symbol = elm.GroundSignal(lead=True).at((x, y))
+    if label:
+        symbol = symbol.label(label, loc="bottom", fontsize=6)
+    d.add(symbol)
+
+
+def draw_consumer_branch(
+    d: schemdraw.Drawing,
+    ax,
+    cx: float,
+    busbar_y: float,
+    cid: str,
+) -> None:
+    """Draw a single consumer connection branch perpendicular to the shared busbar."""
+    drop_y = busbar_y - 0.7
+    ground_y = busbar_y - 1.3
+
+    # Vertical drop line from busbar
+    ax.plot([cx, cx], [busbar_y, drop_y], color="#333333", linewidth=1.2, zorder=4)
+
+    # Load Resistor symbol
+    d.add(
+        elm.Resistor()
+        .at((cx, drop_y))
+        .down()
+        .label(cid, loc="bottom", fontsize=6, color="navy")
+    )
+
+    # GroundSignal symbol
+    draw_ground_signal(d, cx, ground_y)
 
 
 def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.Network:
@@ -282,38 +366,6 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
     return net
 
 
-def draw_consumer_busbar(
-    d: schemdraw.Drawing,
-    ax,
-    x: float,
-    y: float,
-    consumer_ids: List[str],
-) -> None:
-    """Draw a shared consumer busbar with individually labelled branches using Schemdraw elements."""
-    if not consumer_ids:
-        return
-
-    max_id_len = max(len(cid) for cid in consumer_ids)
-    pitch = max(0.8, max_id_len * 0.04)
-    count = len(consumer_ids)
-    branch_x = [x + (i - (count - 1) / 2.0) * pitch for i in range(count)]
-    half_width = max(0.2, max(abs(cx - x) for cx in branch_x) + 0.1)
-
-    # Busbar
-    ax.plot([x - half_width, x + half_width], [y - 0.2, y - 0.2], color="black", linewidth=2.0, zorder=5)
-
-    # Individual consumer connection branches using Schemdraw
-    for cx, cid in zip(branch_x, consumer_ids):
-        d.add(elm.Dot().at((cx, y - 0.2)))
-        d.add(
-            elm.Resistor()
-            .at((cx, y - 0.2))
-            .down()
-            .label(cid, loc="bottom", fontsize=6, color="navy")
-        )
-        d.add(elm.Ground().at((cx, y - 1.2)))
-
-
 def validate_network_plot(net: pypsa.Network, plant_data: dict, fig: plt.Figure, save_path: Optional[Union[str, Path]] = None):
     """
     Validates structural topology coverage (buses, branches, consumer units) and graphical non-emptiness.
@@ -372,8 +424,8 @@ def plot_opendss_circuit(
 ):
     """
     Initializes OpenDSS plant session, reads solved operating state voltages,
-    builds PyPSA Network representation, and renders single-line diagram with NetworkX layout.
-    Labels consumer units using registry metadata and stable consumer unit IDs.
+    builds PyPSA Network representation, and renders an orthogonal single-line diagram.
+    Uses horizontal busbars, right-angle connections, Schemdraw symbols, and signal grounding.
     """
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=use_baseline_transformers, seed=42)
@@ -387,24 +439,24 @@ def plot_opendss_circuit(
     # 2. Build PyPSA Network instance directly from active OpenDSS session and plant_data
     net = build_pypsa_network_from_opendss(dss, plant_data)
 
-    positions = topology_positions(net)
+    positions = topology_positions(net, root="sourcebus")
 
     fig, ax = plt.subplots(figsize=(18, 12))
-
     d = schemdraw.Drawing(canvas=ax)
 
-    # 3. Source at sourcebus
+    # 3. Source & Root Busbar at sourcebus
     if "sourcebus" in positions:
         sx, sy = positions["sourcebus"]
         d.add(elm.SourceSin().at((sx, sy)).up().label("33 kV Grid Feed-in", loc="top", fontsize=8))
+        draw_busbar(ax, [sx - 0.8, sx + 0.8], sy, padding=0.3, linewidth=3.0)
 
-    # 4. Draw Feeder Lines
+    # 4. Draw Feeder Lines with Right-Angle Orthogonal Routing
     for line_idx, row in net.lines.iterrows():
         b0, b1 = row.bus0, row.bus1
         if b0 in positions and b1 in positions:
-            x0, y0 = positions[b0]
-            x1, y1 = positions[b1]
-            ax.plot([x0, x1], [y0, y1], color="#333333", linewidth=1.4, zorder=2)
+            p0 = positions[b0]
+            p1 = positions[b1]
+            draw_orthogonal_edge(ax, p0, p1, color="#333333", linewidth=1.4)
 
     # 5. Draw Transformers using Schemdraw
     for tx_idx, row in net.transformers.iterrows():
@@ -420,10 +472,9 @@ def plot_opendss_circuit(
                 .label(f"Trxr {tx_idx}", loc="top", fontsize=7)
             )
 
-    # 6. Draw Buses & Voltage Annotations
+    # 6. Draw Bus Annotations (No scattered navy dots)
     for b_name, (x, y) in positions.items():
         v_pu = voltage_pu.get(b_name, 1.0)
-        ax.scatter([x], [y], color="navy", s=35, zorder=6)
         ax.text(
             x + 0.15, y + 0.1,
             f"{b_name} ({v_pu:.3f} p.u.)",
@@ -433,25 +484,38 @@ def plot_opendss_circuit(
             zorder=8
         )
 
-    # 7. Draw Consumer Unit Busbars and Connection Branches using Schemdraw
+    # 7. Group Consumer Units by Feeder Section / Shared Bus and Render Busbars + Drop Branches
     if "registry" not in plant_data:
         err_msg = "Missing required 'registry' in plant_data"
         print(f"ERROR: {err_msg}")
         raise KeyError(err_msg)
 
     registry = plant_data["registry"]
-    consumers_by_bus = {}
+    consumers_by_group = {}
     for unit in registry.get_all_consumers():
         b_name = normalise_bus_name(unit.bus_id)
         if b_name not in positions:
             raise KeyError(
                 f"Consumer unit '{unit.consumer_id}' at bus '{b_name}' is not represented in the PyPSA network."
             )
-        consumers_by_bus.setdefault(b_name, []).append(unit.consumer_id)
+        group_key = (unit.feeder_id, b_name)
+        consumers_by_group.setdefault(group_key, []).append((b_name, unit.consumer_id))
 
-    for b_name, unit_ids in consumers_by_bus.items():
+    for (fid, b_name), consumer_entries in consumers_by_group.items():
         x, y = positions[b_name]
-        draw_consumer_busbar(d, ax, x, y, unit_ids)
+        c_ids = [c_id for _, c_id in consumer_entries]
+        count = len(c_ids)
+
+        max_id_len = max(len(cid) for cid in c_ids) if c_ids else 10
+        pitch = max(0.8, max_id_len * 0.04)
+        branch_x_list = [x + (i - (count - 1) / 2.0) * pitch for i in range(count)]
+
+        # Continuous shared busbar across consumer group
+        draw_busbar(ax, branch_x_list, y - 0.2, padding=0.25, linewidth=2.6)
+
+        # Draw individual perpendicular connection drops for each consumer
+        for cx, cid in zip(branch_x_list, c_ids):
+            draw_consumer_branch(d, ax, cx, y, cid)
 
     d.draw()
 
