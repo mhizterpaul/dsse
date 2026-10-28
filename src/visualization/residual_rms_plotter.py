@@ -169,21 +169,6 @@ def compute_residual_rms_vs_coevents(
     }
 
 
-def compute_residual_rms_ratio_vs_coevents(
-    max_coevents: int = 25,
-    seed: int = 42
-) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-    """
-    Computes Current Residual RMS / Co-Event RMS ratios across Fundamental, Harmonics, and Slow-Varying channels.
-    """
-    data = compute_residual_rms_vs_coevents(max_coevents=max_coevents, seed=seed)
-    return (
-        data["k_values"],
-        data["i_ratios_channels"],
-        data["co_i_rms_channels"]
-    )
-
-
 def plot_residual_rms_vs_coevents(
     max_coevents: int = 25,
     save_path: str = "src/visualization/residual_rms_vs_coevents.png"
@@ -282,7 +267,9 @@ def plot_residual_rms_ratio_vs_coevents(
     averaged across the three component channels (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
     Fits quadratic polynomial, displays derived ratio function, and saves the figure.
     """
-    k_vals, i_ratios_dict, _ = compute_residual_rms_ratio_vs_coevents(max_coevents=max_coevents)
+    data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
+    k_vals = data["k_values"]
+    i_ratios_dict = data["i_ratios_channels"]
 
     # Compute mean ratio across the 3 component channels for each K
     ratio_fund = i_ratios_dict["fundamental"]
