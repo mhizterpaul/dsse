@@ -125,8 +125,9 @@ def assign_bus_coordinates_from_plant(dss_instance, plant_data: Dict[str, Any]) 
 
 def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.Network:
     """
-    Constructs a PyPSA Network instance populated directly from active OpenDSS circuit elements
-    and plant_data topology parameters.
+    Constructs a PyPSA Network instance populated dynamically from active OpenDSS circuit elements
+    and plant_data topology parameters without hardcoded fallback assumptions.
+    Raises KeyError or ValueError if required network elements or properties are missing.
     """
     bus_coords = assign_bus_coordinates_from_plant(dss, plant_data)
 
@@ -135,47 +136,99 @@ def build_pypsa_network_from_opendss(dss, plant_data: Dict[str, Any]) -> pypsa.N
     def clean_bus_name(raw_bus: str) -> str:
         return raw_bus.split(".")[0].strip().lower()
 
-    # 1. Add Buses
+    # 1. Add Buses with nominal voltages queried directly from OpenDSS bus voltage bases
     for bus_name in dss.Circuit.AllBusNames():
         b_clean = bus_name.lower()
         if b_clean in bus_coords:
             bx, by = bus_coords[b_clean]
-            v_nom = 0.415
-            if "sourcebus" in b_clean:
-                v_nom = 33.0
-            elif "main" in b_clean or "head" in b_clean:
-                v_nom = 11.0
+
+            dss.Circuit.SetActiveBus(bus_name)
+            kv_base = float(dss.Bus.kVBase())
+            if kv_base <= 0:
+                err_msg = f"Invalid base voltage evaluated for bus '{bus_name}': {kv_base} kV"
+                print(f"ERROR: {err_msg}")
+                raise ValueError(err_msg)
+
+            v_nom = kv_base * (3.0 ** 0.5)
             net.add("Bus", b_clean, x=bx, y=by, v_nom=v_nom)
 
-    # 2. Add Generator
-    if "generator_info" in plant_data and "generator_kw" in plant_data["generator_info"]:
-        gen_kw = plant_data["generator_info"]["generator_kw"]
-        if "sourcebus" in net.buses.index:
-            net.add("Generator", "gen_33kv", bus="sourcebus", p_nom=gen_kw/1000.0)
+    # 2. Add Generator with capacity retrieved directly from plant_data
+    if "generator_info" not in plant_data or "generator_kw" not in plant_data["generator_info"]:
+        err_msg = "Missing required 'generator_info.generator_kw' in plant_data"
+        print(f"ERROR: {err_msg}")
+        raise KeyError(err_msg)
 
-    # 3. Add Lines
+    gen_kw = float(plant_data["generator_info"]["generator_kw"])
+    if gen_kw <= 0:
+        err_msg = f"Invalid generator capacity in plant_data: {gen_kw} kW"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg)
+
+    if "sourcebus" not in net.buses.index:
+        err_msg = "Substation 'sourcebus' missing from PyPSA network buses"
+        print(f"ERROR: {err_msg}")
+        raise KeyError(err_msg)
+
+    net.add("Generator", "gen_33kv", bus="sourcebus", p_nom=gen_kw/1000.0)
+
+    # 3. Add Lines with physical properties queried directly from OpenDSS active elements
     for line_name in dss.Lines.AllNames():
-        dss.Lines.Name(line_name)
-        b1 = clean_bus_name(dss.Lines.Bus1())
-        b2 = clean_bus_name(dss.Lines.Bus2())
-        if b1 in net.buses.index and b2 in net.buses.index:
-            length = float(dss.Lines.Length()) if hasattr(dss.Lines, "Length") else 1.0
-            net.add("Line", line_name, bus0=b1, bus1=b2, length=length, x=0.1, r=0.01)
+        if not dss.Circuit.SetActiveElement(f"Line.{line_name}"):
+            continue
 
-    # 4. Add Transformers
-    for tx_name in dss.Transformers.AllNames():
-        dss.Transformers.Name(tx_name)
         buses = [clean_bus_name(b) for b in dss.CktElement.BusNames()]
-        if len(buses) >= 2 and buses[0] in net.buses.index and buses[1] in net.buses.index:
-            net.add("Transformer", tx_name, bus0=buses[0], bus1=buses[1], s_nom=25.0)
+        if len(buses) < 2 or buses[0] not in net.buses.index or buses[1] not in net.buses.index:
+            continue
 
-    # 5. Add Consumer Loads
+        b1, b2 = buses[0], buses[1]
+
+        length = float(dss.Properties.Value("length"))
+        r1 = float(dss.Properties.Value("r1"))
+        x1 = float(dss.Properties.Value("x1"))
+
+        r_ohm = r1 * length
+        x_ohm = x1 * length
+
+        if length <= 0 or r_ohm <= 0:
+            err_msg = f"Invalid line parameters for '{line_name}': length={length}, r={r_ohm}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        net.add("Line", line_name, bus0=b1, bus1=b2, length=length, r=r_ohm, x=x_ohm)
+
+    # 4. Add Transformers with MVA ratings queried directly from OpenDSS properties
+    for tx_name in dss.Transformers.AllNames():
+        if not dss.Circuit.SetActiveElement(f"Transformer.{tx_name}"):
+            continue
+
+        buses = [clean_bus_name(b) for b in dss.CktElement.BusNames()]
+        if len(buses) < 2 or buses[0] not in net.buses.index or buses[1] not in net.buses.index:
+            continue
+
+        mva_val = float(dss.Properties.Value("kVA")) / 1000.0
+        if mva_val <= 0:
+            err_msg = f"Invalid transformer capacity rating for '{tx_name}': {mva_val} MVA"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        net.add("Transformer", tx_name, bus0=buses[0], bus1=buses[1], s_nom=mva_val)
+
+    # 5. Add Consumer Loads with kW power demands queried directly from OpenDSS active loads
     for load_name in dss.Loads.AllNames():
-        dss.Loads.Name(load_name)
+        if not dss.Circuit.SetActiveElement(f"Load.{load_name}"):
+            continue
+
         b_load = clean_bus_name(dss.CktElement.BusNames()[0])
-        kw = float(dss.Loads.kW()) if hasattr(dss.Loads, "kW") else 10.0
-        if b_load in net.buses.index:
-            net.add("Load", load_name, bus=b_load, p_set=kw/1000.0)
+        if b_load not in net.buses.index:
+            continue
+
+        kw = float(dss.Properties.Value("kW"))
+        if kw < 0:
+            err_msg = f"Invalid negative power demand for load '{load_name}': {kw} kW"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        net.add("Load", load_name, bus=b_load, p_set=kw/1000.0)
 
     return net
 
