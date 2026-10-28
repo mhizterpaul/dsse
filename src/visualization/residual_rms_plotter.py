@@ -207,55 +207,16 @@ def plot_residual_rms_vs_coevents(
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
 
-    # Fit sinusoidal model for voltage residual RMS magnitude: E_{rms, V}(K) = A * sin(omega * K + phi) + C
-    from scipy.optimize import curve_fit
+    # Fit line of best fit for voltage residual RMS magnitude: E_{rms, V}(K) = a * K + b
+    p_v = np.polyfit(k_vals, v_res_rms, 1)
+    av, bv = float(p_v[0]), float(p_v[1])
+    fit_v = np.polyval(p_v, k_vals)
+    ss_res_v = float(np.sum((v_res_rms - fit_v) ** 2))
+    ss_tot_v = float(np.sum((v_res_rms - np.mean(v_res_rms)) ** 2))
+    r2_v = 1.0 - (ss_res_v / ss_tot_v) if ss_tot_v > 0 else 1.0
 
-    def sine_func(K, A, omega, phi, C):
-        return A * np.sin(omega * K + phi) + C
-
-    best_r2_v = -1e9
-    best_popt_v = None
-
-    A0 = (np.max(v_res_rms) - np.min(v_res_rms)) / 2.0
-    C0 = float(np.mean(v_res_rms))
-
-    for omega0 in np.linspace(0.1, 3.0, 40):
-        for phi0 in np.linspace(-np.pi, np.pi, 16):
-            try:
-                popt, _ = curve_fit(
-                    sine_func, k_vals, v_res_rms, p0=[A0, omega0, phi0, C0], maxfev=2000
-                )
-                fit_val = sine_func(k_vals, *popt)
-                ss_res_val = float(np.sum((v_res_rms - fit_val) ** 2))
-                ss_tot_val = float(np.sum((v_res_rms - np.mean(v_res_rms)) ** 2))
-                r2_val = 1.0 - (ss_res_val / ss_tot_val) if ss_tot_val > 0 else 1.0
-                if r2_val > best_r2_v:
-                    best_r2_v = r2_val
-                    best_popt_v = popt
-            except Exception:
-                pass
-
-    if best_popt_v is None:
-        popt, _ = curve_fit(
-            sine_func, k_vals, v_res_rms, p0=[A0, 0.5, 0.0, C0], maxfev=10000
-        )
-        best_popt_v = popt
-        fit_val = sine_func(k_vals, *best_popt_v)
-        ss_res_val = float(np.sum((v_res_rms - fit_val) ** 2))
-        ss_tot_val = float(np.sum((v_res_rms - np.mean(v_res_rms)) ** 2))
-        best_r2_v = 1.0 - (ss_res_val / ss_tot_val) if ss_tot_val > 0 else 1.0
-
-    av, omegav, phiv, cv = (
-        float(best_popt_v[0]),
-        float(best_popt_v[1]),
-        float(best_popt_v[2]),
-        float(best_popt_v[3]),
-    )
-    r2_v = best_r2_v
-
-    phiv_sign = "+" if phiv >= 0 else "-"
-    cv_sign = "+" if cv >= 0 else "-"
-    func_str_v = f"E_{{rms, V}}(K) = {abs(av):.4f} \\cdot \\sin({abs(omegav):.4f} K {phiv_sign} {abs(phiv):.4f}) {cv_sign} {abs(cv):.4f}"
+    bv_sign = "+" if bv >= 0 else "-"
+    func_str_v = f"E_{{rms, V}}(K) = {abs(av):.6f}·K {bv_sign} {abs(bv):.6f}"
 
     if i_res_rms is None or len(i_res_rms) == 0 or not np.all(np.isfinite(i_res_rms)):
         err_msg = f"Cannot fit curve: Current residual RMS values are missing or invalid: {i_res_rms}"
@@ -282,7 +243,7 @@ def plot_residual_rms_vs_coevents(
     k_dense = np.linspace(2.0, max_coevents, 200)
 
     ax1.scatter(k_vals, v_res_rms, color="crimson", s=45, zorder=5, label="Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$)")
-    fit_v_dense = sine_func(k_dense, av, omegav, phiv, cv)
+    fit_v_dense = np.polyval(p_v, k_dense)
     ax1.plot(k_dense, fit_v_dense, "--", color="navy", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_v}$ ($R^2={r2_v:.4f}$)")
     ax1.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
     ax1.set_ylabel("Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$) [V]", fontsize=11, fontweight="bold")
@@ -307,7 +268,7 @@ def plot_residual_rms_vs_coevents(
         fig.savefig(save_p, bbox_inches="tight", dpi=300)
 
     funcs_dict = {"voltage_function": func_str_v, "current_function": func_str_i}
-    params_dict = {"voltage_params": (av, omegav, phiv, cv), "current_params": (ai, bi, ci)}
+    params_dict = {"voltage_params": (av, bv), "current_params": (ai, bi, ci)}
 
     return fig, funcs_dict, params_dict
 
