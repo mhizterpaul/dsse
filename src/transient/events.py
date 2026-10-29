@@ -25,53 +25,24 @@ class SingleEquipmentSwitchEvent:
         from src.loads import get_equipment_model
 
         eq_model = get_equipment_model(self.equipment_type)
-        r_val = None
-        for key in [
-            "r_stator",
-            "r_armature",
-            "r_coil",
-            "r_internal",
-            "r_magnetron",
-            "r_speaker",
-        ]:
-            if key in eq_model.atp_params:
-                r_val = float(eq_model.atp_params[key])
-                break
+        p_kw = float(eq_model.rated_power_kw)
+        v_v = float(eq_model.rated_voltage_v)
+        pf = float(eq_model.power_factor)
 
-        if r_val is None:
+        if p_kw <= 0 or v_v <= 0 or pf <= 0 or pf > 1.0:
             raise ValueError(
-                f"Equipment model '{self.equipment_type}' missing required R in atp_params"
+                f"Invalid rating parameters for '{self.equipment_type}': P={p_kw}, V={v_v}, pf={pf}"
             )
 
-        l_mH_val = 0.0
-        for key in ["l_armature", "l_coil", "l_ac_filter", "l_filter"]:
-            if key in eq_model.atp_params:
-                l_mH_val = float(eq_model.atp_params[key]) * 1000.0
-                break
-
-        if l_mH_val == 0.0:
-            for key in ["x_stator", "x_rotor"]:
-                if key in eq_model.atp_params:
-                    x_val = float(eq_model.atp_params[key])
-                    l_mH_val = (x_val / (2.0 * np.pi * frequency_hz)) * 1000.0
-                    break
-
-        c_uF_val = 0.0
-        for key in [
-            "c_doubler",
-            "c_resonant",
-            "c_dc_link",
-            "c_supply_bank",
-            "c_filter",
-        ]:
-            if key in eq_model.atp_params:
-                c_uF_val = float(eq_model.atp_params[key]) * 1e6
-                break
+        z_mag = (v_v ** 2) / ((p_kw * 1000.0) / pf)
+        r_val = z_mag * pf
+        x_val = z_mag * np.sqrt(max(0.0, 1.0 - pf ** 2))
+        l_mH_val = (x_val / (2.0 * np.pi * frequency_hz)) * 1000.0
 
         model_dict = {
             "R": r_val,
             "L_mH": l_mH_val,
-            "C_uF": c_uF_val,
+            "C_uF": 0.0,
             "equipment_type": self.equipment_type,
         }
 

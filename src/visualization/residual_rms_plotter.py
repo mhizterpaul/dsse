@@ -129,7 +129,7 @@ def compute_residual_rms_vs_coevents(
                 equipment_type=eq_type,
                 start_time_s=0.02,
                 duration_s=0.10,
-                target=f"trans1_{idx}",
+                target=f"trans1_eq_{idx}",
                 parameters={},
             )
             for idx, eq_type in enumerate(selected_eqs)
