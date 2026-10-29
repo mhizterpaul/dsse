@@ -54,7 +54,9 @@ def compute_residual_rms_vs_coevents(
     co_v_rms_overall = []
     co_i_rms_overall = []
 
+    res_v_rms_channels = {ch: [] for ch in channels}
     res_i_rms_channels = {ch: [] for ch in channels}
+    co_v_rms_channels = {ch: [] for ch in channels}
     co_i_rms_channels = {ch: [] for ch in channels}
     i_ratios_channels = {ch: [] for ch in channels}
 
@@ -118,6 +120,8 @@ def compute_residual_rms_vs_coevents(
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
 
+        decomp_v_joint = decompose_load_waveform(t_sim, v_joint, fs=fs)
+        decomp_v_res = decompose_load_waveform(t_sim, v_res, fs=fs)
         decomp_i_joint = decompose_load_waveform(t_sim, i_joint, fs=fs)
         decomp_i_res = decompose_load_waveform(t_sim, i_res, fs=fs)
 
@@ -128,11 +132,16 @@ def compute_residual_rms_vs_coevents(
         }
 
         for ch_name, decomp_key in channel_keys.items():
-            if decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res:
+            if (
+                decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res or
+                decomp_key not in decomp_v_joint or decomp_key not in decomp_v_res
+            ):
                 err_msg = f"Missing component key '{decomp_key}' in decomposition results"
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
+            v_co_ch = float(np.sqrt(np.mean(decomp_v_joint[decomp_key] ** 2)))
+            v_res_ch = float(np.sqrt(np.mean(decomp_v_res[decomp_key] ** 2)))
             i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
             i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
 
@@ -141,8 +150,10 @@ def compute_residual_rms_vs_coevents(
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            ratio_ch = i_res_ch / (i_co_ch * K + 1e-9)
+            ratio_ch = i_res_ch / (i_co_ch + 1e-9)
 
+            res_v_rms_channels[ch_name].append(v_res_ch)
+            co_v_rms_channels[ch_name].append(v_co_ch)
             res_i_rms_channels[ch_name].append(i_res_ch)
             co_i_rms_channels[ch_name].append(i_co_ch)
             i_ratios_channels[ch_name].append(ratio_ch)
@@ -163,6 +174,8 @@ def compute_residual_rms_vs_coevents(
         "i_res_rms_overall": np.array(res_i_rms_overall),
         "co_v_rms_overall": np.array(co_v_rms_overall),
         "co_i_rms_overall": np.array(co_i_rms_overall),
+        "res_v_rms_channels": {k: np.array(v) for k, v in res_v_rms_channels.items()},
+        "co_v_rms_channels": {k: np.array(v) for k, v in co_v_rms_channels.items()},
         "res_i_rms_channels": {k: np.array(v) for k, v in res_i_rms_channels.items()},
         "co_i_rms_channels": {k: np.array(v) for k, v in co_i_rms_channels.items()},
         "i_ratios_channels": {k: np.array(v) for k, v in i_ratios_channels.items()},
@@ -174,13 +187,13 @@ def plot_residual_rms_vs_coevents(
     save_path: str = "src/visualization/residual_rms_vs_coevents.png"
 ) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
     """
-    Plots voltage and current residual RMS magnitude as simultaneous events increase up to 25.
-    Fits quadratic models, displays derived equations, and saves the figure.
+    Plots fundamental channel voltage and current residual RMS magnitude as simultaneous events increase up to 25.
+    Fits polynomial models, displays derived equations, and saves the figure.
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
     k_vals = data["k_values"]
-    v_res_rms = data["v_res_rms_overall"]
-    i_res_rms = data["i_res_rms_overall"]
+    v_res_rms = data["res_v_rms_channels"]["fundamental"]
+    i_res_rms = data["res_i_rms_channels"]["fundamental"]
 
     if v_res_rms is None or len(v_res_rms) == 0 or not np.all(np.isfinite(v_res_rms)):
         err_msg = f"Cannot fit curve: Voltage residual RMS values are missing or invalid: {v_res_rms}"
@@ -227,21 +240,21 @@ def plot_residual_rms_vs_coevents(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     k_dense = np.linspace(2.0, max_coevents, 200)
 
-    ax1.scatter(k_vals, v_res_rms, color="crimson", s=45, zorder=5, label="Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$)")
+    ax1.scatter(k_vals, v_res_rms, color="crimson", s=45, zorder=5, label="Fundamental Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V, fund}}$)")
     fit_v_dense = np.polyval(p_v, k_dense)
     ax1.plot(k_dense, fit_v_dense, "--", color="navy", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_v}$ ($R^2={r2_v:.4f}$)")
     ax1.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
-    ax1.set_ylabel("Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V}}$) [V]", fontsize=11, fontweight="bold")
-    ax1.set_title(f"Voltage Residual RMS Magnitude vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
+    ax1.set_ylabel("Fundamental Voltage Residual RMS Magnitude ($E_{\\mathrm{rms, V, fund}}$) [V]", fontsize=11, fontweight="bold")
+    ax1.set_title(f"Fundamental Voltage Residual RMS Magnitude vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
     ax1.grid(True, alpha=0.2, linestyle=":")
     ax1.legend(loc="lower right", frameon=True, fontsize=9)
 
-    ax2.scatter(k_vals, i_res_rms, color="darkgreen", s=45, zorder=5, label="Current Residual RMS Magnitude ($E_{\\mathrm{rms, I}}$)")
+    ax2.scatter(k_vals, i_res_rms, color="darkgreen", s=45, zorder=5, label="Fundamental Current Residual RMS Magnitude ($E_{\\mathrm{rms, I, fund}}$)")
     fit_i_dense = np.polyval(p_i, k_dense)
     ax2.plot(k_dense, fit_i_dense, "--", color="darkred", linewidth=2.0, zorder=4, label=f"Fit: ${func_str_i}$ ($R^2={r2_i:.4f}$)")
     ax2.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
-    ax2.set_ylabel("Current Residual RMS Magnitude ($E_{\\mathrm{rms, I}}$) [A]", fontsize=11, fontweight="bold")
-    ax2.set_title(f"Current Residual RMS Magnitude vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Fundamental Current Residual RMS Magnitude ($E_{\\mathrm{rms, I, fund}}$) [A]", fontsize=11, fontweight="bold")
+    ax2.set_title(f"Fundamental Current Residual RMS Magnitude vs. Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
     ax2.grid(True, alpha=0.2, linestyle=":")
     ax2.legend(loc="lower right", frameon=True, fontsize=9)
 
