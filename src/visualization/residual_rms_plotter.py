@@ -62,7 +62,7 @@ def compute_residual_rms_vs_coevents(
 
     tx_unit_id = "trans1_lv_boundary"
 
-    # Pre-evaluate single equipment switching responses for all load models
+    # Pre-evaluate single equipment switching responses for all load models and decompose per channel
     single_responses = {}
     for eq_type in equipment_types:
         ev = SingleEquipmentSwitchEvent(
@@ -76,7 +76,12 @@ def compute_residual_rms_vs_coevents(
             t_s, v_dict, i_dict, _ = runner.measure_transients(
                 op=op, event=ev, scenario_id=f"single_{eq_type}", feeder_idx=1, use_baseline_feeder=True
             )
-            single_responses[eq_type] = (t_s, v_dict[tx_unit_id], i_dict[tx_unit_id])
+            v_sig = v_dict[tx_unit_id]
+            i_sig = i_dict[tx_unit_id]
+            fs = 1.0 / (t_s[1] - t_s[0])
+            decomp_v = decompose_load_waveform(t_s, v_sig, fs=fs)
+            decomp_i = decompose_load_waveform(t_s, i_sig, fs=fs)
+            single_responses[eq_type] = (t_s, v_sig, i_sig, decomp_v, decomp_i)
         except Exception as e:
             err_msg = f"Failed to measure transient response for equipment '{eq_type}': {e}"
             print(f"ERROR: {err_msg}")
@@ -97,11 +102,27 @@ def compute_residual_rms_vs_coevents(
         op = solve_operating_point(runner.dss)
         selected_eqs = [equipment_types[i % len(equipment_types)] for i in range(K_int)]
 
-        t_sim, v_eq1, i_eq1 = single_responses[selected_eqs[0]]
+        t_sim = single_responses[selected_eqs[0]][0]
         fs = 1.0 / (t_sim[1] - t_sim[0])
 
         i_composed = sum(single_responses[eq][2] for eq in selected_eqs)
         v_composed = sum(single_responses[eq][1] for eq in selected_eqs) / K
+
+        channel_keys = {
+            "fundamental": "x_fundamental",
+            "harmonics": "x_harmonics",
+            "slow_varying": "x_ssd"
+        }
+
+        # Sum channel responses over the set of events
+        i_composed_channels = {
+            ch: sum(single_responses[eq][4][key] for eq in selected_eqs)
+            for ch, key in channel_keys.items()
+        }
+        v_composed_channels = {
+            ch: sum(single_responses[eq][3][key] for eq in selected_eqs) / K
+            for ch, key in channel_keys.items()
+        }
 
         # Construct multi-equipment co-event with ALL K equipment switched simultaneously
         single_events = [
@@ -121,29 +142,7 @@ def compute_residual_rms_vs_coevents(
         i_res = i_joint - i_composed
 
         decomp_v_joint = decompose_load_waveform(t_sim, v_joint, fs=fs)
-        decomp_v_res = decompose_load_waveform(t_sim, v_res, fs=fs)
         decomp_i_joint = decompose_load_waveform(t_sim, i_joint, fs=fs)
-        decomp_i_res = decompose_load_waveform(t_sim, i_res, fs=fs)
-
-        channel_keys = {
-            "fundamental": "x_fundamental",
-            "harmonics": "x_harmonics",
-            "slow_varying": "x_ssd"
-        }
-
-        for ch_name, decomp_key in channel_keys.items():
-            if (
-                decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res or
-                decomp_key not in decomp_v_joint or decomp_key not in decomp_v_res
-            ):
-                err_msg = f"Missing component key '{decomp_key}' in decomposition results"
-                print(f"ERROR: {err_msg}")
-                raise ValueError(err_msg)
-
-            v_co_ch = float(np.sqrt(np.mean(decomp_v_joint[decomp_key] ** 2)))
-            v_res_ch = float(np.sqrt(np.mean(decomp_v_res[decomp_key] ** 2)))
-            i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
-            i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
 
         v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
         i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
@@ -156,21 +155,30 @@ def compute_residual_rms_vs_coevents(
             raise ValueError(err_msg)
 
         for ch_name, decomp_key in channel_keys.items():
-            if (
-                decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res or
-                decomp_key not in decomp_v_joint or decomp_key not in decomp_v_res
-            ):
+            if decomp_key not in decomp_i_joint or decomp_key not in decomp_v_joint:
                 err_msg = f"Missing component key '{decomp_key}' in decomposition results"
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            v_co_ch = float(np.sqrt(np.mean(decomp_v_joint[decomp_key] ** 2)))
-            v_res_ch = float(np.sqrt(np.mean(decomp_v_res[decomp_key] ** 2)))
-            i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
-            i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
+            v_joint_ch = decomp_v_joint[decomp_key]
+            i_joint_ch = decomp_i_joint[decomp_key]
+
+            v_composed_ch = v_composed_channels[ch_name]
+            i_composed_ch = i_composed_channels[ch_name]
+
+            # Residual waveform per channel: joint response minus each channel response summed over the set of events
+            v_res_ch_wave = v_joint_ch - v_composed_ch
+            i_res_ch_wave = i_joint_ch - i_composed_ch
+
+            v_co_ch = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+            v_res_ch = float(np.sqrt(np.mean(v_res_ch_wave ** 2)))
+            i_co_ch = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+            i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
             # Channel residual RMS / Co-Event total current RMS ratio (i_res_ch / i_joint)
             ratio_ch = i_res_ch / (i_co_rms + 1e-9)
+            if ratio_ch >= 1.0:
+                print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
 
             res_v_rms_channels[ch_name].append(v_res_ch)
             co_v_rms_channels[ch_name].append(v_co_ch)
@@ -293,65 +301,61 @@ def plot_residual_rms_ratio_vs_coevents(
     """
     Plots a single plot representing the mean Current Residual RMS / Co-Event RMS Magnitude ratio
     averaged across the three component channels (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
-    Fits quadratic polynomial, displays derived ratio function, and saves the figure.
+    Undoes min-max normalization and filters out ratio values > 1.0. Fits quadratic polynomial and saves figure.
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
     k_vals = data["k_values"]
     i_ratios_dict = data["i_ratios_channels"]
 
-    # Compute mean ratio across the 3 component channels for each K
+    # Compute raw mean ratio across the 3 component channels for each K without min-max normalization
     ratio_fund = i_ratios_dict["fundamental"]
     ratio_harm = i_ratios_dict["harmonics"]
     ratio_slow = i_ratios_dict["slow_varying"]
 
     raw_mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
 
-    # Normalize response values to [0, 1] range before fitting and plotting
-    min_r = np.min(raw_mean_ratios)
-    max_r = np.max(raw_mean_ratios)
-    if max_r > min_r:
-        mean_ratios = (raw_mean_ratios - min_r) / (max_r - min_r)
-    else:
-        mean_ratios = raw_mean_ratios
+    # Log warning using print when ratio is greater than or equal to 1
+    for k_val, r_val in zip(k_vals, raw_mean_ratios):
+        if r_val >= 1.0:
+            print(f"WARNING: Mean current residual RMS ratio {r_val:.4f} at K={int(k_val)} is greater than or equal to 1.0.")
 
-    if mean_ratios is None or len(mean_ratios) == 0 or not np.all(np.isfinite(mean_ratios)):
-        err_msg = f"Cannot fit curve: Mean residual RMS ratio values are missing or invalid: {mean_ratios}"
-        print(f"ERROR: {err_msg}")
-        raise ValueError(err_msg)
+    # Undo filtering of values >= 1.0 (keep all finite values)
+    valid_mask = np.isfinite(raw_mean_ratios)
+    k_plot = k_vals[valid_mask]
+    ratios_plot = raw_mean_ratios[valid_mask]
 
-    if len(k_vals) != len(mean_ratios):
-        err_msg = f"Cannot fit curve: Mismatch between K values ({len(k_vals)}) and mean ratios ({len(mean_ratios)})"
+    if ratios_plot is None or len(ratios_plot) == 0:
+        err_msg = "Cannot fit curve: No valid finite residual RMS ratio values found."
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
-    p_fit = np.polyfit(k_vals, mean_ratios, 2)
+    p_fit = np.polyfit(k_plot, ratios_plot, 2)
     a_m, b_m, c_m = float(p_fit[0]), float(p_fit[1]), float(p_fit[2])
 
-    fit_vals = np.polyval(p_fit, k_vals)
-    ss_res = float(np.sum((mean_ratios - fit_vals) ** 2))
-    ss_tot = float(np.sum((mean_ratios - np.mean(mean_ratios)) ** 2))
+    fit_vals = np.polyval(p_fit, k_plot)
+    ss_res = float(np.sum((ratios_plot - fit_vals) ** 2))
+    ss_tot = float(np.sum((ratios_plot - np.mean(ratios_plot)) ** 2))
     r2_m = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
 
     b_sign = "+" if b_m >= 0 else "-"
     c_sign = "+" if c_m >= 0 else "-"
     func_str_mean = f"R_{{I, \\mathrm{{mean}}}}(K) = {abs(a_m):.6f}·K² {b_sign} {abs(b_m):.6f}·K {c_sign} {abs(c_m):.6f}"
 
-    k_dense = np.linspace(2.0, max_coevents, 200)
+    k_dense = np.linspace(float(np.min(k_plot)), float(np.max(k_plot)), 200)
     fit_dense = np.polyval(p_fit, k_dense)
 
-    ax.scatter(k_vals, mean_ratios, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)")
+    ax.scatter(k_plot, ratios_plot, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)")
     ax.plot(k_dense, fit_dense, "--", color="crimson", linewidth=2.2, zorder=4, label=f"Fit: ${func_str_mean}$ ($R^2={r2_m:.4f}$)")
 
     ax.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
     ax.set_ylabel("Mean Current Residual / Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
-    ax.set_title(f"Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
+    ax.set_title("Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{mean}}$)", fontsize=12, fontweight="bold")
 
-    text_info = f"Derived Normalized Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
+    text_info = f"Derived Raw Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
-    ax.set_ylim(-0.05, 1.05)
     ax.grid(True, alpha=0.25, linestyle=":")
     ax.legend(loc="lower right", frameon=True, fontsize=10)
 
