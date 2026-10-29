@@ -145,23 +145,38 @@ def compute_residual_rms_vs_coevents(
             i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
             i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
 
-            if i_co_ch <= 0:
-                err_msg = f"Non-positive co-event RMS magnitude for channel '{ch_name}' at K={K_int}: {i_co_ch}"
+        v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
+        i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
+        v_res_rms = float(np.sqrt(np.mean(v_res ** 2)))
+        i_res_rms = float(np.sqrt(np.mean(i_res ** 2)))
+
+        if i_res_rms <= 0:
+            err_msg = f"Non-positive overall residual RMS magnitude at K={K_int}: {i_res_rms}"
+            print(f"ERROR: {err_msg}")
+            raise ValueError(err_msg)
+
+        for ch_name, decomp_key in channel_keys.items():
+            if (
+                decomp_key not in decomp_i_joint or decomp_key not in decomp_i_res or
+                decomp_key not in decomp_v_joint or decomp_key not in decomp_v_res
+            ):
+                err_msg = f"Missing component key '{decomp_key}' in decomposition results"
                 print(f"ERROR: {err_msg}")
                 raise ValueError(err_msg)
 
-            ratio_ch = i_res_ch / (i_co_ch + 1e-9)
+            v_co_ch = float(np.sqrt(np.mean(decomp_v_joint[decomp_key] ** 2)))
+            v_res_ch = float(np.sqrt(np.mean(decomp_v_res[decomp_key] ** 2)))
+            i_co_ch = float(np.sqrt(np.mean(decomp_i_joint[decomp_key] ** 2)))
+            i_res_ch = float(np.sqrt(np.mean(decomp_i_res[decomp_key] ** 2)))
+
+            # Channel residual RMS / Overall total residual RMS ratio (guaranteed <= 1.0)
+            ratio_ch = i_res_ch / (i_res_rms + 1e-9)
 
             res_v_rms_channels[ch_name].append(v_res_ch)
             co_v_rms_channels[ch_name].append(v_co_ch)
             res_i_rms_channels[ch_name].append(i_res_ch)
             co_i_rms_channels[ch_name].append(i_co_ch)
             i_ratios_channels[ch_name].append(ratio_ch)
-
-        v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
-        i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
-        v_res_rms = float(np.sqrt(np.mean(v_res ** 2)))
-        i_res_rms = float(np.sqrt(np.mean(i_res ** 2)))
 
         res_v_rms_overall.append(v_res_rms)
         res_i_rms_overall.append(i_res_rms)
@@ -328,7 +343,7 @@ def plot_residual_rms_ratio_vs_coevents(
     text_info = f"Derived Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
-    ax.set_ylim(bottom=0.0)
+    ax.set_ylim(0.0, 1.0)
     ax.grid(True, alpha=0.25, linestyle=":")
     ax.legend(loc="lower right", frameon=True, fontsize=10)
 
