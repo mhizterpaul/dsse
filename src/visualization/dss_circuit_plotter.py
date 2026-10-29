@@ -483,12 +483,13 @@ def plot_opendss_circuit(
                 ax.plot([g_x, g_x], [y_mid, g_y], color="#333333", linewidth=1.2, zorder=4)
                 draw_ground_signal(d, g_x, g_y)
 
-    # 6. Draw Bus Annotations (No scattered navy dots)
+    # 6. Draw Bus Annotations (Display only half of the node/bus bar label)
     for b_name, (x, y) in positions.items():
         v_pu = voltage_pu.get(b_name, 1.0)
+        half_b_name = b_name[:max(1, math.ceil(len(b_name) / 2.0))]
         ax.text(
             x + 0.15, y + 0.1,
-            f"{b_name} ({v_pu:.3f} p.u.)",
+            f"{half_b_name} ({v_pu:.3f} p.u.)",
             fontsize=6.5,
             fontweight="bold",
             color="darkgreen" if 0.95 <= v_pu <= 1.05 else "darkred",
@@ -528,9 +529,10 @@ def plot_opendss_circuit(
         # For every bus bar with two nodes only print one branch label for any consecutive pair in the branch
         if count == 2:
             mid_x = (branch_x_list[0] + branch_x_list[1]) / 2.0
+            half_b_name = b_name[:max(1, math.ceil(len(b_name) / 2.0))]
             ax.text(
                 mid_x, busbar_y + 0.12,
-                f"Branch {b_name}",
+                f"Branch {half_b_name}",
                 fontsize=6.5,
                 ha="center",
                 va="bottom",
@@ -551,6 +553,13 @@ def plot_opendss_circuit(
             draw_consumer_branch(d, ax, cx, busbar_y, cid)
 
     d.draw()
+
+    # Add plot legend labeling resistor symbol as Consumer Unit Loads
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color="#333333", lw=1.5, marker="s", markersize=8, markerfacecolor="none", label="Consumer Unit Loads (Resistor)")
+    ]
+    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
 
     ax.set_title("OpenDSS Distribution Network — Orthogonal Schematic Single-Line Diagram", fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.15)
