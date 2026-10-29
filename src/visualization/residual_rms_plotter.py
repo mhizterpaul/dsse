@@ -304,7 +304,15 @@ def plot_residual_rms_ratio_vs_coevents(
     ratio_harm = i_ratios_dict["harmonics"]
     ratio_slow = i_ratios_dict["slow_varying"]
 
-    mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+    raw_mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+
+    # Normalize response values to [0, 1] range before fitting and plotting
+    min_r = np.min(raw_mean_ratios)
+    max_r = np.max(raw_mean_ratios)
+    if max_r > min_r:
+        mean_ratios = (raw_mean_ratios - min_r) / (max_r - min_r)
+    else:
+        mean_ratios = raw_mean_ratios
 
     if mean_ratios is None or len(mean_ratios) == 0 or not np.all(np.isfinite(mean_ratios)):
         err_msg = f"Cannot fit curve: Mean residual RMS ratio values are missing or invalid: {mean_ratios}"
@@ -340,10 +348,10 @@ def plot_residual_rms_ratio_vs_coevents(
     ax.set_ylabel("Mean Current Residual / Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
     ax.set_title(f"Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($K = 2 \\dots {max_coevents}$)", fontsize=12, fontweight="bold")
 
-    text_info = f"Derived Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
+    text_info = f"Derived Normalized Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
-    ax.set_ylim(bottom=0.0)
+    ax.set_ylim(-0.05, 1.05)
     ax.grid(True, alpha=0.25, linestyle=":")
     ax.legend(loc="lower right", frameon=True, fontsize=10)
 
