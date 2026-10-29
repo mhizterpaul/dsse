@@ -35,11 +35,10 @@ def compute_residual_rms_vs_coevents(
     runner = CoSimulationRunner()
     plant_data = runner.initialize_plant_session(use_baseline_feeder=True, seed=seed)
 
-    # Solve base network operating point from OpenDSS
-    op = plant_data["op"] if "op" in plant_data else None
-    if op is None:
-        from src.power_plant.plant import solve_operating_point
-        op = solve_operating_point(runner.dss)
+    # Disable steady-state loads upfront so single responses and joint responses share identical base operating point
+    runner.dss.run_command("disable Load.*")
+    from src.power_plant.plant import solve_operating_point
+    op = solve_operating_point(runner.dss)
 
     equipment_types = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
@@ -95,18 +94,12 @@ def compute_residual_rms_vs_coevents(
     # Evaluate for each K simultaneous co-events using CoSimulationRunner transients
     for K_int in range(2, max_coevents + 1):
         K = float(K_int)
-
-        # Clear steady-state loads in OpenDSS to prevent network overloading as K increases towards 25
-        runner.dss.run_command("disable Load.*")
-        from src.power_plant.plant import solve_operating_point
-        op = solve_operating_point(runner.dss)
         selected_eqs = [equipment_types[i % len(equipment_types)] for i in range(K_int)]
 
         t_sim = single_responses[selected_eqs[0]][0]
-        fs = 1.0 / (t_sim[1] - t_sim[0])
 
         i_composed = sum(single_responses[eq][2] for eq in selected_eqs)
-        v_composed = sum(single_responses[eq][1] for eq in selected_eqs) / K
+        v_composed = sum(single_responses[eq][1] for eq in selected_eqs)
 
         channel_keys = {
             "fundamental": "x_fundamental",
@@ -120,7 +113,7 @@ def compute_residual_rms_vs_coevents(
             for ch, key in channel_keys.items()
         }
         v_composed_channels = {
-            ch: sum(single_responses[eq][3][key] for eq in selected_eqs) / K
+            ch: sum(single_responses[eq][3][key] for eq in selected_eqs)
             for ch, key in channel_keys.items()
         }
 
@@ -135,14 +128,26 @@ def compute_residual_rms_vs_coevents(
             op=op, event=co_ev, scenario_id=f"coevent_K{K_int}", feeder_idx=1, use_baseline_feeder=True
         )
 
+        if len(t_s) != len(t_sim) or not np.allclose(t_s, t_sim, rtol=0.0, atol=1e-9):
+            raise ValueError(f"Time-vector mismatch for K={K_int}: len(t_s)={len(t_s)}, len(t_sim)={len(t_sim)}")
+
+        fs_joint = 1.0 / (t_s[1] - t_s[0])
+
         v_joint = v_dict[tx_unit_id]
         i_joint = i_dict[tx_unit_id]
 
         v_res = v_joint - v_composed
         i_res = i_joint - i_composed
 
-        decomp_v_joint = decompose_load_waveform(t_sim, v_joint, fs=fs)
-        decomp_i_joint = decompose_load_waveform(t_sim, i_joint, fs=fs)
+        print(
+            f"K={K_int}, "
+            f"joint_rms={np.sqrt(np.mean(i_joint**2)):.6f}, "
+            f"composed_rms={np.sqrt(np.mean(i_composed**2)):.6f}, "
+            f"residual_rms={np.sqrt(np.mean(i_res**2)):.6f}"
+        )
+
+        decomp_v_joint = decompose_load_waveform(t_s, v_joint, fs=fs_joint)
+        decomp_i_joint = decompose_load_waveform(t_s, i_joint, fs=fs_joint)
 
         v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
         i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
@@ -175,8 +180,17 @@ def compute_residual_rms_vs_coevents(
             i_co_ch = float(np.sqrt(np.mean(i_joint_ch ** 2)))
             i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
-            # Channel residual RMS / Co-Event total current RMS ratio (i_res_ch / i_joint)
-            ratio_ch = i_res_ch / (i_co_rms + 1e-9)
+            # Channel residual RMS / Joint channel RMS ratio (i_res_ch / i_co_ch)
+            ratio_ch = i_res_ch / (i_co_ch + 1e-9)
+
+            print(
+                f"K={K_int}, channel={ch_name}, "
+                f"joint_channel_rms={i_co_ch:.6f}, "
+                f"composed_channel_rms={np.sqrt(np.mean(i_composed_ch**2)):.6f}, "
+                f"residual_channel_rms={i_res_ch:.6f}, "
+                f"ratio={ratio_ch:.6f}"
+            )
+
             if ratio_ch >= 1.0:
                 print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
 
