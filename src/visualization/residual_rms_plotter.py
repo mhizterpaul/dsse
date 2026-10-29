@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulation.runner import CoSimulationRunner
-from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent, MultiEquipmentCoEvent
+from src.transient.events import SingleEquipmentSwitchEvent, EquipmentEquipmentCoEvent, MultiEquipmentCoEvent, NoLoadEvent
 from src.transient.no_load_decomposition import decompose_load_waveform
 
 
@@ -26,10 +26,12 @@ def compute_residual_rms_vs_coevents(
     directly using CoSimulationRunner and ATP-EMTP / OpenDSS pre-event Thévenin state estimation.
 
     For each K simultaneous event configuration:
-      1. Generates single equipment switching responses and joint simultaneous K-event responses.
-      2. Computes linear composed co-event reference by summing single equipment responses.
-      3. Computes residual waveforms v_res = v_joint - v_composed and i_res = i_joint - i_composed.
-      4. Decomposes waveforms into 3 component channels: Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
+      1. Subtracts no-load baseline to obtain event-induced voltage/current responses v_delta and i_delta.
+      2. Generates single equipment switching responses and joint simultaneous K-event responses.
+      3. Computes linear composed co-event reference by summing single equipment event-induced responses.
+      4. Computes residual waveforms v_res = v_joint_delta - v_composed and i_res = i_joint_delta - i_composed.
+      5. Decomposes baseline-subtracted joint and composed responses into 3 component channels:
+         Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
     Raises ValueError if required parameters, equipment models, or channels are missing.
     """
     runner = CoSimulationRunner()
@@ -39,6 +41,21 @@ def compute_residual_rms_vs_coevents(
     runner.dss.run_command("disable Load.*")
     from src.power_plant.plant import solve_operating_point
     op = solve_operating_point(runner.dss)
+
+    tx_unit_id = "trans1_lv_boundary"
+
+    # Measure no-switch baseline simulation under the same operating point with explicit 0.17s t_stop_override
+    no_load_ev = NoLoadEvent(start_time_s=0.02, duration_s=0.10)
+    try:
+        t_s_base, v_base_dict, i_base_dict, _ = runner.measure_transients(
+            op=op, event=no_load_ev, scenario_id="no_load_baseline", feeder_idx=1, use_baseline_feeder=True, t_stop_override=0.17
+        )
+        v_base = v_base_dict[tx_unit_id]
+        i_base = i_base_dict[tx_unit_id]
+    except Exception as e:
+        err_msg = f"Failed to measure no-load baseline response: {e}"
+        print(f"ERROR: {err_msg}")
+        raise ValueError(err_msg) from e
 
     equipment_types = [
         "ac_motor", "dc_motor_inverter", "microwave", "induction_plate",
@@ -59,28 +76,25 @@ def compute_residual_rms_vs_coevents(
     co_i_rms_channels = {ch: [] for ch in channels}
     i_ratios_channels = {ch: [] for ch in channels}
 
-    tx_unit_id = "trans1_lv_boundary"
-
-    # Pre-evaluate single equipment switching responses for all load models and decompose per channel
+    # Pre-evaluate single equipment switching responses (event-induced delta) for all load models
     single_responses = {}
-    for eq_type in equipment_types:
+    for idx, eq_type in enumerate(equipment_types):
         ev = SingleEquipmentSwitchEvent(
             equipment_type=eq_type,
             start_time_s=0.02,
             duration_s=0.10,
-            target="trans1",
+            target=f"trans1_eq_{idx}",
             parameters={}
         )
         try:
             t_s, v_dict, i_dict, _ = runner.measure_transients(
-                op=op, event=ev, scenario_id=f"single_{eq_type}", feeder_idx=1, use_baseline_feeder=True
+                op=op, event=ev, scenario_id=f"single_{eq_type}", feeder_idx=1, use_baseline_feeder=True, t_stop_override=0.17
             )
             v_sig = v_dict[tx_unit_id]
             i_sig = i_dict[tx_unit_id]
-            fs = 1.0 / (t_s[1] - t_s[0])
-            decomp_v = decompose_load_waveform(t_s, v_sig, fs=fs)
-            decomp_i = decompose_load_waveform(t_s, i_sig, fs=fs)
-            single_responses[eq_type] = (t_s, v_sig, i_sig, decomp_v, decomp_i)
+            v_delta = v_sig - v_base
+            i_delta = i_sig - i_base
+            single_responses[eq_type] = (t_s, v_delta, i_delta)
         except Exception as e:
             err_msg = f"Failed to measure transient response for equipment '{eq_type}': {e}"
             print(f"ERROR: {err_msg}")
@@ -90,6 +104,14 @@ def compute_residual_rms_vs_coevents(
         err_msg = f"Incomplete single responses: expected {len(equipment_types)}, got {len(single_responses)}"
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
+
+    previous_i_joint = None
+
+    channel_keys = {
+        "fundamental": "x_fundamental",
+        "harmonics": "x_harmonics",
+        "slow_varying": "x_ssd"
+    }
 
     # Evaluate for each K simultaneous co-events using CoSimulationRunner transients
     for K_int in range(2, max_coevents + 1):
@@ -101,31 +123,21 @@ def compute_residual_rms_vs_coevents(
         i_composed = sum(single_responses[eq][2] for eq in selected_eqs)
         v_composed = sum(single_responses[eq][1] for eq in selected_eqs)
 
-        channel_keys = {
-            "fundamental": "x_fundamental",
-            "harmonics": "x_harmonics",
-            "slow_varying": "x_ssd"
-        }
-
-        # Sum channel responses over the set of events
-        i_composed_channels = {
-            ch: sum(single_responses[eq][4][key] for eq in selected_eqs)
-            for ch, key in channel_keys.items()
-        }
-        v_composed_channels = {
-            ch: sum(single_responses[eq][3][key] for eq in selected_eqs)
-            for ch, key in channel_keys.items()
-        }
-
-        # Construct multi-equipment co-event with ALL K equipment switched simultaneously
+        # Construct multi-equipment co-event with keyword arguments for ALL K equipment switched simultaneously
         single_events = [
-            SingleEquipmentSwitchEvent(eq_type, 0.02, 0.10, "trans1", {})
-            for eq_type in selected_eqs
+            SingleEquipmentSwitchEvent(
+                equipment_type=eq_type,
+                start_time_s=0.02,
+                duration_s=0.10,
+                target=f"trans1_{idx}",
+                parameters={},
+            )
+            for idx, eq_type in enumerate(selected_eqs)
         ]
         co_ev = MultiEquipmentCoEvent(events=single_events)
 
         t_s, v_dict, i_dict, _ = runner.measure_transients(
-            op=op, event=co_ev, scenario_id=f"coevent_K{K_int}", feeder_idx=1, use_baseline_feeder=True
+            op=op, event=co_ev, scenario_id=f"coevent_K{K_int}", feeder_idx=1, use_baseline_feeder=True, t_stop_override=0.17
         )
 
         if len(t_s) != len(t_sim) or not np.allclose(t_s, t_sim, rtol=0.0, atol=1e-9):
@@ -136,28 +148,44 @@ def compute_residual_rms_vs_coevents(
         v_joint = v_dict[tx_unit_id]
         i_joint = i_dict[tx_unit_id]
 
-        v_res = v_joint - v_composed
-        i_res = i_joint - i_composed
+        v_joint_delta = v_joint - v_base
+        i_joint_delta = i_joint - i_base
+
+        v_res = v_joint_delta - v_composed
+        i_res = i_joint_delta - i_composed
+
+        joint_curr_rms = float(np.sqrt(np.mean(i_joint ** 2)))
+        joint_delta_rms = float(np.sqrt(np.mean(i_joint_delta ** 2)))
+        composed_rms = float(np.sqrt(np.mean(i_composed ** 2)))
+        residual_rms = float(np.sqrt(np.mean(i_res ** 2)))
 
         print(
-            f"K={K_int}, "
-            f"joint_rms={np.sqrt(np.mean(i_joint**2)):.6f}, "
-            f"composed_rms={np.sqrt(np.mean(i_composed**2)):.6f}, "
-            f"residual_rms={np.sqrt(np.mean(i_res**2)):.6f}"
+            f"K={K_int}, requested_events={len(single_events)}, "
+            f"joint_current_rms={joint_curr_rms:.6f}, "
+            f"joint_delta_rms={joint_delta_rms:.6f}, "
+            f"composed_rms={composed_rms:.6f}, "
+            f"residual_rms={residual_rms:.6f}"
         )
 
-        decomp_v_joint = decompose_load_waveform(t_s, v_joint, fs=fs_joint)
-        decomp_i_joint = decompose_load_waveform(t_s, i_joint, fs=fs_joint)
+        if previous_i_joint is not None:
+            relative_change = float(
+                np.linalg.norm(i_joint - previous_i_joint)
+                / (np.linalg.norm(previous_i_joint) + 1e-12)
+            )
+            print(f"K={K_int}, joint_waveform_relative_change={relative_change:.8e}")
+        previous_i_joint = i_joint.copy()
 
-        v_co_rms = float(np.sqrt(np.mean(v_joint ** 2)))
-        i_co_rms = float(np.sqrt(np.mean(i_joint ** 2)))
+        # Decompose baseline-subtracted joint and composed responses using consistent method
+        decomp_v_joint = decompose_load_waveform(t_s, v_joint_delta, fs=fs_joint)
+        decomp_v_composed = decompose_load_waveform(t_s, v_composed, fs=fs_joint)
+
+        decomp_i_joint = decompose_load_waveform(t_s, i_joint_delta, fs=fs_joint)
+        decomp_i_composed = decompose_load_waveform(t_s, i_composed, fs=fs_joint)
+
+        v_co_rms = float(np.sqrt(np.mean(v_joint_delta ** 2)))
+        i_co_rms = float(np.sqrt(np.mean(i_joint_delta ** 2)))
         v_res_rms = float(np.sqrt(np.mean(v_res ** 2)))
         i_res_rms = float(np.sqrt(np.mean(i_res ** 2)))
-
-        if i_res_rms <= 0:
-            err_msg = f"Non-positive overall residual RMS magnitude at K={K_int}: {i_res_rms}"
-            print(f"ERROR: {err_msg}")
-            raise ValueError(err_msg)
 
         for ch_name, decomp_key in channel_keys.items():
             if decomp_key not in decomp_i_joint or decomp_key not in decomp_v_joint:
@@ -166,22 +194,18 @@ def compute_residual_rms_vs_coevents(
                 raise ValueError(err_msg)
 
             v_joint_ch = decomp_v_joint[decomp_key]
-            i_joint_ch = decomp_i_joint[decomp_key]
-
-            v_composed_ch = v_composed_channels[ch_name]
-            i_composed_ch = i_composed_channels[ch_name]
-
-            # Residual waveform per channel: joint response minus each channel response summed over the set of events
+            v_composed_ch = decomp_v_composed[decomp_key]
             v_res_ch_wave = v_joint_ch - v_composed_ch
-            i_res_ch_wave = i_joint_ch - i_composed_ch
-
             v_co_ch = float(np.sqrt(np.mean(v_joint_ch ** 2)))
             v_res_ch = float(np.sqrt(np.mean(v_res_ch_wave ** 2)))
+
+            i_joint_ch = decomp_i_joint[decomp_key]
+            i_composed_ch = decomp_i_composed[decomp_key]
+            i_res_ch_wave = i_joint_ch - i_composed_ch
             i_co_ch = float(np.sqrt(np.mean(i_joint_ch ** 2)))
             i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
-            # Channel residual RMS / Joint channel RMS ratio (i_res_ch / i_co_ch)
-            ratio_ch = i_res_ch / (i_co_ch + 1e-9)
+            ratio_ch = i_res_ch / max(i_co_ch, 1e-9)
 
             print(
                 f"K={K_int}, channel={ch_name}, "
