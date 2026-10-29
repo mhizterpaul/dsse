@@ -23,6 +23,7 @@ from src.transient.events import (
     SingleEquipmentSwitchEvent,
     EquipmentEquipmentCoEvent,
     EquipmentLineFaultCoEvent,
+    NoLoadEvent,
 )
 from src.power_plant.lv_transformers import build_transformer_spec
 
@@ -391,6 +392,22 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     co_max_end = max(b.end_time_s for b in branches_co) if branches_co else 0.15
     uniform_t_stop = max(co_max_end + 0.05, 0.15)
 
+    tx_unit_id = f"trans{feeder_idx}_lv_boundary"
+
+    # --- STEP 0: Pre-event base network operating point & No-Load Baseline simulation ---
+    runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
+    runner.dss.run_command("disable Fault.*")
+    op_base = plant.solve_operating_point(runner.dss)
+    no_load_ev = NoLoadEvent(start_time_s=0.02, duration_s=0.10)
+    t_base, v_base_dict, i_base_dict, _ = runner.measure_transients(
+        op=op_base,
+        event=no_load_ev,
+        scenario_id=f"p{os.getpid()}_{task_idx}_base",
+        feeder_idx=feeder_idx,
+        use_baseline_feeder=use_baseline_feeder,
+        t_stop_override=uniform_t_stop,
+    )
+
     # --- STEP 1: Pre-event base network operating point & joint co-event ATP simulation ---
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
@@ -433,9 +450,9 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         t_stop_override=uniform_t_stop,
     )
 
-    tx_unit_id = f"trans{feeder_idx}_lv_boundary"
-
     for d_name, d_val in [
+        ("v_base_dict", v_base_dict),
+        ("i_base_dict", i_base_dict),
         ("v1_dict", v1_dict),
         ("i1_dict", i1_dict),
         ("v2_dict", v2_dict),
@@ -448,12 +465,23 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
             print(f"ERROR: {err_msg}\n{traceback.format_exc()}")
             raise ValueError(err_msg)
 
-    v1 = v1_dict[tx_unit_id]
-    i1 = i1_dict[tx_unit_id]
-    v2 = v2_dict[tx_unit_id]
-    i2 = i2_dict[tx_unit_id]
-    v_joint = v_joint_dict[tx_unit_id]
-    i_joint = i_joint_dict[tx_unit_id]
+    v_base = v_base_dict[tx_unit_id]
+    i_base = i_base_dict[tx_unit_id]
+
+    v1_raw = v1_dict[tx_unit_id]
+    i1_raw = i1_dict[tx_unit_id]
+    v2_raw = v2_dict[tx_unit_id]
+    i2_raw = i2_dict[tx_unit_id]
+    v_joint_raw = v_joint_dict[tx_unit_id]
+    i_joint_raw = i_joint_dict[tx_unit_id]
+
+    # Remove no-load baseline contribution from single events and joint events
+    v1 = v1_raw - v_base
+    i1 = i1_raw - i_base
+    v2 = v2_raw - v_base
+    i2 = i2_raw - i_base
+    v_joint = v_joint_raw - v_base
+    i_joint = i_joint_raw - i_base
 
     return {
         "co_ev": co_ev,
