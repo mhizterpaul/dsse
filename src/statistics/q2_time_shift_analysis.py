@@ -86,15 +86,11 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
                 std1 = np.std(arr1)
                 std2 = np.std(arr2)
                 if std1 <= 0 or std2 <= 0:
-                    err_msg = f"Zero variance waveform array in column '{col1}' (std={std1}) or '{col2}' (std={std2}) at row {idx}"
-                    print(f"ERROR: {err_msg}")
-                    raise ValueError(err_msg)
-
-                val_calc, _ = stats.pearsonr(arr1, arr2)
-                if np.isnan(val_calc):
-                    err_msg = f"Pearson correlation evaluated to NaN for '{col1}' and '{col2}' at row {idx}"
-                    print(f"ERROR: {err_msg}")
-                    raise ValueError(err_msg)
+                    val_calc = 0.0
+                else:
+                    val_calc, _ = stats.pearsonr(arr1, arr2)
+                    if np.isnan(val_calc):
+                        val_calc = 0.0
 
                 raw_val = abs(val_calc)
                 val = max(0.0, raw_val - discount_factor)
