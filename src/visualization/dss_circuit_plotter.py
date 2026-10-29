@@ -483,8 +483,29 @@ def plot_opendss_circuit(
                 ax.plot([g_x, g_x], [y_mid, g_y], color="#333333", linewidth=1.2, zorder=4)
                 draw_ground_signal(d, g_x, g_y)
 
-    # 6. Draw Bus Annotations (No scattered navy dots)
+    # 6. Identify adjacent vertical edge pairs and suppress label for one node in each pair
+    vertical_suppressed_buses = set()
+    all_edges = []
+    for _, row in net.lines.iterrows():
+        all_edges.append((row.bus0, row.bus1))
+    for _, row in net.transformers.iterrows():
+        all_edges.append((row.bus0, row.bus1))
+
+    for b0, b1 in all_edges:
+        if b0 in positions and b1 in positions:
+            x0, y0 = positions[b0]
+            x1, y1 = positions[b1]
+            if abs(x0 - x1) < 1e-4 and abs(y0 - y1) > 1e-4:
+                # Vertical edge between b0 and b1
+                if b0 not in vertical_suppressed_buses and b1 not in vertical_suppressed_buses:
+                    # Suppress lower bus node
+                    suppress_bus = b1 if y0 > y1 else b0
+                    vertical_suppressed_buses.add(suppress_bus)
+
+    # Draw Bus Annotations (Restored full label, only one label per adjacent vertical edge pair)
     for b_name, (x, y) in positions.items():
+        if b_name in vertical_suppressed_buses:
+            continue
         v_pu = voltage_pu.get(b_name, 1.0)
         ax.text(
             x + 0.15, y + 0.1,
@@ -551,6 +572,13 @@ def plot_opendss_circuit(
             draw_consumer_branch(d, ax, cx, busbar_y, cid)
 
     d.draw()
+
+    # Add plot legend labeling resistor symbol as Consumer Unit Loads
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color="#333333", lw=1.5, marker="s", markersize=8, markerfacecolor="none", label="Consumer Unit Loads (Resistor)")
+    ]
+    ax.legend(handles=legend_elements, loc="upper right", frameon=True, fontsize=9)
 
     ax.set_title("OpenDSS Distribution Network — Orthogonal Schematic Single-Line Diagram", fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.15)
