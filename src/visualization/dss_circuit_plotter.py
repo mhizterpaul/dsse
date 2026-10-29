@@ -526,7 +526,7 @@ def plot_opendss_circuit(
         busbar_y = y - 0.2
         draw_busbar(ax, branch_x_list, busbar_y, padding=0.25, linewidth=2.6)
 
-        # Neutral ground signal plotted strictly at PCC busbars where more than one consumer units are connected
+      # Neutral ground signal plotted strictly at PCC busbars where more than one consumer units are connected
         if count > 1:
             pcc_ground_x = max(branch_x_list) + 0.25
             drop_y = busbar_y - 0.7
