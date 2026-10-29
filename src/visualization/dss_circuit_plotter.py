@@ -483,13 +483,33 @@ def plot_opendss_circuit(
                 ax.plot([g_x, g_x], [y_mid, g_y], color="#333333", linewidth=1.2, zorder=4)
                 draw_ground_signal(d, g_x, g_y)
 
-    # 6. Draw Bus Annotations (Display only half of the node/bus bar label)
+    # 6. Identify adjacent vertical edge pairs and suppress label for one node in each pair
+    vertical_suppressed_buses = set()
+    all_edges = []
+    for _, row in net.lines.iterrows():
+        all_edges.append((row.bus0, row.bus1))
+    for _, row in net.transformers.iterrows():
+        all_edges.append((row.bus0, row.bus1))
+
+    for b0, b1 in all_edges:
+        if b0 in positions and b1 in positions:
+            x0, y0 = positions[b0]
+            x1, y1 = positions[b1]
+            if abs(x0 - x1) < 1e-4 and abs(y0 - y1) > 1e-4:
+                # Vertical edge between b0 and b1
+                if b0 not in vertical_suppressed_buses and b1 not in vertical_suppressed_buses:
+                    # Suppress lower bus node
+                    suppress_bus = b1 if y0 > y1 else b0
+                    vertical_suppressed_buses.add(suppress_bus)
+
+    # Draw Bus Annotations (Restored full label, only one label per adjacent vertical edge pair)
     for b_name, (x, y) in positions.items():
+        if b_name in vertical_suppressed_buses:
+            continue
         v_pu = voltage_pu.get(b_name, 1.0)
-        half_b_name = b_name[:max(1, math.ceil(len(b_name) / 2.0))]
         ax.text(
             x + 0.15, y + 0.1,
-            f"{half_b_name} ({v_pu:.3f} p.u.)",
+            f"{b_name} ({v_pu:.3f} p.u.)",
             fontsize=6.5,
             fontweight="bold",
             color="darkgreen" if 0.95 <= v_pu <= 1.05 else "darkred",
@@ -529,10 +549,9 @@ def plot_opendss_circuit(
         # For every bus bar with two nodes only print one branch label for any consecutive pair in the branch
         if count == 2:
             mid_x = (branch_x_list[0] + branch_x_list[1]) / 2.0
-            half_b_name = b_name[:max(1, math.ceil(len(b_name) / 2.0))]
             ax.text(
                 mid_x, busbar_y + 0.12,
-                f"Branch {half_b_name}",
+                f"Branch {b_name}",
                 fontsize=6.5,
                 ha="center",
                 va="bottom",
