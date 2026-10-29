@@ -525,6 +525,20 @@ def plot_opendss_circuit(
         busbar_y = y - 0.2
         draw_busbar(ax, branch_x_list, busbar_y, padding=0.25, linewidth=2.6)
 
+        # For every bus bar with two nodes only print one branch label for any consecutive pair in the branch
+        if count == 2:
+            mid_x = (branch_x_list[0] + branch_x_list[1]) / 2.0
+            ax.text(
+                mid_x, busbar_y + 0.12,
+                f"Branch {b_name}",
+                fontsize=6.5,
+                ha="center",
+                va="bottom",
+                fontweight="bold",
+                color="#333333",
+                zorder=8
+            )
+
         # Neutral ground signal plotted strictly at PCC busbars where more than one consumer units are connected
         if count > 1:
             pcc_ground_x = max(branch_x_list) + 0.25
