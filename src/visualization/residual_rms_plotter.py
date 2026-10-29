@@ -177,6 +177,8 @@ def compute_residual_rms_vs_coevents(
 
             # Channel residual RMS / Co-Event total current RMS ratio (i_res_ch / i_joint)
             ratio_ch = i_res_ch / (i_co_rms + 1e-9)
+            if ratio_ch >= 1.0:
+                print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
 
             res_v_rms_channels[ch_name].append(v_res_ch)
             co_v_rms_channels[ch_name].append(v_co_ch)
@@ -312,44 +314,48 @@ def plot_residual_rms_ratio_vs_coevents(
 
     raw_mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
 
-    # Filter ratios that are more than 1.0
-    valid_mask = (raw_mean_ratios <= 1.0) & np.isfinite(raw_mean_ratios)
-    k_filtered = k_vals[valid_mask]
-    ratios_filtered = raw_mean_ratios[valid_mask]
+    # Log warning using print when ratio is greater than or equal to 1
+    for k_val, r_val in zip(k_vals, raw_mean_ratios):
+        if r_val >= 1.0:
+            print(f"WARNING: Mean current residual RMS ratio {r_val:.4f} at K={int(k_val)} is greater than or equal to 1.0.")
 
-    if ratios_filtered is None or len(ratios_filtered) == 0:
-        err_msg = "Cannot fit curve: No valid residual RMS ratio values <= 1.0 found."
+    # Undo filtering of values >= 1.0 (keep all finite values)
+    valid_mask = np.isfinite(raw_mean_ratios)
+    k_plot = k_vals[valid_mask]
+    ratios_plot = raw_mean_ratios[valid_mask]
+
+    if ratios_plot is None or len(ratios_plot) == 0:
+        err_msg = "Cannot fit curve: No valid finite residual RMS ratio values found."
         print(f"ERROR: {err_msg}")
         raise ValueError(err_msg)
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
-    p_fit = np.polyfit(k_filtered, ratios_filtered, 2)
+    p_fit = np.polyfit(k_plot, ratios_plot, 2)
     a_m, b_m, c_m = float(p_fit[0]), float(p_fit[1]), float(p_fit[2])
 
-    fit_vals = np.polyval(p_fit, k_filtered)
-    ss_res = float(np.sum((ratios_filtered - fit_vals) ** 2))
-    ss_tot = float(np.sum((ratios_filtered - np.mean(ratios_filtered)) ** 2))
+    fit_vals = np.polyval(p_fit, k_plot)
+    ss_res = float(np.sum((ratios_plot - fit_vals) ** 2))
+    ss_tot = float(np.sum((ratios_plot - np.mean(ratios_plot)) ** 2))
     r2_m = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
 
     b_sign = "+" if b_m >= 0 else "-"
     c_sign = "+" if c_m >= 0 else "-"
     func_str_mean = f"R_{{I, \\mathrm{{mean}}}}(K) = {abs(a_m):.6f}·K² {b_sign} {abs(b_m):.6f}·K {c_sign} {abs(c_m):.6f}"
 
-    k_dense = np.linspace(float(np.min(k_filtered)), float(np.max(k_filtered)), 200)
+    k_dense = np.linspace(float(np.min(k_plot)), float(np.max(k_plot)), 200)
     fit_dense = np.polyval(p_fit, k_dense)
 
-    ax.scatter(k_filtered, ratios_filtered, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}} \\leq 1.0$)")
+    ax.scatter(k_plot, ratios_plot, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)")
     ax.plot(k_dense, fit_dense, "--", color="crimson", linewidth=2.2, zorder=4, label=f"Fit: ${func_str_mean}$ ($R^2={r2_m:.4f}$)")
 
     ax.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
     ax.set_ylabel("Mean Current Residual / Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
-    ax.set_title("Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{mean}} \\leq 1.0$)", fontsize=12, fontweight="bold")
+    ax.set_title("Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{mean}}$)", fontsize=12, fontweight="bold")
 
     text_info = f"Derived Raw Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="navy", alpha=0.95), zorder=10)
-    ax.set_ylim(0.0, 1.05)
     ax.grid(True, alpha=0.25, linestyle=":")
     ax.legend(loc="lower right", frameon=True, fontsize=10)
 
