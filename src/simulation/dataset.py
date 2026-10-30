@@ -159,10 +159,10 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
             v_joint_phase_angle = compute_atp_phase_angle(v_joint, time_s=t_arr)
             i_joint_phase_angle = compute_atp_phase_angle(i_joint, time_s=t_arr)
 
-        v_comp_phase_angle = v1_phase_angle + v2_phase_angle
-        i_comp_phase_angle = i1_phase_angle + i2_phase_angle
-        v_res_phase_angle = v_joint_phase_angle - v_comp_phase_angle
-        i_res_phase_angle = i_joint_phase_angle - i_comp_phase_angle
+        v_comp_phase_angle = np.full_like(v1_phase_angle, np.nan)
+        i_comp_phase_angle = np.full_like(i1_phase_angle, np.nan)
+        v_res_phase_angle = np.full_like(v1_phase_angle, np.nan)
+        i_res_phase_angle = np.full_like(i1_phase_angle, np.nan)
 
         channel_map = [
             ("fundamental", "x_fundamental"),
@@ -187,16 +187,16 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 i2_ch = i2_phase_angle
                 v_joint_ch = v_joint_phase_angle
                 i_joint_ch = i_joint_phase_angle
-                v_comp_ch = v_comp_phase_angle
-                i_comp_ch = i_comp_phase_angle
 
-                # Residual for phase angle channel is not computed; set to NaN
+                # Composed and residual phase angles are not computed; set to NaN
+                v_comp_ch = np.full_like(v_joint_phase_angle, np.nan)
+                i_comp_ch = np.full_like(i_joint_phase_angle, np.nan)
                 v_res_ch = np.full_like(v_joint_phase_angle, np.nan)
                 i_res_ch = np.full_like(i_joint_phase_angle, np.nan)
 
                 vi_diff_1 = v1_ch - i1_ch
                 vi_diff_2 = v2_ch - i2_ch
-                vi_diff_comp = v_comp_ch - i_comp_ch
+                vi_diff_comp = np.full_like(v_joint_phase_angle, np.nan)
                 vi_diff_joint = v_joint_ch - i_joint_ch
                 vi_diff_res = np.full_like(v_joint_phase_angle, np.nan)
 
