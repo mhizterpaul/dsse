@@ -5,7 +5,7 @@ import pandas as pd
 from scipy import stats
 
 
-def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> dict:
+def compute_waveform_pearson_stats(df: pd.DataFrame) -> dict:
     pairs = [
         ("obs_single_event_1_v_phase_a", "obs_single_event_2_v_phase_a"),
         ("obs_single_event_1_v_phase_b", "obs_single_event_2_v_phase_b"),
@@ -13,56 +13,21 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
         ("obs_single_event_1_i_phase_a", "obs_single_event_2_i_phase_a"),
         ("obs_single_event_1_i_phase_b", "obs_single_event_2_i_phase_b"),
         ("obs_single_event_1_i_phase_c", "obs_single_event_2_i_phase_c"),
+        ("obs_single_event_1_vi_phase_diff_phase_a", "obs_single_event_2_vi_phase_diff_phase_a"),
+        ("obs_single_event_1_vi_phase_diff_phase_b", "obs_single_event_2_vi_phase_diff_phase_b"),
+        ("obs_single_event_1_vi_phase_diff_phase_c", "obs_single_event_2_vi_phase_diff_phase_c"),
     ]
 
-    eta_noise = 10.0 ** (-snr_db / 20.0)
-    channels = ["fundamental", "harmonics", "slow_varying"] if "channel" in df.columns else [None]
+    target_channels = ["fundamental", "harmonics", "slow_varying", "phase_angle"]
+    channels = [c for c in target_channels if c in df["channel"].values] if "channel" in df.columns else [None]
 
-    all_18_corrs = []
-    per_channel_discount = {}
+    all_corrs = []
+    channel_correlations = {}
 
     for ch in channels:
         ch_df = df[df["channel"] == ch] if ch is not None else df
         if len(ch_df) == 0:
             continue
-
-        res_mags = []
-        comp_mags = []
-        for _, row in ch_df.iterrows():
-            v_a = np.array(json.loads(row["obs_composed_event_v_phase_a"])) if isinstance(row["obs_composed_event_v_phase_a"], str) else np.array(row["obs_composed_event_v_phase_a"])
-            v_b = np.array(json.loads(row["obs_composed_event_v_phase_b"])) if isinstance(row["obs_composed_event_v_phase_b"], str) else np.array(row["obs_composed_event_v_phase_b"])
-            v_c = np.array(json.loads(row["obs_composed_event_v_phase_c"])) if isinstance(row["obs_composed_event_v_phase_c"], str) else np.array(row["obs_composed_event_v_phase_c"])
-
-            i_a = np.array(json.loads(row["obs_composed_event_i_phase_a"])) if isinstance(row["obs_composed_event_i_phase_a"], str) else np.array(row["obs_composed_event_i_phase_a"])
-            i_b = np.array(json.loads(row["obs_composed_event_i_phase_b"])) if isinstance(row["obs_composed_event_i_phase_b"], str) else np.array(row["obs_composed_event_i_phase_b"])
-            i_c = np.array(json.loads(row["obs_composed_event_i_phase_c"])) if isinstance(row["obs_composed_event_i_phase_c"], str) else np.array(row["obs_composed_event_i_phase_c"])
-
-            comp_v = np.sqrt(np.mean(v_a**2 + v_b**2 + v_c**2))
-            comp_i = np.sqrt(np.mean(i_a**2 + i_b**2 + i_c**2))
-            comp_mags.append(comp_v + comp_i)
-
-            res_v = float(row.get("residual_voltage_magnitude", 0.0))
-            res_i = float(row.get("residual_current_magnitude", 0.0))
-            res_mags.append(res_v + res_i)
-
-        if len(res_mags) == 0 or len(comp_mags) == 0:
-            err_msg = f"Empty residual or composed magnitude lists for channel '{ch}'"
-            print(f"ERROR: {err_msg}")
-            raise ValueError(err_msg)
-
-        avg_res_mag = float(np.mean(res_mags))
-        avg_comp_mag = float(np.mean(comp_mags))
-
-        if avg_comp_mag <= 0:
-            err_msg = f"Non-positive average composed magnitude for channel '{ch}': {avg_comp_mag}"
-            print(f"ERROR: {err_msg}")
-            raise ValueError(err_msg)
-
-        mag_ratio = avg_res_mag / avg_comp_mag
-
-        discount_factor = eta_noise + mag_ratio
-        if ch is not None:
-            per_channel_discount[ch] = discount_factor
 
         col_correlations = [[] for _ in pairs]
 
@@ -92,23 +57,36 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
                     if np.isnan(val_calc):
                         val_calc = 0.0
 
-                raw_val = abs(val_calc)
-                val = max(0.0, raw_val - discount_factor)
+                val = abs(val_calc)
                 col_correlations[p_idx].append(val)
 
         ch_corr_vector = [float(np.mean(c_list)) for c_list in col_correlations]
-        all_18_corrs.extend(ch_corr_vector)
+        all_corrs.extend(ch_corr_vector)
+        if ch is not None:
+            channel_correlations[ch] = float(np.mean(ch_corr_vector))
 
-    mean_waveform_correlation = float(np.mean(all_18_corrs)) if all_18_corrs else 0.0
-    corr_std = float(np.std(all_18_corrs)) if all_18_corrs else 0.0
-    avg_discount = float(np.mean(list(per_channel_discount.values()))) if per_channel_discount else discount_factor
+    d_fund = 1.0 - channel_correlations.get("fundamental", 0.0)
+    d_harm = 1.0 - channel_correlations.get("harmonics", 0.0)
+    d_dc = 1.0 - channel_correlations.get("slow_varying", 0.0)
+    d_phase = 1.0 - channel_correlations.get("phase_angle", 0.0)
+
+    d_list = [d_fund, d_harm, d_dc, d_phase]
+    d_mean = float(np.mean(d_list))
+    d_std = float(np.std(d_list))
+
+    mean_waveform_correlation = float(np.mean(all_corrs)) if all_corrs else 0.0
+    corr_std = float(np.std(all_corrs)) if all_corrs else 0.0
 
     return {
-        "col_corr_vector": all_18_corrs,
         "mean_waveform_correlation": mean_waveform_correlation,
         "corr_std": corr_std,
-        "per_channel_discount": per_channel_discount,
-        "discount_factor": avg_discount
+        "channel_correlations": channel_correlations,
+        "d_fund": d_fund,
+        "d_harm": d_harm,
+        "d_dc": d_dc,
+        "d_phase": d_phase,
+        "d_mean": d_mean,
+        "d_std": d_std
     }
 
 
@@ -120,15 +98,12 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
     print("--- Running Question 2 Analysis: Time Shift Operation Variation (Dataset 3) ---")
 
     stats_res = compute_waveform_pearson_stats(df_3)
-    col_corr_vector = stats_res["col_corr_vector"]
     mean_waveform_correlation = stats_res["mean_waveform_correlation"]
     corr_std = stats_res["corr_std"]
-    per_channel_discount = stats_res.get("per_channel_discount", {})
-    discount_factor = stats_res["discount_factor"]
 
-    print(f"Waveform Pearson Correlation across 18 channels (Dataset 3): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
-    print(f"  Per-Channel Discount Factors: {per_channel_discount}")
-    print(f"  18-Channel Correlation Vector: {[round(c, 4) for c in col_corr_vector]}")
+    print(f"Waveform Pearson Correlation across channels (Dataset 3): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
+    print(f"  Channel Dissimilarities: Fundamental={stats_res['d_fund']:.4f}, Harmonics={stats_res['d_harm']:.4f}, DC={stats_res['d_dc']:.4f}, Phase={stats_res['d_phase']:.4f}")
+    print(f"  Overall Mean Dissimilarity = {stats_res['d_mean']:.4f}, Dissimilarity Std = {stats_res['d_std']:.4f}")
 
     group_sim = df_3[df_3["gt_time_offset_s"] == 0.0]
     group_shift = df_3[df_3["gt_time_offset_s"] > 0.0]
@@ -138,23 +113,26 @@ def run_q2_time_shift_analysis(dataset_path: Path = Path("src/simulation/dataset
     i_sim = group_sim["residual_current_magnitude"].values
     i_shift = group_shift["residual_current_magnitude"].values
 
-    mean_v_sim = float(np.mean(v_sim)) if len(v_sim) > 0 else 0.0
-    mean_i_sim = float(np.mean(i_sim)) if len(i_sim) > 0 else 0.0
-    mean_v_shift = float(np.mean(v_shift)) if len(v_shift) > 0 else 0.0
-    mean_i_shift = float(np.mean(i_shift)) if len(i_shift) > 0 else 0.0
+    mean_v_sim = float(np.nanmean(v_sim)) if len(v_sim) > 0 else 0.0
+    mean_i_sim = float(np.nanmean(i_sim)) if len(i_sim) > 0 else 0.0
+    mean_v_shift = float(np.nanmean(v_shift)) if len(v_shift) > 0 else 0.0
+    mean_i_shift = float(np.nanmean(i_shift)) if len(i_shift) > 0 else 0.0
 
     print(f"Overall Dataset 3 Time Shift (N_sim={len(group_sim)}, N_shift={len(group_shift)}):")
     print(f"  Simultaneous: Mean V_res = {mean_v_sim:.6f}, Mean I_res = {mean_i_sim:.6f}")
     print(f"  Time-Shifted: Mean V_res = {mean_v_shift:.6f}, Mean I_res = {mean_i_shift:.6f}")
 
     return {
-        "col_corr_vector": col_corr_vector,
         "mean_waveform_correlation": mean_waveform_correlation,
         "corr_std": corr_std,
-        "per_channel_discount": per_channel_discount,
-        "discount_factor": discount_factor,
         "mean_v_residual_simultaneous": mean_v_sim,
-        "mean_v_residual_shifted": mean_v_shift
+        "mean_v_residual_shifted": mean_v_shift,
+        "d_fund": stats_res["d_fund"],
+        "d_harm": stats_res["d_harm"],
+        "d_dc": stats_res["d_dc"],
+        "d_phase": stats_res["d_phase"],
+        "d_mean": stats_res["d_mean"],
+        "d_std": stats_res["d_std"]
     }
 
 

@@ -135,10 +135,42 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         decomp_v_joint = decompose_load_waveform(t_arr, v_joint, fs=fs)
         decomp_i_joint = decompose_load_waveform(t_arr, i_joint, fs=fs)
 
+        # Derive ATP-EMTP phase angles directly from simulation runner outputs
+        from src.simulation.runner import compute_atp_phase_angle
+
+        if "v1_phase" in item and "i1_phase" in item:
+            v1_phase_angle = item["v1_phase"]
+            i1_phase_angle = item["i1_phase"]
+            v_joint_phase_angle = item["v_joint_phase"]
+            i_joint_phase_angle = item["i_joint_phase"]
+
+            if shift_samples > 0:
+                v2_phase_angle = np.full_like(v2_shifted, np.nan)
+                i2_phase_angle = np.full_like(i2_shifted, np.nan)
+                if shift_samples < len(v2_shifted):
+                    v2_phase_angle[shift_samples:] = item["v2_phase"][:-shift_samples]
+                    i2_phase_angle[shift_samples:] = item["i2_phase"][:-shift_samples]
+            else:
+                v2_phase_angle = item["v2_phase"]
+                i2_phase_angle = item["i2_phase"]
+        else:
+            v1_phase_angle = compute_atp_phase_angle(v1, time_s=t_arr)
+            i1_phase_angle = compute_atp_phase_angle(i1, time_s=t_arr)
+            v2_phase_angle = compute_atp_phase_angle(v2_shifted, time_s=t_arr)
+            i2_phase_angle = compute_atp_phase_angle(i2_shifted, time_s=t_arr)
+            v_joint_phase_angle = compute_atp_phase_angle(v_joint, time_s=t_arr)
+            i_joint_phase_angle = compute_atp_phase_angle(i_joint, time_s=t_arr)
+
+        v_comp_phase_angle = np.full_like(v1_phase_angle, np.nan)
+        i_comp_phase_angle = np.full_like(i1_phase_angle, np.nan)
+        v_res_phase_angle = np.full_like(v1_phase_angle, np.nan)
+        i_res_phase_angle = np.full_like(i1_phase_angle, np.nan)
+
         channel_map = [
             ("fundamental", "x_fundamental"),
             ("harmonics", "x_harmonics"),
-            ("slow_varying", "x_ssd")
+            ("slow_varying", "x_ssd"),
+            ("phase_angle", "phase_angle")
         ]
 
         target_bus = getattr(ev1, "target", "feeder1_head")
@@ -150,24 +182,54 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         flt2_type = getattr(ev2, "fault_type", None)
 
         for ch_name, key in channel_map:
-            v1_ch = decomp_v1[key]
-            i1_ch = decomp_i1[key]
-            v2_ch = decomp_v2[key]
-            i2_ch = decomp_i2[key]
-            v_joint_ch = decomp_v_joint[key]
-            i_joint_ch = decomp_i_joint[key]
+            if key == "phase_angle":
+                v1_ch = v1_phase_angle
+                i1_ch = i1_phase_angle
+                v2_ch = v2_phase_angle
+                i2_ch = i2_phase_angle
+                v_joint_ch = v_joint_phase_angle
+                i_joint_ch = i_joint_phase_angle
 
-            v_comp_ch = v1_ch + v2_ch
-            i_comp_ch = i1_ch + i2_ch
+                # Composed and residual phase angles are not computed; set to NaN
+                v_comp_ch = np.full_like(v_joint_phase_angle, np.nan)
+                i_comp_ch = np.full_like(i_joint_phase_angle, np.nan)
+                v_res_ch = np.full_like(v_joint_phase_angle, np.nan)
+                i_res_ch = np.full_like(i_joint_phase_angle, np.nan)
 
-            v_res_ch = v_joint_ch - v_comp_ch
-            i_res_ch = i_joint_ch - i_comp_ch
+                vi_diff_1 = v1_ch - i1_ch
+                vi_diff_2 = v2_ch - i2_ch
+                vi_diff_comp = np.full_like(v_joint_phase_angle, np.nan)
+                vi_diff_joint = v_joint_ch - i_joint_ch
+                vi_diff_res = np.full_like(v_joint_phase_angle, np.nan)
 
-            voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
-            current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+                voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+                current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+                residual_v_mag = np.nan
+                residual_i_mag = np.nan
+            else:
+                v1_ch = decomp_v1[key]
+                i1_ch = decomp_i1[key]
+                v2_ch = decomp_v2[key]
+                i2_ch = decomp_i2[key]
+                v_joint_ch = decomp_v_joint[key]
+                i_joint_ch = decomp_i_joint[key]
 
-            residual_v_mag = float(np.sqrt(np.mean(v_res_ch ** 2)))
-            residual_i_mag = float(np.sqrt(np.mean(i_res_ch ** 2)))
+                v_comp_ch = v1_ch + v2_ch
+                i_comp_ch = i1_ch + i2_ch
+
+                v_res_ch = v_joint_ch - v_comp_ch
+                i_res_ch = i_joint_ch - i_comp_ch
+
+                vi_diff_1 = compute_atp_phase_angle(v1_ch, time_s=t_arr) - compute_atp_phase_angle(i1_ch, time_s=t_arr)
+                vi_diff_2 = compute_atp_phase_angle(v2_ch, time_s=t_arr) - compute_atp_phase_angle(i2_ch, time_s=t_arr)
+                vi_diff_comp = compute_atp_phase_angle(v_comp_ch, time_s=t_arr) - compute_atp_phase_angle(i_comp_ch, time_s=t_arr)
+                vi_diff_joint = compute_atp_phase_angle(v_joint_ch, time_s=t_arr) - compute_atp_phase_angle(i_joint_ch, time_s=t_arr)
+                vi_diff_res = compute_atp_phase_angle(v_res_ch, time_s=t_arr) - compute_atp_phase_angle(i_res_ch, time_s=t_arr)
+
+                voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+                current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+                residual_v_mag = float(np.sqrt(np.mean(v_res_ch ** 2)))
+                residual_i_mag = float(np.sqrt(np.mean(i_res_ch ** 2)))
 
             row = {
                 "channel": ch_name,
@@ -190,24 +252,45 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 "obs_single_event_1_i_phase_a": json.dumps(i1_ch[:, 0].tolist()),
                 "obs_single_event_1_i_phase_b": json.dumps(i1_ch[:, 1].tolist()),
                 "obs_single_event_1_i_phase_c": json.dumps(i1_ch[:, 2].tolist()),
+                "obs_single_event_1_vi_phase_diff_phase_a": json.dumps(vi_diff_1[:, 0].tolist()),
+                "obs_single_event_1_vi_phase_diff_phase_b": json.dumps(vi_diff_1[:, 1].tolist()),
+                "obs_single_event_1_vi_phase_diff_phase_c": json.dumps(vi_diff_1[:, 2].tolist()),
                 "obs_single_event_2_v_phase_a": json.dumps(v2_ch[:, 0].tolist()),
                 "obs_single_event_2_v_phase_b": json.dumps(v2_ch[:, 1].tolist()),
                 "obs_single_event_2_v_phase_c": json.dumps(v2_ch[:, 2].tolist()),
                 "obs_single_event_2_i_phase_a": json.dumps(i2_ch[:, 0].tolist()),
                 "obs_single_event_2_i_phase_b": json.dumps(i2_ch[:, 1].tolist()),
                 "obs_single_event_2_i_phase_c": json.dumps(i2_ch[:, 2].tolist()),
+                "obs_single_event_2_vi_phase_diff_phase_a": json.dumps(vi_diff_2[:, 0].tolist()),
+                "obs_single_event_2_vi_phase_diff_phase_b": json.dumps(vi_diff_2[:, 1].tolist()),
+                "obs_single_event_2_vi_phase_diff_phase_c": json.dumps(vi_diff_2[:, 2].tolist()),
                 "obs_composed_event_v_phase_a": json.dumps(v_comp_ch[:, 0].tolist()),
                 "obs_composed_event_v_phase_b": json.dumps(v_comp_ch[:, 1].tolist()),
                 "obs_composed_event_v_phase_c": json.dumps(v_comp_ch[:, 2].tolist()),
                 "obs_composed_event_i_phase_a": json.dumps(i_comp_ch[:, 0].tolist()),
                 "obs_composed_event_i_phase_b": json.dumps(i_comp_ch[:, 1].tolist()),
                 "obs_composed_event_i_phase_c": json.dumps(i_comp_ch[:, 2].tolist()),
+                "obs_composed_event_vi_phase_diff_phase_a": json.dumps(vi_diff_comp[:, 0].tolist()),
+                "obs_composed_event_vi_phase_diff_phase_b": json.dumps(vi_diff_comp[:, 1].tolist()),
+                "obs_composed_event_vi_phase_diff_phase_c": json.dumps(vi_diff_comp[:, 2].tolist()),
+                "obs_joint_event_v_phase_a": json.dumps(v_joint_ch[:, 0].tolist()),
+                "obs_joint_event_v_phase_b": json.dumps(v_joint_ch[:, 1].tolist()),
+                "obs_joint_event_v_phase_c": json.dumps(v_joint_ch[:, 2].tolist()),
+                "obs_joint_event_i_phase_a": json.dumps(i_joint_ch[:, 0].tolist()),
+                "obs_joint_event_i_phase_b": json.dumps(i_joint_ch[:, 1].tolist()),
+                "obs_joint_event_i_phase_c": json.dumps(i_joint_ch[:, 2].tolist()),
+                "obs_joint_event_vi_phase_diff_phase_a": json.dumps(vi_diff_joint[:, 0].tolist()),
+                "obs_joint_event_vi_phase_diff_phase_b": json.dumps(vi_diff_joint[:, 1].tolist()),
+                "obs_joint_event_vi_phase_diff_phase_c": json.dumps(vi_diff_joint[:, 2].tolist()),
                 "obs_residual_v_phase_a": json.dumps(v_res_ch[:, 0].tolist()),
                 "obs_residual_v_phase_b": json.dumps(v_res_ch[:, 1].tolist()),
                 "obs_residual_v_phase_c": json.dumps(v_res_ch[:, 2].tolist()),
                 "obs_residual_i_phase_a": json.dumps(i_res_ch[:, 0].tolist()),
                 "obs_residual_i_phase_b": json.dumps(i_res_ch[:, 1].tolist()),
                 "obs_residual_i_phase_c": json.dumps(i_res_ch[:, 2].tolist()),
+                "obs_residual_vi_phase_diff_phase_a": json.dumps(vi_diff_res[:, 0].tolist()),
+                "obs_residual_vi_phase_diff_phase_b": json.dumps(vi_diff_res[:, 1].tolist()),
+                "obs_residual_vi_phase_diff_phase_c": json.dumps(vi_diff_res[:, 2].tolist()),
             }
 
             if dataset_name == "Dataset 4":

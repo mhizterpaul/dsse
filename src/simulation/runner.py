@@ -7,6 +7,8 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import scipy.signal
+import scipy.ndimage
 import src.power_plant.plant as plant
 from src.transient.models import (
     ThreePhaseThevenin,
@@ -17,7 +19,7 @@ from src.transient.opendss_reducer import OpenDSSReducer
 from src.transient.bctran_generator import BCTRANGenerator
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
-from src.transient.atp_parser import ATPOutputReader
+from src.transient.atp_parser import ATPOutputReader, _extract_fundamental_phase
 from src.transient.events import (
     SingleLineFaultEvent,
     SingleEquipmentSwitchEvent,
@@ -34,6 +36,80 @@ class SimulationResult:
     steady_state_measurements: Dict[str, Any] = field(default_factory=dict)
     time_s: Optional[np.ndarray] = None
     operating_point: Optional[Any] = None
+
+
+def compute_atp_phase_angle(
+    waveform: np.ndarray,
+    time_s: Optional[np.ndarray] = None,
+    frequency: float = 50.0,
+    op_reference_deg: Optional[Any] = 0.0,
+    window_cycles: float = 0.5,
+    amplitude_threshold: float = 1e-4,
+    return_details: bool = False,
+) -> Any:
+    """
+    Derives instantaneous fundamental phase angles (radians) directly from raw ATP-EMTP transient simulation waveforms
+    referenced against OpenDSS operating point phasors. Delegates to _extract_fundamental_phase in atp_parser.py.
+    """
+    if time_s is None:
+        time_s = np.arange(len(waveform)) * 1e-4
+
+    n_cols = waveform.shape[1] if waveform.ndim > 1 else 1
+    if isinstance(op_reference_deg, (list, tuple, np.ndarray)):
+        ref_rad = np.radians(op_reference_deg)
+    else:
+        ref_deg_val = float(op_reference_deg) if op_reference_deg is not None else 0.0
+        ref_rad = np.full(n_cols, np.radians(ref_deg_val))
+
+    res = _extract_fundamental_phase(
+        time_s=time_s,
+        waveform=waveform,
+        frequency_hz=frequency,
+        reference_angles_rad=ref_rad,
+        window_cycles=window_cycles,
+        amplitude_threshold_ratio=amplitude_threshold,
+    )
+
+    if return_details:
+        return res
+    return res["phase_abs"]
+
+
+def extract_transformer_phasors_from_dss(dss_instance: Any, feeder_idx: int) -> dict:
+    """
+    Extracts OpenDSS LV terminal complex voltage and current phasors for the active transformer boundary.
+    """
+    tx_unit_id = f"trans{feeder_idx}_lv_boundary"
+    tx_name = f"Transformer.trans{feeder_idx}"
+    sec_bus = f"feeder{feeder_idx}_sec"
+
+    v_phasors = np.zeros(3, dtype=complex)
+    i_phasors = np.zeros(3, dtype=complex)
+
+    if dss_instance.Circuit.SetActiveElement(tx_name):
+        c_raw = dss_instance.CktElement.Currents()
+        if len(c_raw) >= 12:
+            i_phasors = np.array([
+                complex(c_raw[6], c_raw[7]),
+                complex(c_raw[8], c_raw[9]),
+                complex(c_raw[10], c_raw[11])
+            ])
+
+    if dss_instance.Circuit.SetActiveBus(sec_bus):
+        v_comp = dss_instance.Bus.Voltages()
+        if len(v_comp) >= 6:
+            v_phasors = np.array([
+                complex(v_comp[0], v_comp[1]),
+                complex(v_comp[2], v_comp[3]),
+                complex(v_comp[4], v_comp[5])
+            ])
+
+    return {
+        tx_unit_id: {
+            "voltage_abc": v_phasors,
+            "current_abc": i_phasors
+        }
+    }
 
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
@@ -398,6 +474,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_base = plant.solve_operating_point(runner.dss)
+    op_base.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
+
     no_load_ev = NoLoadEvent(start_time_s=0.02, duration_s=0.10)
     t_base, v_base_dict, i_base_dict, _ = runner.measure_transients(
         op=op_base,
@@ -412,6 +490,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_joint = plant.solve_operating_point(runner.dss)
+    op_joint.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
 
     fault_info_json = extract_fault_info(runner.dss, "joint_fault", target_line, co_ev)
 
@@ -428,6 +507,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_1 = plant.solve_operating_point(runner.dss)
+    op_1.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
+
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
         op=op_1,
         event=ev1,
@@ -441,6 +522,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_2 = plant.solve_operating_point(runner.dss)
+    op_2.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
         op=op_2,
         event=ev2,
@@ -483,6 +565,57 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_raw - v_base
     i_joint = i_joint_raw - i_base
 
+    # Extract OpenDSS voltage and current complex reference phasors from OperatingPoint
+    def _extract_op_ref(op_obj, tx_id):
+        if hasattr(op_obj, "transformer_phasors") and op_obj.transformer_phasors and tx_id in op_obj.transformer_phasors:
+            p_dict = op_obj.transformer_phasors[tx_id]
+            v_c = p_dict["voltage_abc"]
+            i_c = p_dict["current_abc"]
+            return np.angle(v_c), np.abs(v_c), np.angle(i_c), np.abs(i_c)
+        def_ang = np.radians([0.0, -120.0, 120.0])
+        def_v_mag = np.array([230.0 * np.sqrt(2)] * 3)
+        def_i_mag = np.array([10.0] * 3)
+        return def_ang, def_v_mag, def_ang, def_i_mag
+
+    v1_ref_ang, v1_ref_mag, i1_ref_ang, i1_ref_mag = _extract_op_ref(op_1, tx_unit_id)
+    v2_ref_ang, v2_ref_mag, i2_ref_ang, i2_ref_mag = _extract_op_ref(op_2, tx_unit_id)
+    vj_ref_ang, vj_ref_mag, ij_ref_ang, ij_ref_mag = _extract_op_ref(op_joint, tx_unit_id)
+
+    reader = ATPOutputReader()
+
+    wf_1 = EMTWaveforms(t1, {tx_unit_id: v1_raw}, {tx_unit_id: i1_raw}, {}, float(op_1.frequency_hz))
+    wf_2 = EMTWaveforms(t2, {tx_unit_id: v2_raw}, {tx_unit_id: i2_raw}, {}, float(op_2.frequency_hz))
+    wf_joint = EMTWaveforms(t_joint, {tx_unit_id: v_joint_raw}, {tx_unit_id: i_joint_raw}, {}, float(op_joint.frequency_hz))
+
+    pt_1 = reader.extract_phase_trajectories(
+        wf_1, tx_unit_id,
+        voltage_reference_angles_rad=v1_ref_ang,
+        current_reference_angles_rad=i1_ref_ang,
+        voltage_reference_magnitudes=v1_ref_mag,
+        current_reference_magnitudes=i1_ref_mag,
+    )
+    pt_2 = reader.extract_phase_trajectories(
+        wf_2, tx_unit_id,
+        voltage_reference_angles_rad=v2_ref_ang,
+        current_reference_angles_rad=i2_ref_ang,
+        voltage_reference_magnitudes=v2_ref_mag,
+        current_reference_magnitudes=i2_ref_mag,
+    )
+    pt_joint = reader.extract_phase_trajectories(
+        wf_joint, tx_unit_id,
+        voltage_reference_angles_rad=vj_ref_ang,
+        current_reference_angles_rad=ij_ref_ang,
+        voltage_reference_magnitudes=vj_ref_mag,
+        current_reference_magnitudes=ij_ref_mag,
+    )
+
+    v1_phase = pt_1["voltage"]["phase_abs"]
+    i1_phase = pt_1["current"]["phase_abs"]
+    v2_phase = pt_2["voltage"]["phase_abs"]
+    i2_phase = pt_2["current"]["phase_abs"]
+    v_joint_phase = pt_joint["voltage"]["phase_abs"]
+    i_joint_phase = pt_joint["current"]["phase_abs"]
+
     return {
         "co_ev": co_ev,
         "time_s": t_joint,
@@ -492,6 +625,12 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         "i2": i2,
         "v_joint": v_joint,
         "i_joint": i_joint,
+        "v1_phase": v1_phase,
+        "i1_phase": i1_phase,
+        "v2_phase": v2_phase,
+        "i2_phase": i2_phase,
+        "v_joint_phase": v_joint_phase,
+        "i_joint_phase": i_joint_phase,
         "fault_info": fault_info_json,
         "gt_feeder_id": f"feeder_{feeder_idx}",
     }

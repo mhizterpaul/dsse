@@ -1,7 +1,105 @@
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
+import scipy.ndimage
 from pathlib import Path
+
+
+def _wrap_phase_rad(angle: np.ndarray) -> np.ndarray:
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _extract_fundamental_phase(
+    time_s: np.ndarray,
+    waveform: np.ndarray,
+    frequency_hz: float,
+    reference_angles_rad: np.ndarray,
+    reference_magnitudes: Optional[np.ndarray] = None,
+    window_cycles: float = 0.5,
+    amplitude_threshold_ratio: float = 1e-3,
+    absolute_amplitude_floor: float = 1e-9,
+) -> Dict[str, np.ndarray]:
+    """
+    Extract fundamental phase trajectory using sliding least-squares fit.
+    Waveform convention: x(t) = A * cos(2*pi*f*t + phase)
+    reference_angles_rad: OpenDSS pre-event phase angles at ATP time origin, one per channel.
+    Phase deviation: measured_phase(t) - (reference_phase + omega*t)
+    """
+    time_s = np.asarray(time_s, dtype=float)
+    waveform = np.asarray(waveform, dtype=float)
+
+    if time_s.ndim != 1:
+        raise ValueError("time_s vector must be 1D")
+
+    if waveform.ndim == 1:
+        waveform = waveform[:, None]
+
+    n_samples, n_channels = waveform.shape
+    reference_angles_rad = np.asarray(reference_angles_rad, dtype=float)
+
+    if reference_angles_rad.shape != (n_channels,):
+        if reference_angles_rad.size == 1:
+            reference_angles_rad = np.full(n_channels, float(reference_angles_rad.item()))
+        else:
+            raise ValueError(f"Reference angle count ({reference_angles_rad.shape}) must match waveform channels ({n_channels})")
+
+    if reference_magnitudes is not None:
+        reference_magnitudes = np.asarray(reference_magnitudes, dtype=float)
+        if reference_magnitudes.shape != (n_channels,):
+            if reference_magnitudes.size == 1:
+                reference_magnitudes = np.full(n_channels, float(reference_magnitudes.item()))
+            else:
+                raise ValueError(f"Reference magnitude count ({reference_magnitudes.shape}) must match waveform channels ({n_channels})")
+    else:
+        reference_magnitudes = np.max(np.abs(waveform), axis=0)
+
+    dt = float(np.mean(np.diff(time_s))) if len(time_s) > 1 else 1e-4
+    window_size = int(round(window_cycles / (frequency_hz * dt)))
+    if window_size < 1:
+        window_size = 1
+
+    omega_0 = 2.0 * np.pi * frequency_hz
+
+    amps = []
+    phases_abs = []
+    phases_dev = []
+    valids = []
+
+    for c in range(n_channels):
+        ref_rad = float(reference_angles_rad[c])
+        ref_mag = float(reference_magnitudes[c])
+
+        cos_ref = np.cos(omega_0 * time_s + ref_rad)
+        sin_ref = np.sin(omega_0 * time_s + ref_rad)
+
+        sig = waveform[:, c]
+        c_sig = sig * cos_ref
+        s_sig = sig * sin_ref
+
+        a_k = 2.0 * scipy.ndimage.uniform_filter1d(c_sig, size=window_size, mode="nearest")
+        b_k = 2.0 * scipy.ndimage.uniform_filter1d(s_sig, size=window_size, mode="nearest")
+
+        amp = np.sqrt(a_k ** 2 + b_k ** 2)
+        dev = _wrap_phase_rad(np.unwrap(np.arctan2(-b_k, a_k)))
+        phase_abs = ref_rad + dev
+
+        thresh = max(ref_mag * amplitude_threshold_ratio, absolute_amplitude_floor)
+        valid_mask = amp >= thresh
+
+        phase_abs_valid = np.where(valid_mask, phase_abs, np.nan)
+        dev_valid = np.where(valid_mask, dev, np.nan)
+
+        amps.append(amp)
+        phases_abs.append(phase_abs_valid)
+        phases_dev.append(dev_valid)
+        valids.append(valid_mask)
+
+    return {
+        "amplitude": np.column_stack(amps) if n_channels > 1 else amps[0],
+        "phase_abs": np.column_stack(phases_abs) if n_channels > 1 else phases_abs[0],
+        "phase_dev": np.column_stack(phases_dev) if n_channels > 1 else phases_dev[0],
+        "valid": np.column_stack(valids) if n_channels > 1 else valids[0],
+    }
 
 
 @dataclass
@@ -243,3 +341,55 @@ class ATPOutputReader:
         currents = {transformer_id: data_arr[:, i_cols]}
 
         return EMTWaveforms(t, voltages, currents, event_metadata, frequency_hz=freq_hz)
+
+    def extract_phase_trajectories(
+        self,
+        waveforms: EMTWaveforms,
+        transformer_id: str,
+        voltage_reference_angles_rad: np.ndarray,
+        current_reference_angles_rad: np.ndarray,
+        voltage_reference_magnitudes: Optional[np.ndarray] = None,
+        current_reference_magnitudes: Optional[np.ndarray] = None,
+        window_cycles: float = 0.5,
+        amplitude_threshold_ratio: float = 1e-3,
+        absolute_amplitude_floor: float = 1e-9,
+    ) -> dict:
+        """
+        Extracts fundamental voltage and current phase angle trajectories and phase deviations
+        for the given transformer_id using OpenDSS voltage and current reference phasors.
+        """
+        if transformer_id not in waveforms.voltages:
+            raise ValueError(f"Missing voltage waveform for transformer_id: {transformer_id}")
+        if transformer_id not in waveforms.currents:
+            raise ValueError(f"Missing current waveform for transformer_id: {transformer_id}")
+
+        frequency = float(waveforms.frequency_hz)
+        v_wave = waveforms.voltages[transformer_id]
+        i_wave = waveforms.currents[transformer_id]
+
+        v_res = _extract_fundamental_phase(
+            time_s=waveforms.time_s,
+            waveform=v_wave,
+            frequency_hz=frequency,
+            reference_angles_rad=voltage_reference_angles_rad,
+            reference_magnitudes=voltage_reference_magnitudes,
+            window_cycles=window_cycles,
+            amplitude_threshold_ratio=amplitude_threshold_ratio,
+            absolute_amplitude_floor=absolute_amplitude_floor,
+        )
+
+        i_res = _extract_fundamental_phase(
+            time_s=waveforms.time_s,
+            waveform=i_wave,
+            frequency_hz=frequency,
+            reference_angles_rad=current_reference_angles_rad,
+            reference_magnitudes=current_reference_magnitudes,
+            window_cycles=window_cycles,
+            amplitude_threshold_ratio=amplitude_threshold_ratio,
+            absolute_amplitude_floor=absolute_amplitude_floor,
+        )
+
+        return {
+            "voltage": v_res,
+            "current": i_res,
+        }
