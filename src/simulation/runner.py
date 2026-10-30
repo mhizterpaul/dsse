@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import scipy.signal
+import scipy.ndimage
 import src.power_plant.plant as plant
 from src.transient.models import (
     ThreePhaseThevenin,
@@ -37,12 +38,62 @@ class SimulationResult:
     operating_point: Optional[Any] = None
 
 
-def compute_atp_phase_angle(waveform: np.ndarray) -> np.ndarray:
+def track_fundamental_phase(
+    time: np.ndarray,
+    signal: np.ndarray,
+    frequency: float = 50.0,
+) -> np.ndarray:
     """
-    Derives instantaneous phase angles (radians) directly from ATP-EMTP transient simulation waveforms.
+    Estimate fundamental phase angle over time using a sliding
+    one-cycle least-squares sinusoidal fit.
+    Convention:
+        v(t) = A * cos(2 * pi * f * t + phase)
+    Returns:
+        phase_rad: unwrapped phase angle in radians matching signal shape
     """
-    analytic_signal = scipy.signal.hilbert(waveform, axis=0)
-    return np.angle(analytic_signal)
+    time = np.asarray(time, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+
+    if time.ndim != 1:
+        raise ValueError("time vector must be 1D")
+
+    dt = float(np.mean(np.diff(time))) if len(time) > 1 else 1e-4
+    window_size = int(round(1.0 / (frequency * dt)))
+    if window_size < 1:
+        window_size = 1
+
+    omega_0 = 2.0 * np.pi * frequency
+
+    if signal.ndim == 1:
+        cos_ref = np.cos(omega_0 * time)
+        sin_ref = np.sin(omega_0 * time)
+
+        c_sig = signal * cos_ref
+        s_sig = signal * sin_ref
+
+        a_k = 2.0 * scipy.ndimage.uniform_filter1d(c_sig, size=window_size, mode="nearest")
+        b_k = 2.0 * scipy.ndimage.uniform_filter1d(s_sig, size=window_size, mode="nearest")
+
+        phase = np.unwrap(np.arctan2(-b_k, a_k))
+        return phase
+    else:
+        phases = []
+        for col in range(signal.shape[1]):
+            phases.append(track_fundamental_phase(time, signal[:, col], frequency=frequency))
+        return np.column_stack(phases)
+
+
+def compute_atp_phase_angle(
+    waveform: np.ndarray,
+    time_s: Optional[np.ndarray] = None,
+    frequency: float = 50.0
+) -> np.ndarray:
+    """
+    Derives instantaneous fundamental phase angles (radians) directly from ATP-EMTP transient simulation waveforms.
+    """
+    if time_s is None:
+        time_s = np.arange(len(waveform)) * 1e-4
+    return track_fundamental_phase(time_s, waveform, frequency=frequency)
 
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
@@ -492,12 +543,12 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_raw - v_base
     i_joint = i_joint_raw - i_base
 
-    v1_phase = compute_atp_phase_angle(v1)
-    i1_phase = compute_atp_phase_angle(i1)
-    v2_phase = compute_atp_phase_angle(v2)
-    i2_phase = compute_atp_phase_angle(i2)
-    v_joint_phase = compute_atp_phase_angle(v_joint)
-    i_joint_phase = compute_atp_phase_angle(i_joint)
+    v1_phase = compute_atp_phase_angle(v1, time_s=t_joint)
+    i1_phase = compute_atp_phase_angle(i1, time_s=t_joint)
+    v2_phase = compute_atp_phase_angle(v2, time_s=t_joint)
+    i2_phase = compute_atp_phase_angle(i2, time_s=t_joint)
+    v_joint_phase = compute_atp_phase_angle(v_joint, time_s=t_joint)
+    i_joint_phase = compute_atp_phase_angle(i_joint, time_s=t_joint)
 
     return {
         "co_ev": co_ev,

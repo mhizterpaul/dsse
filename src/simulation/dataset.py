@@ -146,18 +146,18 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
 
             # Compute shifted phase angles for event 2 if shifted
             if shift_samples > 0:
-                v2_phase_angle = compute_atp_phase_angle(v2_shifted)
-                i2_phase_angle = compute_atp_phase_angle(i2_shifted)
+                v2_phase_angle = compute_atp_phase_angle(v2_shifted, time_s=t_arr)
+                i2_phase_angle = compute_atp_phase_angle(i2_shifted, time_s=t_arr)
             else:
                 v2_phase_angle = item["v2_phase"]
                 i2_phase_angle = item["i2_phase"]
         else:
-            v1_phase_angle = compute_atp_phase_angle(v1)
-            i1_phase_angle = compute_atp_phase_angle(i1)
-            v2_phase_angle = compute_atp_phase_angle(v2_shifted)
-            i2_phase_angle = compute_atp_phase_angle(i2_shifted)
-            v_joint_phase_angle = compute_atp_phase_angle(v_joint)
-            i_joint_phase_angle = compute_atp_phase_angle(i_joint)
+            v1_phase_angle = compute_atp_phase_angle(v1, time_s=t_arr)
+            i1_phase_angle = compute_atp_phase_angle(i1, time_s=t_arr)
+            v2_phase_angle = compute_atp_phase_angle(v2_shifted, time_s=t_arr)
+            i2_phase_angle = compute_atp_phase_angle(i2_shifted, time_s=t_arr)
+            v_joint_phase_angle = compute_atp_phase_angle(v_joint, time_s=t_arr)
+            i_joint_phase_angle = compute_atp_phase_angle(i_joint, time_s=t_arr)
 
         v_comp_phase_angle = v1_phase_angle + v2_phase_angle
         i_comp_phase_angle = i1_phase_angle + i2_phase_angle
