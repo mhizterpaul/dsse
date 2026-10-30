@@ -92,6 +92,7 @@ class OperatingPoint:
     transient_waveforms: Optional[object] = None
     phase_voltages_v: Optional[dict] = None
     phase_angles_deg: Optional[dict] = None
+    transformer_phasors: Optional[dict] = None
 
     def import_atp_cases(self, atp_waveforms):
         self.transient_waveforms = atp_waveforms
@@ -383,9 +384,16 @@ def solve_operating_point(
     voltage_pu = {}
     phase_voltages_v = {}
     phase_angles_deg = {}
+    transformer_phasors = {}
 
     for idx in [1, 2, 3]:
+        tx_unit_id = f"trans{idx}_lv_boundary"
         tx_name = f"Transformer.trans{idx}"
+        sec_bus = f"feeder{idx}_sec"
+
+        v_phasors = np.zeros(3, dtype=complex)
+        i_phasors = np.zeros(3, dtype=complex)
+
         if dss.Circuit.SetActiveElement(tx_name):
             powers = dss.CktElement.Powers()
             if len(powers) >= 2:
@@ -393,8 +401,15 @@ def solve_operating_point(
                 feeder_q[idx] = round(float(abs(powers[1])), 4)
             loading[idx] = round(float(np.sqrt(feeder_p.get(idx, 0.0)**2 + feeder_q.get(idx, 0.0)**2) / 1500.0), 4)
 
+            c_raw = dss.CktElement.Currents()
+            if len(c_raw) >= 12:
+                i_phasors = np.array([
+                    complex(c_raw[6], c_raw[7]),
+                    complex(c_raw[8], c_raw[9]),
+                    complex(c_raw[10], c_raw[11])
+                ])
+
         # Retrieve LV terminal phase voltages and angles
-        sec_bus = f"feeder{idx}_sec"
         if dss.Circuit.SetActiveBus(sec_bus):
             v_mag_angle = dss.Bus.VMagAngle()
             if len(v_mag_angle) >= 6:
@@ -402,6 +417,19 @@ def solve_operating_point(
                 phase_angles_deg[f"trans{idx}"] = (float(v_mag_angle[1]), float(v_mag_angle[3]), float(v_mag_angle[5]))
                 phase_voltages_v[f"feeder{idx}_head"] = (float(v_mag_angle[0]), float(v_mag_angle[2]), float(v_mag_angle[4]))
                 phase_angles_deg[f"feeder{idx}_head"] = (float(v_mag_angle[1]), float(v_mag_angle[3]), float(v_mag_angle[5]))
+
+            v_comp = dss.Bus.Voltages()
+            if len(v_comp) >= 6:
+                v_phasors = np.array([
+                    complex(v_comp[0], v_comp[1]),
+                    complex(v_comp[2], v_comp[3]),
+                    complex(v_comp[4], v_comp[5])
+                ])
+
+        transformer_phasors[tx_unit_id] = {
+            "voltage_abc": v_phasors,
+            "current_abc": i_phasors
+        }
 
     return OperatingPoint(
         time_s=time_s,
@@ -413,5 +441,6 @@ def solve_operating_point(
         voltage_pu=voltage_pu,
         frequency_hz=freq_hz,
         phase_voltages_v=phase_voltages_v,
-        phase_angles_deg=phase_angles_deg
+        phase_angles_deg=phase_angles_deg,
+        transformer_phasors=transformer_phasors
     )

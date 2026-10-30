@@ -601,22 +601,56 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_raw - v_base
     i_joint = i_joint_raw - i_base
 
-    # Extract pre-event OpenDSS operating point phase angle references and frequencies
-    op_1_ref = op_1.phase_angles_deg.get(f"trans{feeder_idx}", (0.0, -120.0, 120.0)) if op_1.phase_angles_deg else (0.0, -120.0, 120.0)
-    op_2_ref = op_2.phase_angles_deg.get(f"trans{feeder_idx}", (0.0, -120.0, 120.0)) if op_2.phase_angles_deg else (0.0, -120.0, 120.0)
-    op_joint_ref = op_joint.phase_angles_deg.get(f"trans{feeder_idx}", (0.0, -120.0, 120.0)) if op_joint.phase_angles_deg else (0.0, -120.0, 120.0)
+    # Extract OpenDSS voltage and current complex reference phasors from OperatingPoint
+    def _extract_op_ref(op_obj, tx_id):
+        if hasattr(op_obj, "transformer_phasors") and op_obj.transformer_phasors and tx_id in op_obj.transformer_phasors:
+            p_dict = op_obj.transformer_phasors[tx_id]
+            v_c = p_dict["voltage_abc"]
+            i_c = p_dict["current_abc"]
+            return np.angle(v_c), np.abs(v_c), np.angle(i_c), np.abs(i_c)
+        def_ang = np.radians([0.0, -120.0, 120.0])
+        def_v_mag = np.array([230.0 * np.sqrt(2)] * 3)
+        def_i_mag = np.array([10.0] * 3)
+        return def_ang, def_v_mag, def_ang, def_i_mag
 
-    f_1 = float(op_1.frequency_hz)
-    f_2 = float(op_2.frequency_hz)
-    f_joint = float(op_joint.frequency_hz)
+    v1_ref_ang, v1_ref_mag, i1_ref_ang, i1_ref_mag = _extract_op_ref(op_1, tx_unit_id)
+    v2_ref_ang, v2_ref_mag, i2_ref_ang, i2_ref_mag = _extract_op_ref(op_2, tx_unit_id)
+    vj_ref_ang, vj_ref_mag, ij_ref_ang, ij_ref_mag = _extract_op_ref(op_joint, tx_unit_id)
 
-    # Track phase trajectories directly on RAW unmodified ATP waveforms using their respective time vectors and OpenDSS OP references
-    v1_phase = compute_atp_phase_angle(v1_raw, time_s=t1, frequency=f_1, op_reference_deg=op_1_ref)
-    i1_phase = compute_atp_phase_angle(i1_raw, time_s=t1, frequency=f_1, op_reference_deg=op_1_ref)
-    v2_phase = compute_atp_phase_angle(v2_raw, time_s=t2, frequency=f_2, op_reference_deg=op_2_ref)
-    i2_phase = compute_atp_phase_angle(i2_raw, time_s=t2, frequency=f_2, op_reference_deg=op_2_ref)
-    v_joint_phase = compute_atp_phase_angle(v_joint_raw, time_s=t_joint, frequency=f_joint, op_reference_deg=op_joint_ref)
-    i_joint_phase = compute_atp_phase_angle(i_joint_raw, time_s=t_joint, frequency=f_joint, op_reference_deg=op_joint_ref)
+    reader = ATPOutputReader()
+
+    wf_1 = EMTWaveforms(t1, {tx_unit_id: v1_raw}, {tx_unit_id: i1_raw}, {}, float(op_1.frequency_hz))
+    wf_2 = EMTWaveforms(t2, {tx_unit_id: v2_raw}, {tx_unit_id: i2_raw}, {}, float(op_2.frequency_hz))
+    wf_joint = EMTWaveforms(t_joint, {tx_unit_id: v_joint_raw}, {tx_unit_id: i_joint_raw}, {}, float(op_joint.frequency_hz))
+
+    pt_1 = reader.extract_phase_trajectories(
+        wf_1, tx_unit_id,
+        voltage_reference_angles_rad=v1_ref_ang,
+        current_reference_angles_rad=i1_ref_ang,
+        voltage_reference_magnitudes=v1_ref_mag,
+        current_reference_magnitudes=i1_ref_mag,
+    )
+    pt_2 = reader.extract_phase_trajectories(
+        wf_2, tx_unit_id,
+        voltage_reference_angles_rad=v2_ref_ang,
+        current_reference_angles_rad=i2_ref_ang,
+        voltage_reference_magnitudes=v2_ref_mag,
+        current_reference_magnitudes=i2_ref_mag,
+    )
+    pt_joint = reader.extract_phase_trajectories(
+        wf_joint, tx_unit_id,
+        voltage_reference_angles_rad=vj_ref_ang,
+        current_reference_angles_rad=ij_ref_ang,
+        voltage_reference_magnitudes=vj_ref_mag,
+        current_reference_magnitudes=ij_ref_mag,
+    )
+
+    v1_phase = pt_1["voltage"]["phase_abs"]
+    i1_phase = pt_1["current"]["phase_abs"]
+    v2_phase = pt_2["voltage"]["phase_abs"]
+    i2_phase = pt_2["current"]["phase_abs"]
+    v_joint_phase = pt_joint["voltage"]["phase_abs"]
+    i_joint_phase = pt_joint["current"]["phase_abs"]
 
     return {
         "co_ev": co_ev,
