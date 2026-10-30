@@ -29,7 +29,7 @@ def compute_residual_rms_vs_coevents(
       1. Subtracts no-load baseline to obtain event-induced voltage/current responses v_delta and i_delta.
       2. Generates single equipment switching responses and joint simultaneous K-event responses.
       3. Computes linear composed co-event reference by summing single equipment event-induced responses.
-      4. Computes residual waveforms v_res = v_joint_delta - v_composed and i_res = i_joint_delta - i_composed.
+      4. Computes residual waveforms v_res = v_composed - v_joint_delta and i_res = i_composed - i_joint_delta.
       5. Decomposes baseline-subtracted joint and composed responses into 3 component channels:
          Fundamental (50 Hz), Harmonics, and Slow-Varying (SSD).
     Raises ValueError if required parameters, equipment models, or channels are missing.
@@ -151,8 +151,8 @@ def compute_residual_rms_vs_coevents(
         v_joint_delta = v_joint - v_base
         i_joint_delta = i_joint - i_base
 
-        v_res = v_joint_delta - v_composed
-        i_res = i_joint_delta - i_composed
+        v_res = v_composed - v_joint_delta
+        i_res = i_composed - i_joint_delta
 
         joint_curr_rms = float(np.sqrt(np.mean(i_joint ** 2)))
         joint_delta_rms = float(np.sqrt(np.mean(i_joint_delta ** 2)))
@@ -195,22 +195,22 @@ def compute_residual_rms_vs_coevents(
 
             v_joint_ch = decomp_v_joint[decomp_key]
             v_composed_ch = decomp_v_composed[decomp_key]
-            v_res_ch_wave = v_joint_ch - v_composed_ch
-            v_co_ch = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+            v_res_ch_wave = v_composed_ch - v_joint_ch
+            v_comp_ch = float(np.sqrt(np.mean(v_composed_ch ** 2)))
             v_res_ch = float(np.sqrt(np.mean(v_res_ch_wave ** 2)))
 
             i_joint_ch = decomp_i_joint[decomp_key]
             i_composed_ch = decomp_i_composed[decomp_key]
-            i_res_ch_wave = i_joint_ch - i_composed_ch
-            i_co_ch = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+            i_res_ch_wave = i_composed_ch - i_joint_ch
+            i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
             i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
-            ratio_ch = i_res_ch / max(i_co_ch, 1e-9)
+            ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
 
             print(
                 f"K={K_int}, channel={ch_name}, "
-                f"joint_channel_rms={i_co_ch:.6f}, "
-                f"composed_channel_rms={np.sqrt(np.mean(i_composed_ch**2)):.6f}, "
+                f"composed_channel_rms={i_comp_ch:.6f}, "
+                f"joint_channel_rms={np.sqrt(np.mean(i_joint_ch**2)):.6f}, "
                 f"residual_channel_rms={i_res_ch:.6f}, "
                 f"ratio={ratio_ch:.6f}"
             )
@@ -219,9 +219,9 @@ def compute_residual_rms_vs_coevents(
                 print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
 
             res_v_rms_channels[ch_name].append(v_res_ch)
-            co_v_rms_channels[ch_name].append(v_co_ch)
+            co_v_rms_channels[ch_name].append(v_comp_ch)
             res_i_rms_channels[ch_name].append(i_res_ch)
-            co_i_rms_channels[ch_name].append(i_co_ch)
+            co_i_rms_channels[ch_name].append(i_comp_ch)
             i_ratios_channels[ch_name].append(ratio_ch)
 
         res_v_rms_overall.append(v_res_rms)
@@ -337,27 +337,24 @@ def plot_residual_rms_ratio_vs_coevents(
     save_path: str = "src/visualization/residual_rms_ratio_vs_coevents.png"
 ) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
     """
-    Plots a single plot representing the mean Current Residual RMS / Co-Event RMS Magnitude ratio
+    Plots a single plot representing the mean Current Residual RMS / Composed RMS ratio
     averaged across the three component channels (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
-    Undoes min-max normalization and filters out ratio values > 1.0. Fits quadratic polynomial and saves figure.
+    Fits quadratic polynomial and saves figure.
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
     k_vals = data["k_values"]
     i_ratios_dict = data["i_ratios_channels"]
 
-    # Compute raw mean ratio across the 3 component channels for each K without min-max normalization
     ratio_fund = i_ratios_dict["fundamental"]
     ratio_harm = i_ratios_dict["harmonics"]
     ratio_slow = i_ratios_dict["slow_varying"]
 
     raw_mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
 
-    # Log warning using print when ratio is greater than or equal to 1
     for k_val, r_val in zip(k_vals, raw_mean_ratios):
         if r_val >= 1.0:
             print(f"WARNING: Mean current residual RMS ratio {r_val:.4f} at K={int(k_val)} is greater than or equal to 1.0.")
 
-    # Undo filtering of values >= 1.0 (keep all finite values)
     valid_mask = np.isfinite(raw_mean_ratios)
     k_plot = k_vals[valid_mask]
     ratios_plot = raw_mean_ratios[valid_mask]
@@ -384,12 +381,12 @@ def plot_residual_rms_ratio_vs_coevents(
     k_dense = np.linspace(float(np.min(k_plot)), float(np.max(k_plot)), 200)
     fit_dense = np.polyval(p_fit, k_dense)
 
-    ax.scatter(k_plot, ratios_plot, color="navy", s=50, zorder=5, label="Mean Current Residual/Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)")
+    ax.scatter(k_plot, ratios_plot, color="navy", s=50, zorder=5, label="Mean Current Residual/Composed RMS Ratio ($R_{I, \\mathrm{mean}}$)")
     ax.plot(k_dense, fit_dense, "--", color="crimson", linewidth=2.2, zorder=4, label=f"Fit: ${func_str_mean}$ ($R^2={r2_m:.4f}$)")
 
     ax.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
-    ax.set_ylabel("Mean Current Residual / Co-Event RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
-    ax.set_title("Mean Current Residual RMS / Co-Event RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{mean}}$)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Mean Current Residual / Composed RMS Ratio ($R_{I, \\mathrm{mean}}$)", fontsize=11, fontweight="bold")
+    ax.set_title("Mean Current Residual RMS / Composed RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{mean}}$)", fontsize=12, fontweight="bold")
 
     text_info = f"Derived Raw Mean Ratio Function:\n${func_str_mean}$\nGoodness of Fit ($R^2$): {r2_m:.4f}"
     ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="darkblue",
