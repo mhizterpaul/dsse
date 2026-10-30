@@ -159,20 +159,11 @@ def compute_residual_rms_vs_coevents(
         composed_rms = float(np.sqrt(np.mean(i_composed ** 2)))
         residual_rms = float(np.sqrt(np.mean(i_res ** 2)))
 
-        print(
-            f"K={K_int}, requested_events={len(single_events)}, "
-            f"joint_current_rms={joint_curr_rms:.6f}, "
-            f"joint_delta_rms={joint_delta_rms:.6f}, "
-            f"composed_rms={composed_rms:.6f}, "
-            f"residual_rms={residual_rms:.6f}"
-        )
-
         if previous_i_joint is not None:
             relative_change = float(
                 np.linalg.norm(i_joint - previous_i_joint)
                 / (np.linalg.norm(previous_i_joint) + 1e-12)
             )
-            print(f"K={K_int}, joint_waveform_relative_change={relative_change:.8e}")
         previous_i_joint = i_joint.copy()
 
         # Decompose baseline-subtracted joint and composed responses using consistent method
@@ -206,14 +197,6 @@ def compute_residual_rms_vs_coevents(
             i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
             ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
-
-            print(
-                f"K={K_int}, channel={ch_name}, "
-                f"composed_channel_rms={i_comp_ch:.6f}, "
-                f"joint_channel_rms={np.sqrt(np.mean(i_joint_ch**2)):.6f}, "
-                f"residual_channel_rms={i_res_ch:.6f}, "
-                f"ratio={ratio_ch:.6f}"
-            )
 
             if ratio_ch >= 1.0:
                 print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
