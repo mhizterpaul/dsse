@@ -144,10 +144,12 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
             v_joint_phase_angle = item["v_joint_phase"]
             i_joint_phase_angle = item["i_joint_phase"]
 
-            # Compute shifted phase angles for event 2 if shifted
             if shift_samples > 0:
-                v2_phase_angle = compute_atp_phase_angle(v2_shifted, time_s=t_arr)
-                i2_phase_angle = compute_atp_phase_angle(i2_shifted, time_s=t_arr)
+                v2_phase_angle = np.full_like(v2_shifted, np.nan)
+                i2_phase_angle = np.full_like(i2_shifted, np.nan)
+                if shift_samples < len(v2_shifted):
+                    v2_phase_angle[shift_samples:] = item["v2_phase"][:-shift_samples]
+                    i2_phase_angle[shift_samples:] = item["i2_phase"][:-shift_samples]
             else:
                 v2_phase_angle = item["v2_phase"]
                 i2_phase_angle = item["i2_phase"]
