@@ -135,10 +135,25 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         decomp_v_joint = decompose_load_waveform(t_arr, v_joint, fs=fs)
         decomp_i_joint = decompose_load_waveform(t_arr, i_joint, fs=fs)
 
+        # Compute Hilbert transform instant phase angles for raw voltage and current
+        import scipy.signal
+        v1_phase_angle = np.angle(scipy.signal.hilbert(v1, axis=0))
+        i1_phase_angle = np.angle(scipy.signal.hilbert(i1, axis=0))
+        v2_phase_angle = np.angle(scipy.signal.hilbert(v2_shifted, axis=0))
+        i2_phase_angle = np.angle(scipy.signal.hilbert(i2_shifted, axis=0))
+        v_joint_phase_angle = np.angle(scipy.signal.hilbert(v_joint, axis=0))
+        i_joint_phase_angle = np.angle(scipy.signal.hilbert(i_joint, axis=0))
+
+        v_comp_phase_angle = v1_phase_angle + v2_phase_angle
+        i_comp_phase_angle = i1_phase_angle + i2_phase_angle
+        v_res_phase_angle = v_joint_phase_angle - v_comp_phase_angle
+        i_res_phase_angle = i_joint_phase_angle - i_comp_phase_angle
+
         channel_map = [
             ("fundamental", "x_fundamental"),
             ("harmonics", "x_harmonics"),
-            ("slow_varying", "x_ssd")
+            ("slow_varying", "x_ssd"),
+            ("phase_angle", "phase_angle")
         ]
 
         target_bus = getattr(ev1, "target", "feeder1_head")
@@ -150,18 +165,30 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         flt2_type = getattr(ev2, "fault_type", None)
 
         for ch_name, key in channel_map:
-            v1_ch = decomp_v1[key]
-            i1_ch = decomp_i1[key]
-            v2_ch = decomp_v2[key]
-            i2_ch = decomp_i2[key]
-            v_joint_ch = decomp_v_joint[key]
-            i_joint_ch = decomp_i_joint[key]
+            if key == "phase_angle":
+                v1_ch = v1_phase_angle
+                i1_ch = i1_phase_angle
+                v2_ch = v2_phase_angle
+                i2_ch = i2_phase_angle
+                v_joint_ch = v_joint_phase_angle
+                i_joint_ch = i_joint_phase_angle
+                v_comp_ch = v_comp_phase_angle
+                i_comp_ch = i_comp_phase_angle
+                v_res_ch = v_res_phase_angle
+                i_res_ch = i_res_phase_angle
+            else:
+                v1_ch = decomp_v1[key]
+                i1_ch = decomp_i1[key]
+                v2_ch = decomp_v2[key]
+                i2_ch = decomp_i2[key]
+                v_joint_ch = decomp_v_joint[key]
+                i_joint_ch = decomp_i_joint[key]
 
-            v_comp_ch = v1_ch + v2_ch
-            i_comp_ch = i1_ch + i2_ch
+                v_comp_ch = v1_ch + v2_ch
+                i_comp_ch = i1_ch + i2_ch
 
-            v_res_ch = v_joint_ch - v_comp_ch
-            i_res_ch = i_joint_ch - i_comp_ch
+                v_res_ch = v_joint_ch - v_comp_ch
+                i_res_ch = i_joint_ch - i_comp_ch
 
             voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
             current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))

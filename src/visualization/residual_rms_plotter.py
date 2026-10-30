@@ -338,7 +338,7 @@ def plot_residual_rms_ratio_vs_coevents(
 ) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
     """
     Plots a single plot representing the mean Current Residual RMS / Composed RMS ratio
-    averaged across the three component channels (Fundamental, Harmonics, Slow-Varying) vs simultaneous co-events K (K = 2 .. max_coevents).
+    averaged across Fundamental and Harmonics channels (excluding slow-varying) vs simultaneous co-events K (K = 2 .. max_coevents).
     Fits quadratic polynomial and saves figure.
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
@@ -347,9 +347,8 @@ def plot_residual_rms_ratio_vs_coevents(
 
     ratio_fund = i_ratios_dict["fundamental"]
     ratio_harm = i_ratios_dict["harmonics"]
-    ratio_slow = i_ratios_dict["slow_varying"]
 
-    raw_mean_ratios = (ratio_fund + ratio_harm + ratio_slow) / 3.0
+    raw_mean_ratios = (ratio_fund + ratio_harm) / 2.0
 
     for k_val, r_val in zip(k_vals, raw_mean_ratios):
         if r_val >= 1.0:
@@ -413,6 +412,74 @@ def plot_residual_rms_ratio_vs_coevents(
     return fig, funcs_dict, params_dict
 
 
+def plot_slow_varying_residual_ratio_vs_coevents(
+    max_coevents: int = 25,
+    save_path: str = "src/visualization/slow_varying_residual_ratio_vs_coevents.png"
+) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
+    """
+    Graphs the residual/joint ratio R_slow(K) = RMS(i_joint_slow - i_composed_slow) / RMS(i_joint_slow)
+    of the slow-varying (DC) channel vs simultaneous co-events K (K = 2 .. max_coevents) on a separate plot.
+    Fits quadratic polynomial and saves figure.
+    """
+    data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
+    k_vals = data["k_values"]
+    i_res_slow = data["res_i_rms_channels"]["slow_varying"]
+    i_joint_slow = data["co_i_rms_channels"]["slow_varying"]
+
+    # Compute residual / joint ratio where residual = joint - composed
+    # RMS(joint - composed) / RMS(joint)
+    ratios_slow = i_res_slow / np.maximum(i_joint_slow, 1e-9)
+
+    valid_mask = np.isfinite(ratios_slow)
+    k_plot = k_vals[valid_mask]
+    ratios_plot = ratios_slow[valid_mask]
+
+    if len(ratios_plot) == 0:
+        raise ValueError("Cannot fit curve: No valid finite slow-varying ratio values found.")
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    p_fit = np.polyfit(k_plot, ratios_plot, 2)
+    a_s, b_s, c_s = float(p_fit[0]), float(p_fit[1]), float(p_fit[2])
+
+    fit_vals = np.polyval(p_fit, k_plot)
+    ss_res = float(np.sum((ratios_plot - fit_vals) ** 2))
+    ss_tot = float(np.sum((ratios_plot - np.mean(ratios_plot)) ** 2))
+    r2_s = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+    b_sign = "+" if b_s >= 0 else "-"
+    c_sign = "+" if c_s >= 0 else "-"
+    func_str_slow = f"R_{{I, \\mathrm{{slow}}}}(K) = {abs(a_s):.6f}·K² {b_sign} {abs(b_s):.6f}·K {c_sign} {abs(c_s):.6f}"
+
+    k_dense = np.linspace(float(np.min(k_plot)), float(np.max(k_plot)), 200)
+    fit_dense = np.polyval(p_fit, k_dense)
+
+    ax.scatter(k_plot, ratios_plot, color="darkorange", s=50, zorder=5, label="Slow-Varying (DC) Residual/Joint RMS Ratio ($R_{I, \\mathrm{slow}}$)")
+    ax.plot(k_dense, fit_dense, "--", color="purple", linewidth=2.2, zorder=4, label=f"Fit: ${func_str_slow}$ ($R^2={r2_s:.4f}$)")
+
+    ax.set_xlabel("Number of Simultaneous Co-Events ($K$)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Slow-Varying (DC) Residual / Joint RMS Ratio ($R_{I, \\mathrm{slow}}$)", fontsize=11, fontweight="bold")
+    ax.set_title("Slow-Varying (DC) Channel Residual RMS / Joint RMS Ratio vs. Simultaneous Co-Events ($R_{I, \\mathrm{slow}}$)", fontsize=12, fontweight="bold")
+
+    text_info = f"Derived Slow-Varying Ratio Function:\n${func_str_slow}$\nGoodness of Fit ($R^2$): {r2_s:.4f}"
+    ax.text(0.05, 0.80, text_info, transform=ax.transAxes, fontsize=10, fontweight="bold", color="purple",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", edgecolor="purple", alpha=0.95), zorder=10)
+    ax.grid(True, alpha=0.25, linestyle=":")
+    ax.legend(loc="lower right", frameon=True, fontsize=10)
+
+    fig.tight_layout()
+
+    if save_path:
+        save_p = Path(save_path)
+        save_p.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_p, bbox_inches="tight", dpi=300)
+
+    funcs_dict = {"slow_varying_ratio_function": func_str_slow}
+    params_dict = {"slow_varying_params": (a_s, b_s, c_s)}
+
+    return fig, funcs_dict, params_dict
+
+
 compute_residual_energy_vs_coevents = compute_residual_rms_vs_coevents
 plot_residual_energy_vs_coevents = plot_residual_rms_vs_coevents
 plot_residual_error_vs_coevents = plot_residual_rms_vs_coevents
@@ -428,3 +495,7 @@ if __name__ == "__main__":
     fig2, funcs2, _ = plot_residual_rms_ratio_vs_coevents()
     print("\nResidual RMS ratio vs co-events plots generated successfully!")
     print(f"Mean Current Residual RMS Ratio Function: {funcs2['mean_ratio_function']}")
+
+    fig3, funcs3, _ = plot_slow_varying_residual_ratio_vs_coevents()
+    print("\nSlow-varying residual ratio vs co-events plot generated successfully!")
+    print(f"Slow-Varying Residual RMS Ratio Function: {funcs3['slow_varying_ratio_function']}")

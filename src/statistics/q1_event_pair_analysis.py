@@ -16,10 +16,12 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
     ]
 
     eta_noise = 10.0 ** (-snr_db / 20.0)
-    channels = ["fundamental", "harmonics", "slow_varying"] if "channel" in df.columns else [None]
+    target_channels = ["fundamental", "harmonics", "slow_varying", "phase_angle"]
+    channels = [c for c in target_channels if c in df["channel"].values] if "channel" in df.columns else [None]
 
     all_18_corrs = []
     per_channel_discount = {}
+    channel_correlations = {}
 
     for ch in channels:
         ch_df = df[df["channel"] == ch] if ch is not None else df
@@ -98,6 +100,19 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
 
         ch_corr_vector = [float(np.mean(c_list)) for c_list in col_correlations]
         all_18_corrs.extend(ch_corr_vector)
+        if ch is not None:
+            channel_correlations[ch] = float(np.mean(ch_corr_vector))
+
+    # Compute dissimilarities for each channel (fundamental, harmonic, dc, phase_angle)
+    # D_ch = 1 - S_ch
+    d_fund = 1.0 - channel_correlations.get("fundamental", 0.0)
+    d_harm = 1.0 - channel_correlations.get("harmonics", 0.0)
+    d_dc = 1.0 - channel_correlations.get("slow_varying", 0.0)
+    d_phase = 1.0 - channel_correlations.get("phase_angle", 0.0)
+
+    d_list = [d_fund, d_harm, d_dc, d_phase]
+    d_mean = float(np.mean(d_list))
+    d_std = float(np.std(d_list))
 
     mean_waveform_correlation = float(np.mean(all_18_corrs)) if all_18_corrs else 0.0
     corr_std = float(np.std(all_18_corrs)) if all_18_corrs else 0.0
@@ -108,7 +123,14 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
         "mean_waveform_correlation": mean_waveform_correlation,
         "corr_std": corr_std,
         "per_channel_discount": per_channel_discount,
-        "discount_factor": avg_discount
+        "discount_factor": avg_discount,
+        "channel_correlations": channel_correlations,
+        "d_fund": d_fund,
+        "d_harm": d_harm,
+        "d_dc": d_dc,
+        "d_phase": d_phase,
+        "d_mean": d_mean,
+        "d_std": d_std
     }
 
 
@@ -126,9 +148,9 @@ def run_q1_event_pair_analysis(dataset_path: Path = Path("src/simulation/dataset
     per_channel_discount = stats_res.get("per_channel_discount", {})
     discount_factor = stats_res["discount_factor"]
 
-    print(f"Waveform Pearson Correlation across 18 channels (Dataset 2): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
-    print(f"  Per-Channel Discount Factors: {per_channel_discount}")
-    print(f"  18-Channel Correlation Vector: {[round(c, 4) for c in col_corr_vector]}")
+    print(f"Waveform Pearson Correlation across channels (Dataset 2): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
+    print(f"  Channel Dissimilarities: Fundamental={stats_res['d_fund']:.4f}, Harmonics={stats_res['d_harm']:.4f}, DC={stats_res['d_dc']:.4f}, Phase={stats_res['d_phase']:.4f}")
+    print(f"  Overall Mean Dissimilarity = {stats_res['d_mean']:.4f}, Dissimilarity Std = {stats_res['d_std']:.4f}")
 
     v_vals = df_2["residual_voltage_magnitude"].values
     i_vals = df_2["residual_current_magnitude"].values
@@ -141,7 +163,13 @@ def run_q1_event_pair_analysis(dataset_path: Path = Path("src/simulation/dataset
         "per_channel_discount": per_channel_discount,
         "discount_factor": discount_factor,
         "mean_v_residual": float(np.mean(v_vals)),
-        "mean_i_residual": float(np.mean(i_vals))
+        "mean_i_residual": float(np.mean(i_vals)),
+        "d_fund": stats_res["d_fund"],
+        "d_harm": stats_res["d_harm"],
+        "d_dc": stats_res["d_dc"],
+        "d_phase": stats_res["d_phase"],
+        "d_mean": stats_res["d_mean"],
+        "d_std": stats_res["d_std"]
     }
 
 
