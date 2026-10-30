@@ -154,6 +154,43 @@ def compute_atp_phase_angle(
     return res["phase_abs"]
 
 
+def extract_transformer_phasors_from_dss(dss_instance: Any, feeder_idx: int) -> dict:
+    """
+    Extracts OpenDSS LV terminal complex voltage and current phasors for the active transformer boundary.
+    """
+    tx_unit_id = f"trans{feeder_idx}_lv_boundary"
+    tx_name = f"Transformer.trans{feeder_idx}"
+    sec_bus = f"feeder{feeder_idx}_sec"
+
+    v_phasors = np.zeros(3, dtype=complex)
+    i_phasors = np.zeros(3, dtype=complex)
+
+    if dss_instance.Circuit.SetActiveElement(tx_name):
+        c_raw = dss_instance.CktElement.Currents()
+        if len(c_raw) >= 12:
+            i_phasors = np.array([
+                complex(c_raw[6], c_raw[7]),
+                complex(c_raw[8], c_raw[9]),
+                complex(c_raw[10], c_raw[11])
+            ])
+
+    if dss_instance.Circuit.SetActiveBus(sec_bus):
+        v_comp = dss_instance.Bus.Voltages()
+        if len(v_comp) >= 6:
+            v_phasors = np.array([
+                complex(v_comp[0], v_comp[1]),
+                complex(v_comp[2], v_comp[3]),
+                complex(v_comp[4], v_comp[5])
+            ])
+
+    return {
+        tx_unit_id: {
+            "voltage_abc": v_phasors,
+            "current_abc": i_phasors
+        }
+    }
+
+
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
     """
     Extracts fault parameters (fault_type, fault_resistance_ohm, faulted_phases, line parameters,
@@ -516,6 +553,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_base = plant.solve_operating_point(runner.dss)
+    op_base.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
+
     no_load_ev = NoLoadEvent(start_time_s=0.02, duration_s=0.10)
     t_base, v_base_dict, i_base_dict, _ = runner.measure_transients(
         op=op_base,
@@ -530,6 +569,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_joint = plant.solve_operating_point(runner.dss)
+    op_joint.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
 
     fault_info_json = extract_fault_info(runner.dss, "joint_fault", target_line, co_ev)
 
@@ -546,6 +586,8 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_1 = plant.solve_operating_point(runner.dss)
+    op_1.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
+
     t1, v1_dict, i1_dict, _ = runner.measure_transients(
         op=op_1,
         event=ev1,
@@ -559,6 +601,7 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     runner.initialize_plant_session(use_baseline_feeder=use_baseline_feeder, seed=seed)
     runner.dss.run_command("disable Fault.*")
     op_2 = plant.solve_operating_point(runner.dss)
+    op_2.transformer_phasors = extract_transformer_phasors_from_dss(runner.dss, feeder_idx)
     t2, v2_dict, i2_dict, _ = runner.measure_transients(
         op=op_2,
         event=ev2,
