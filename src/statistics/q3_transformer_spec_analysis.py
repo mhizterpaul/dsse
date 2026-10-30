@@ -22,8 +22,8 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
     target_channels = ["fundamental", "harmonics", "slow_varying", "phase_angle"]
     channels = [c for c in target_channels if c in df["channel"].values] if "channel" in df.columns else [None]
 
-    all_18_corrs = []
-    per_channel_discount = {}
+    all_corrs = []
+    discounts = []
     channel_correlations = {}
 
     for ch in channels:
@@ -68,8 +68,7 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
         mag_ratio = avg_res_mag / avg_comp_mag
 
         discount_factor = eta_noise + mag_ratio
-        if ch is not None:
-            per_channel_discount[ch] = discount_factor
+        discounts.append(discount_factor)
 
         col_correlations = [[] for _ in pairs]
 
@@ -104,7 +103,7 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
                 col_correlations[p_idx].append(val)
 
         ch_corr_vector = [float(np.mean(c_list)) for c_list in col_correlations]
-        all_18_corrs.extend(ch_corr_vector)
+        all_corrs.extend(ch_corr_vector)
         if ch is not None:
             channel_correlations[ch] = float(np.mean(ch_corr_vector))
 
@@ -117,15 +116,13 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
     d_mean = float(np.mean(d_list))
     d_std = float(np.std(d_list))
 
-    mean_waveform_correlation = float(np.mean(all_18_corrs)) if all_18_corrs else 0.0
-    corr_std = float(np.std(all_18_corrs)) if all_18_corrs else 0.0
-    avg_discount = float(np.mean(list(per_channel_discount.values()))) if per_channel_discount else discount_factor
+    mean_waveform_correlation = float(np.mean(all_corrs)) if all_corrs else 0.0
+    corr_std = float(np.std(all_corrs)) if all_corrs else 0.0
+    avg_discount = float(np.mean(discounts)) if discounts else 0.0
 
     return {
-        "col_corr_vector": all_18_corrs,
         "mean_waveform_correlation": mean_waveform_correlation,
         "corr_std": corr_std,
-        "per_channel_discount": per_channel_discount,
         "discount_factor": avg_discount,
         "channel_correlations": channel_correlations,
         "d_fund": d_fund,
@@ -145,10 +142,8 @@ def run_q3_transformer_spec_analysis(dataset_path: Path = Path("src/simulation/d
     print("--- Running Question 3 Analysis: Transformer Specification Effect (Dataset 4) ---")
 
     stats_res = compute_waveform_pearson_stats(df_4)
-    col_corr_vector = stats_res["col_corr_vector"]
     mean_waveform_correlation = stats_res["mean_waveform_correlation"]
     corr_std = stats_res["corr_std"]
-    per_channel_discount = stats_res.get("per_channel_discount", {})
     discount_factor = stats_res["discount_factor"]
 
     print(f"Waveform Pearson Correlation across channels (Dataset 4): Mean Correlation = {mean_waveform_correlation:.4f}, Std = {corr_std:.4f}")
@@ -157,16 +152,14 @@ def run_q3_transformer_spec_analysis(dataset_path: Path = Path("src/simulation/d
 
     v_vals = df_4["residual_voltage_magnitude"].values
     i_vals = df_4["residual_current_magnitude"].values
-    print(f"Overall Dataset 4 Transformer Spec Effect (N={len(df_4)}): Mean V_res = {np.mean(v_vals):.6f}, Mean I_res = {np.mean(i_vals):.6f}")
+    print(f"Overall Dataset 4 Transformer Spec Effect (N={len(df_4)}): Mean V_res = {np.nanmean(v_vals):.6f}, Mean I_res = {np.nanmean(i_vals):.6f}")
 
     return {
-        "col_corr_vector": col_corr_vector,
         "mean_waveform_correlation": mean_waveform_correlation,
         "corr_std": corr_std,
-        "per_channel_discount": per_channel_discount,
         "discount_factor": discount_factor,
-        "mean_v_residual": float(np.mean(v_vals)),
-        "mean_i_residual": float(np.mean(i_vals)),
+        "mean_v_residual": float(np.nanmean(v_vals)),
+        "mean_i_residual": float(np.nanmean(i_vals)),
         "d_fund": stats_res["d_fund"],
         "d_harm": stats_res["d_harm"],
         "d_dc": stats_res["d_dc"],
