@@ -135,14 +135,29 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
         decomp_v_joint = decompose_load_waveform(t_arr, v_joint, fs=fs)
         decomp_i_joint = decompose_load_waveform(t_arr, i_joint, fs=fs)
 
-        # Compute Hilbert transform instant phase angles for raw voltage and current
-        import scipy.signal
-        v1_phase_angle = np.angle(scipy.signal.hilbert(v1, axis=0))
-        i1_phase_angle = np.angle(scipy.signal.hilbert(i1, axis=0))
-        v2_phase_angle = np.angle(scipy.signal.hilbert(v2_shifted, axis=0))
-        i2_phase_angle = np.angle(scipy.signal.hilbert(i2_shifted, axis=0))
-        v_joint_phase_angle = np.angle(scipy.signal.hilbert(v_joint, axis=0))
-        i_joint_phase_angle = np.angle(scipy.signal.hilbert(i_joint, axis=0))
+        # Derive ATP-EMTP phase angles directly from simulation runner outputs
+        from src.simulation.runner import compute_atp_phase_angle
+
+        if "v1_phase" in item and "i1_phase" in item:
+            v1_phase_angle = item["v1_phase"]
+            i1_phase_angle = item["i1_phase"]
+            v_joint_phase_angle = item["v_joint_phase"]
+            i_joint_phase_angle = item["i_joint_phase"]
+
+            # Compute shifted phase angles for event 2 if shifted
+            if shift_samples > 0:
+                v2_phase_angle = compute_atp_phase_angle(v2_shifted)
+                i2_phase_angle = compute_atp_phase_angle(i2_shifted)
+            else:
+                v2_phase_angle = item["v2_phase"]
+                i2_phase_angle = item["i2_phase"]
+        else:
+            v1_phase_angle = compute_atp_phase_angle(v1)
+            i1_phase_angle = compute_atp_phase_angle(i1)
+            v2_phase_angle = compute_atp_phase_angle(v2_shifted)
+            i2_phase_angle = compute_atp_phase_angle(i2_shifted)
+            v_joint_phase_angle = compute_atp_phase_angle(v_joint)
+            i_joint_phase_angle = compute_atp_phase_angle(i_joint)
 
         v_comp_phase_angle = v1_phase_angle + v2_phase_angle
         i_comp_phase_angle = i1_phase_angle + i2_phase_angle

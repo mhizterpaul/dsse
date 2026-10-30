@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import scipy.signal
 import src.power_plant.plant as plant
 from src.transient.models import (
     ThreePhaseThevenin,
@@ -34,6 +35,14 @@ class SimulationResult:
     steady_state_measurements: Dict[str, Any] = field(default_factory=dict)
     time_s: Optional[np.ndarray] = None
     operating_point: Optional[Any] = None
+
+
+def compute_atp_phase_angle(waveform: np.ndarray) -> np.ndarray:
+    """
+    Derives instantaneous phase angles (radians) directly from ATP-EMTP transient simulation waveforms.
+    """
+    analytic_signal = scipy.signal.hilbert(waveform, axis=0)
+    return np.angle(analytic_signal)
 
 
 def extract_fault_info(dss_instance: Any, fault_id: str, target_line: str, event_spec: Any) -> str:
@@ -483,6 +492,13 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
     v_joint = v_joint_raw - v_base
     i_joint = i_joint_raw - i_base
 
+    v1_phase = compute_atp_phase_angle(v1)
+    i1_phase = compute_atp_phase_angle(i1)
+    v2_phase = compute_atp_phase_angle(v2)
+    i2_phase = compute_atp_phase_angle(i2)
+    v_joint_phase = compute_atp_phase_angle(v_joint)
+    i_joint_phase = compute_atp_phase_angle(i_joint)
+
     return {
         "co_ev": co_ev,
         "time_s": t_joint,
@@ -492,6 +508,12 @@ def _simulate_single_coevent_worker(args_tuple: tuple) -> Dict[str, Any]:
         "i2": i2,
         "v_joint": v_joint,
         "i_joint": i_joint,
+        "v1_phase": v1_phase,
+        "i1_phase": i1_phase,
+        "v2_phase": v2_phase,
+        "i2_phase": i2_phase,
+        "v_joint_phase": v_joint_phase,
+        "i_joint_phase": i_joint_phase,
         "fault_info": fault_info_json,
         "gt_feeder_id": f"feeder_{feeder_idx}",
     }
