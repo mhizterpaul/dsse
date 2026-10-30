@@ -19,7 +19,7 @@ from src.transient.opendss_reducer import OpenDSSReducer
 from src.transient.bctran_generator import BCTRANGenerator
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
-from src.transient.atp_parser import ATPOutputReader
+from src.transient.atp_parser import ATPOutputReader, _extract_fundamental_phase
 from src.transient.events import (
     SingleLineFaultEvent,
     SingleEquipmentSwitchEvent,
@@ -38,115 +38,36 @@ class SimulationResult:
     operating_point: Optional[Any] = None
 
 
-def track_fundamental_phase(
-    time: np.ndarray,
-    signal: np.ndarray,
-    frequency_hz: float = 50.0,
-    op_reference_deg: Optional[Any] = 0.0,
-    window_cycles: float = 1.0,
-    amplitude_threshold: float = 1e-4,
-) -> Dict[str, np.ndarray]:
-    """
-    Estimate fundamental phase angle trajectory, phase deviation relative to OpenDSS operating point
-    reference, and fundamental amplitude over time using a sliding least-squares sinusoidal fit.
-    Convention:
-        v(t) = A * cos(2 * pi * f * t + op_ref_rad + phase_dev)
-    Returns:
-        dict with keys: 'amplitude', 'phase_abs', 'phase_dev', 'valid'
-    """
-    time = np.asarray(time, dtype=float)
-    signal = np.asarray(signal, dtype=float)
-
-    if time.ndim != 1:
-        raise ValueError("time vector must be 1D")
-
-    dt = float(np.mean(np.diff(time))) if len(time) > 1 else 1e-4
-    window_size = int(round(window_cycles / (frequency_hz * dt)))
-    if window_size < 1:
-        window_size = 1
-
-    omega_0 = 2.0 * np.pi * frequency_hz
-
-    if signal.ndim == 1:
-        ref_deg = float(op_reference_deg) if op_reference_deg is not None and not isinstance(op_reference_deg, (list, tuple, np.ndarray)) else 0.0
-        ref_rad = np.radians(ref_deg)
-
-        cos_ref = np.cos(omega_0 * time + ref_rad)
-        sin_ref = np.sin(omega_0 * time + ref_rad)
-
-        c_sig = signal * cos_ref
-        s_sig = signal * sin_ref
-
-        a_k = 2.0 * scipy.ndimage.uniform_filter1d(c_sig, size=window_size, mode="nearest")
-        b_k = 2.0 * scipy.ndimage.uniform_filter1d(s_sig, size=window_size, mode="nearest")
-
-        amp = np.sqrt(a_k ** 2 + b_k ** 2)
-        dev = np.unwrap(np.arctan2(-b_k, a_k))
-        phase_abs = ref_rad + dev
-
-        valid_mask = amp >= amplitude_threshold
-        phase_abs_valid = np.where(valid_mask, phase_abs, np.nan)
-        dev_valid = np.where(valid_mask, dev, np.nan)
-
-        return {
-            "amplitude": amp,
-            "phase_abs": phase_abs_valid,
-            "phase_dev": dev_valid,
-            "valid": valid_mask,
-        }
-    else:
-        amps, phases_abs, phases_dev, valids = [], [], [], []
-        if isinstance(op_reference_deg, (list, tuple, np.ndarray)):
-            refs = list(op_reference_deg)
-        else:
-            refs = [op_reference_deg] * signal.shape[1]
-
-        for col in range(signal.shape[1]):
-            r_deg = refs[col] if col < len(refs) else 0.0
-            res = track_fundamental_phase(
-                time,
-                signal[:, col],
-                frequency_hz=frequency_hz,
-                op_reference_deg=r_deg,
-                window_cycles=window_cycles,
-                amplitude_threshold=amplitude_threshold,
-            )
-            amps.append(res["amplitude"])
-            phases_abs.append(res["phase_abs"])
-            phases_dev.append(res["phase_dev"])
-            valids.append(res["valid"])
-
-        return {
-            "amplitude": np.column_stack(amps),
-            "phase_abs": np.column_stack(phases_abs),
-            "phase_dev": np.column_stack(phases_dev),
-            "valid": np.column_stack(valids),
-        }
-
-
 def compute_atp_phase_angle(
     waveform: np.ndarray,
     time_s: Optional[np.ndarray] = None,
     frequency: float = 50.0,
     op_reference_deg: Optional[Any] = 0.0,
-    window_cycles: float = 1.0,
+    window_cycles: float = 0.5,
     amplitude_threshold: float = 1e-4,
     return_details: bool = False,
 ) -> Any:
     """
     Derives instantaneous fundamental phase angles (radians) directly from raw ATP-EMTP transient simulation waveforms
-    referenced against OpenDSS operating point phasors.
+    referenced against OpenDSS operating point phasors. Delegates to _extract_fundamental_phase in atp_parser.py.
     """
     if time_s is None:
         time_s = np.arange(len(waveform)) * 1e-4
 
-    res = track_fundamental_phase(
-        time=time_s,
-        signal=waveform,
+    n_cols = waveform.shape[1] if waveform.ndim > 1 else 1
+    if isinstance(op_reference_deg, (list, tuple, np.ndarray)):
+        ref_rad = np.radians(op_reference_deg)
+    else:
+        ref_deg_val = float(op_reference_deg) if op_reference_deg is not None else 0.0
+        ref_rad = np.full(n_cols, np.radians(ref_deg_val))
+
+    res = _extract_fundamental_phase(
+        time_s=time_s,
+        waveform=waveform,
         frequency_hz=frequency,
-        op_reference_deg=op_reference_deg,
+        reference_angles_rad=ref_rad,
         window_cycles=window_cycles,
-        amplitude_threshold=amplitude_threshold,
+        amplitude_threshold_ratio=amplitude_threshold,
     )
 
     if return_details:
