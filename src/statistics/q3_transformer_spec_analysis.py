@@ -13,6 +13,9 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
         ("obs_single_event_1_i_phase_a", "obs_single_event_2_i_phase_a"),
         ("obs_single_event_1_i_phase_b", "obs_single_event_2_i_phase_b"),
         ("obs_single_event_1_i_phase_c", "obs_single_event_2_i_phase_c"),
+        ("obs_single_event_1_vi_phase_diff_phase_a", "obs_single_event_2_vi_phase_diff_phase_a"),
+        ("obs_single_event_1_vi_phase_diff_phase_b", "obs_single_event_2_vi_phase_diff_phase_b"),
+        ("obs_single_event_1_vi_phase_diff_phase_c", "obs_single_event_2_vi_phase_diff_phase_c"),
     ]
 
     eta_noise = 10.0 ** (-snr_db / 20.0)
@@ -43,8 +46,10 @@ def compute_waveform_pearson_stats(df: pd.DataFrame, snr_db: float = 35.0) -> di
             comp_i = np.sqrt(np.mean(i_a**2 + i_b**2 + i_c**2))
             comp_mags.append(comp_v + comp_i)
 
-            res_v = float(row.get("residual_voltage_magnitude", 0.0))
-            res_i = float(row.get("residual_current_magnitude", 0.0))
+            rv_raw = row.get("residual_voltage_magnitude", 0.0)
+            ri_raw = row.get("residual_current_magnitude", 0.0)
+            res_v = float(rv_raw) if pd.notna(rv_raw) else 0.0
+            res_i = float(ri_raw) if pd.notna(ri_raw) else 0.0
             res_mags.append(res_v + res_i)
 
         if len(res_mags) == 0 or len(comp_mags) == 0:

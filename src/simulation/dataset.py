@@ -189,14 +189,21 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 i_joint_ch = i_joint_phase_angle
                 v_comp_ch = v_comp_phase_angle
                 i_comp_ch = i_comp_phase_angle
-                v_res_ch = v_res_phase_angle
-                i_res_ch = i_res_phase_angle
+
+                # Residual for phase angle channel is not computed; set to NaN
+                v_res_ch = np.full_like(v_joint_phase_angle, np.nan)
+                i_res_ch = np.full_like(i_joint_phase_angle, np.nan)
 
                 vi_diff_1 = v1_ch - i1_ch
                 vi_diff_2 = v2_ch - i2_ch
                 vi_diff_comp = v_comp_ch - i_comp_ch
                 vi_diff_joint = v_joint_ch - i_joint_ch
-                vi_diff_res = v_res_ch - i_res_ch
+                vi_diff_res = np.full_like(v_joint_phase_angle, np.nan)
+
+                voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+                current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+                residual_v_mag = np.nan
+                residual_i_mag = np.nan
             else:
                 v1_ch = decomp_v1[key]
                 i1_ch = decomp_i1[key]
@@ -217,11 +224,10 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 vi_diff_joint = compute_atp_phase_angle(v_joint_ch, time_s=t_arr) - compute_atp_phase_angle(i_joint_ch, time_s=t_arr)
                 vi_diff_res = compute_atp_phase_angle(v_res_ch, time_s=t_arr) - compute_atp_phase_angle(i_res_ch, time_s=t_arr)
 
-            voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
-            current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
-
-            residual_v_mag = float(np.sqrt(np.mean(v_res_ch ** 2)))
-            residual_i_mag = float(np.sqrt(np.mean(i_res_ch ** 2)))
+                voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
+                current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
+                residual_v_mag = float(np.sqrt(np.mean(v_res_ch ** 2)))
+                residual_i_mag = float(np.sqrt(np.mean(i_res_ch ** 2)))
 
             row = {
                 "channel": ch_name,
