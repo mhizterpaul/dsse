@@ -194,14 +194,15 @@ def compute_residual_rms_vs_coevents(
             i_composed_ch = decomp_i_composed[decomp_key]
 
             if ch_name == "slow_varying":
-                # For DC / slow-varying channel, residual is joint - composed
-                # Check if joint is negative; if it is, add composed
-                i_joint_adj = np.where(i_joint_ch < 0, i_joint_ch + i_composed_ch, i_joint_ch)
-                i_res_ch_wave = i_joint_ch - i_composed_ch
-                i_denom_rms = float(np.sqrt(np.mean(i_joint_adj ** 2)))
+                # For DC / slow-varying channel: if joint < 0: joint + composed else joint - composed
+                if np.isscalar(i_joint_ch):
+                    i_res_ch_wave = (i_joint_ch + i_composed_ch) if i_joint_ch < 0 else (i_joint_ch - i_composed_ch)
+                else:
+                    i_res_ch_wave = np.where(i_joint_ch < 0, i_joint_ch + i_composed_ch, i_joint_ch - i_composed_ch)
+                i_joint_rms = float(np.sqrt(np.mean(i_joint_ch ** 2)))
                 i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
                 i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
-                ratio_ch = i_res_ch / max(i_denom_rms, 1e-9)
+                ratio_ch = i_res_ch / max(i_joint_rms, 1e-9)
             else:
                 i_res_ch_wave = i_composed_ch - i_joint_ch
                 i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
