@@ -193,21 +193,10 @@ def compute_residual_rms_vs_coevents(
             i_joint_ch = decomp_i_joint[decomp_key]
             i_composed_ch = decomp_i_composed[decomp_key]
 
-            if ch_name == "slow_varying":
-                # For DC / slow-varying channel: residual is joint - composed
-                i_res_ch_wave = i_joint_ch - i_composed_ch
-                i_joint_rms = float(np.sqrt(np.mean(i_joint_ch ** 2)))
-                i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
-                i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
-                ratio_ch = i_res_ch / max(i_joint_rms, 1e-9)
-            else:
-                i_res_ch_wave = i_composed_ch - i_joint_ch
-                i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
-                i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
-                ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
-
-            if ratio_ch >= 1.0:
-                print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
+            i_res_ch_wave = i_composed_ch - i_joint_ch
+            i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
+            i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
+            ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
 
             res_v_rms_channels[ch_name].append(v_res_ch)
             co_v_rms_channels[ch_name].append(v_comp_ch)
