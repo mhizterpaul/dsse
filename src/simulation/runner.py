@@ -19,7 +19,7 @@ from src.transient.opendss_reducer import OpenDSSReducer
 from src.transient.bctran_generator import BCTRANGenerator
 from src.transient.atp_case_builder import ATPCaseBuilder
 from src.transient.atp_runner import ATPRunner
-from src.transient.atp_parser import ATPOutputReader, _extract_fundamental_phase
+from src.transient.atp_parser import ATPOutputReader, EMTWaveforms, _extract_fundamental_phase
 from src.transient.events import (
     SingleLineFaultEvent,
     SingleEquipmentSwitchEvent,
