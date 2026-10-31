@@ -192,11 +192,21 @@ def compute_residual_rms_vs_coevents(
 
             i_joint_ch = decomp_i_joint[decomp_key]
             i_composed_ch = decomp_i_composed[decomp_key]
-            i_res_ch_wave = i_composed_ch - i_joint_ch
-            i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
-            i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
 
-            ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
+            if ch_name == "slow_varying":
+                # For DC / slow-varying channel, residual is joint - composed
+                # Check if joint is negative; if it is, add composed
+                i_joint_adj = np.where(i_joint_ch < 0, i_joint_ch + i_composed_ch, i_joint_ch)
+                i_res_ch_wave = i_joint_ch - i_composed_ch
+                i_denom_rms = float(np.sqrt(np.mean(i_joint_adj ** 2)))
+                i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
+                i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
+                ratio_ch = i_res_ch / max(i_denom_rms, 1e-9)
+            else:
+                i_res_ch_wave = i_composed_ch - i_joint_ch
+                i_comp_ch = float(np.sqrt(np.mean(i_composed_ch ** 2)))
+                i_res_ch = float(np.sqrt(np.mean(i_res_ch_wave ** 2)))
+                ratio_ch = i_res_ch / max(i_comp_ch, 1e-9)
 
             if ratio_ch >= 1.0:
                 print(f"WARNING: Channel '{ch_name}' residual RMS ratio {ratio_ch:.4f} at K={K_int} is greater than or equal to 1.0.")
@@ -406,16 +416,9 @@ def plot_slow_varying_residual_ratio_vs_coevents(
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
     k_vals = data["k_values"]
-    i_res_slow = data["res_i_rms_channels"]["slow_varying"]
-    i_joint_slow = data["co_i_rms_channels"]["slow_varying"]
-    i_composed_slow = data["co_i_rms_channels"]["slow_varying"]
 
-    # Check if i_joint_slow is negative; if it is, add i_composed_slow
-    i_joint_adj = np.where(i_joint_slow < 0, i_joint_slow + i_composed_slow, i_joint_slow)
-
-    # Compute residual / joint ratio where residual = joint - composed
-    # ratios_slow = i_res_slow / RMS(i_joint_slow)
-    ratios_slow = i_res_slow / np.maximum(np.abs(i_joint_adj), 1e-9)
+    # Retrieve pre-computed slow-varying residual RMS / joint RMS ratios
+    ratios_slow = data["i_ratios_channels"]["slow_varying"]
 
     valid_mask = np.isfinite(ratios_slow)
     k_plot = k_vals[valid_mask]
