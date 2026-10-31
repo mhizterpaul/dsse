@@ -408,10 +408,14 @@ def plot_slow_varying_residual_ratio_vs_coevents(
     k_vals = data["k_values"]
     i_res_slow = data["res_i_rms_channels"]["slow_varying"]
     i_joint_slow = data["co_i_rms_channels"]["slow_varying"]
+    i_composed_slow = data["co_i_rms_channels"]["slow_varying"]
+
+    # Check if i_joint_slow is negative; if it is, add i_composed_slow
+    i_joint_adj = np.where(i_joint_slow < 0, i_joint_slow + i_composed_slow, i_joint_slow)
 
     # Compute residual / joint ratio where residual = joint - composed
-    # RMS(joint - composed) / RMS(joint)
-    ratios_slow = i_res_slow / np.maximum(i_joint_slow, 1e-9)
+    # ratios_slow = i_res_slow / RMS(i_joint_slow)
+    ratios_slow = i_res_slow / np.maximum(np.abs(i_joint_adj), 1e-9)
 
     valid_mask = np.isfinite(ratios_slow)
     k_plot = k_vals[valid_mask]
