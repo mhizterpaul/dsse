@@ -88,11 +88,11 @@ def extract_transformer_phasors_from_dss(dss_instance: Any, feeder_idx: int) -> 
 
     if dss_instance.Circuit.SetActiveElement(tx_name):
         c_raw = dss_instance.CktElement.Currents()
-        if len(c_raw) >= 12:
+        if len(c_raw) >= 14:
             i_phasors = np.array([
-                complex(c_raw[6], c_raw[7]),
                 complex(c_raw[8], c_raw[9]),
-                complex(c_raw[10], c_raw[11])
+                complex(c_raw[10], c_raw[11]),
+                complex(c_raw[12], c_raw[13])
             ])
 
     if dss_instance.Circuit.SetActiveBus(sec_bus):
