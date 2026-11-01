@@ -198,9 +198,7 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
 
                 vi_diff_1 = v1_ch - i1_ch
                 vi_diff_2 = v2_ch - i2_ch
-                vi_diff_comp = np.full_like(v_joint_phase_angle, np.nan)
                 vi_diff_joint = v_joint_ch - i_joint_ch
-                vi_diff_res = np.full_like(v_joint_phase_angle, np.nan)
 
                 voltage_magnitude = float(np.sqrt(np.nanmean(v_joint_ch ** 2)))
                 current_magnitude = float(np.sqrt(np.nanmean(i_joint_ch ** 2)))
@@ -222,9 +220,7 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
 
                 vi_diff_1 = compute_atp_phase_angle(v1_ch, time_s=t_arr) - compute_atp_phase_angle(i1_ch, time_s=t_arr)
                 vi_diff_2 = compute_atp_phase_angle(v2_ch, time_s=t_arr) - compute_atp_phase_angle(i2_ch, time_s=t_arr)
-                vi_diff_comp = compute_atp_phase_angle(v_comp_ch, time_s=t_arr) - compute_atp_phase_angle(i_comp_ch, time_s=t_arr)
                 vi_diff_joint = compute_atp_phase_angle(v_joint_ch, time_s=t_arr) - compute_atp_phase_angle(i_joint_ch, time_s=t_arr)
-                vi_diff_res = compute_atp_phase_angle(v_res_ch, time_s=t_arr) - compute_atp_phase_angle(i_res_ch, time_s=t_arr)
 
                 voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
                 current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))
@@ -270,9 +266,6 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 "obs_composed_event_i_phase_a": json.dumps(i_comp_ch[:, 0].tolist()),
                 "obs_composed_event_i_phase_b": json.dumps(i_comp_ch[:, 1].tolist()),
                 "obs_composed_event_i_phase_c": json.dumps(i_comp_ch[:, 2].tolist()),
-                "obs_composed_event_vi_phase_diff_phase_a": json.dumps(vi_diff_comp[:, 0].tolist()),
-                "obs_composed_event_vi_phase_diff_phase_b": json.dumps(vi_diff_comp[:, 1].tolist()),
-                "obs_composed_event_vi_phase_diff_phase_c": json.dumps(vi_diff_comp[:, 2].tolist()),
                 "obs_joint_event_v_phase_a": json.dumps(v_joint_ch[:, 0].tolist()),
                 "obs_joint_event_v_phase_b": json.dumps(v_joint_ch[:, 1].tolist()),
                 "obs_joint_event_v_phase_c": json.dumps(v_joint_ch[:, 2].tolist()),
@@ -288,9 +281,6 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 "obs_residual_i_phase_a": json.dumps(i_res_ch[:, 0].tolist()),
                 "obs_residual_i_phase_b": json.dumps(i_res_ch[:, 1].tolist()),
                 "obs_residual_i_phase_c": json.dumps(i_res_ch[:, 2].tolist()),
-                "obs_residual_vi_phase_diff_phase_a": json.dumps(vi_diff_res[:, 0].tolist()),
-                "obs_residual_vi_phase_diff_phase_b": json.dumps(vi_diff_res[:, 1].tolist()),
-                "obs_residual_vi_phase_diff_phase_c": json.dumps(vi_diff_res[:, 2].tolist()),
             }
 
             if dataset_name == "Dataset 4":
