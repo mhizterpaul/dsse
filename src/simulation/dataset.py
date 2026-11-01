@@ -218,9 +218,10 @@ def process_dataset_coevents(sim_results: list[dict], dataset_name: str) -> list
                 v_res_ch = v_joint_ch - v_comp_ch
                 i_res_ch = i_joint_ch - i_comp_ch
 
-                vi_diff_1 = compute_atp_phase_angle(v1_ch, time_s=t_arr) - compute_atp_phase_angle(i1_ch, time_s=t_arr)
-                vi_diff_2 = compute_atp_phase_angle(v2_ch, time_s=t_arr) - compute_atp_phase_angle(i2_ch, time_s=t_arr)
-                vi_diff_joint = compute_atp_phase_angle(v_joint_ch, time_s=t_arr) - compute_atp_phase_angle(i_joint_ch, time_s=t_arr)
+                # V-I phase difference columns must be NaN for other channels (fund, harm, slow) except phase_angle
+                vi_diff_1 = np.full_like(v1_ch, np.nan)
+                vi_diff_2 = np.full_like(v2_ch, np.nan)
+                vi_diff_joint = np.full_like(v_joint_ch, np.nan)
 
                 voltage_magnitude = float(np.sqrt(np.mean(v_joint_ch ** 2)))
                 current_magnitude = float(np.sqrt(np.mean(i_joint_ch ** 2)))

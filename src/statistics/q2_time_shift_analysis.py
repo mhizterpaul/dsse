@@ -50,7 +50,7 @@ def compute_waveform_pearson_stats(df: pd.DataFrame) -> dict:
 
                 std1 = np.std(arr1)
                 std2 = np.std(arr2)
-                if std1 <= 0 or std2 <= 0:
+                if np.isnan(std1) or np.isnan(std2) or std1 <= 0 or std2 <= 0:
                     val_calc = 0.0
                 else:
                     val_calc, _ = stats.pearsonr(arr1, arr2)
