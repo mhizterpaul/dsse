@@ -395,11 +395,11 @@ def plot_residual_rms_ratio_vs_coevents(
 def plot_slow_varying_residual_ratio_vs_coevents(
     max_coevents: int = 25,
     save_path: str = "src/visualization/slow_varying_residual_ratio_vs_coevents.png"
-) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, float, float]]]:
+) -> Tuple[plt.Figure, Dict[str, str], Dict[str, Tuple[float, ...]]]:
     """
     Graphs the residual/joint ratio R_slow(K) = RMS(i_joint_slow - i_composed_slow) / RMS(i_joint_slow)
     of the slow-varying (DC) channel vs simultaneous co-events K (K = 2 .. max_coevents) on a separate plot.
-    Fits quadratic polynomial and saves figure.
+    Fits a line of best fit and saves figure.
     """
     data = compute_residual_rms_vs_coevents(max_coevents=max_coevents)
     k_vals = data["k_values"]
@@ -416,17 +416,18 @@ def plot_slow_varying_residual_ratio_vs_coevents(
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
-    p_fit = np.polyfit(k_plot, ratios_plot, 2)
-    a_s, b_s, c_s = float(p_fit[0]), float(p_fit[1]), float(p_fit[2])
+    # Fit line of best fit: R_{I, slow}(K) = a * K + b
+    p_fit = np.polyfit(k_plot, ratios_plot, 1)
+    a_s, b_s = float(p_fit[0]), float(p_fit[1])
 
     fit_vals = np.polyval(p_fit, k_plot)
     ss_res = float(np.sum((ratios_plot - fit_vals) ** 2))
     ss_tot = float(np.sum((ratios_plot - np.mean(ratios_plot)) ** 2))
     r2_s = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
 
+    a_str = f"{abs(a_s):.6f}" if a_s >= 0 else f"-{abs(a_s):.6f}"
     b_sign = "+" if b_s >= 0 else "-"
-    c_sign = "+" if c_s >= 0 else "-"
-    func_str_slow = f"R_{{I, \\mathrm{{slow}}}}(K) = {abs(a_s):.6f}·K² {b_sign} {abs(b_s):.6f}·K {c_sign} {abs(c_s):.6f}"
+    func_str_slow = f"R_{{I, \\mathrm{{slow}}}}(K) = {a_str}·K {b_sign} {abs(b_s):.6f}"
 
     k_dense = np.linspace(float(np.min(k_plot)), float(np.max(k_plot)), 200)
     fit_dense = np.polyval(p_fit, k_dense)
@@ -452,7 +453,7 @@ def plot_slow_varying_residual_ratio_vs_coevents(
         fig.savefig(save_p, bbox_inches="tight", dpi=300)
 
     funcs_dict = {"slow_varying_ratio_function": func_str_slow}
-    params_dict = {"slow_varying_params": (a_s, b_s, c_s)}
+    params_dict = {"slow_varying_params": (a_s, b_s)}
 
     return fig, funcs_dict, params_dict
 
